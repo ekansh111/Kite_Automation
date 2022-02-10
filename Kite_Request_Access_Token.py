@@ -5,7 +5,7 @@ from datetime import date
 
 logging.basicConfig(level=logging.DEBUG)
 
-kite = KiteConnect(api_key="nget8iniou5mlnfj")
+kite = KiteConnect(api_key="")
 
 # Redirect the user to the login url obtained
 # from kite.login_url(), and receive the request_token
@@ -14,7 +14,7 @@ kite = KiteConnect(api_key="nget8iniou5mlnfj")
 # as follows.
 print("login here:",kite.login_url())
 req_tkn = input("Enter the request token")
-data = kite.generate_session(req_tkn, api_secret="p9z3b74nfx5izarcr62w3xe111k8lnuz")
+data = kite.generate_session(req_tkn, api_secret="")
 kite.set_access_token(data["access_token"])
 token = data["access_token"] 
 print(data["access_token"])
