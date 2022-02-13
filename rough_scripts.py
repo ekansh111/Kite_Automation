@@ -75,13 +75,20 @@ print(month)'
 #print(date.today())'''
 
 #print(round(38929,-2))
-hedge_percent = 6
+'''hedge_percent = 6
 ATM_ltp = 38900
 ATM_HEDGE_CE = round(int(ATM_ltp*((100+hedge_percent)/100) + (ATM_ltp%1000)),-2)
 print(ATM_HEDGE_CE)
 
-print(ATM_ltp%100)
+print(ATM_ltp%100)'''
 '''n = 38973
 def round_half_away_from_zero(n, decimals=1):
     rounded_abs = round_half_up(abs(n), decimals)
     return math.copysign(rounded_abs, n)'''
+
+'''m = "kite.EXCHANGE_NSE"
+kk = (m[1:-1])
+print(kk'''
+
+dict = {"tradetype":print}
+print(dict["tradetype"])

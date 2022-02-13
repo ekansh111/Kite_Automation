@@ -7,13 +7,13 @@ from datetime import date
 
 logging.basicConfig(level=logging.DEBUG)
 
-with open('C:/Users/ekans/Documents/Kite_API/inputs/api_key.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/Kite_API/inputs/access_token.txt','r') as f:
+with open('C:/Users/ekans/Documents/inputs/access_token.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -52,13 +52,13 @@ hr = str("11")
 ##################################################################################################################################
 #Order Inputs
 Quantity = 25
-order_type = kite.ORDER_TYPE_LIMIT #'kite.ORDER_TYPE_MARKET'
+order_type = kite.ORDER_TYPE_MARKET
 
 order_exchange = kite.EXCHANGE_NFO
 
-order_variety = kite.VARIETY_AMO #'kite.VARIETY_REGULAR'
+order_variety = kite.VARIETY_REGULAR
 
-order_product = kite.PRODUCT_MIS #kite.PRODUCT_NRML
+order_product = kite.PRODUCT_NRML
 
 order_buy = kite.TRANSACTION_TYPE_BUY
 
@@ -75,6 +75,7 @@ print("The option series that will be traded is" +" "+"BANKNIFTY"+str(year)+str(
 print("Time at which the option trade will be executed" + " "*5 +str(hr)+":"+str(min)+":"+str(sec))
 print("Order parameters are :"+ order_type+" "+ order_exchange+" "+order_variety+" "+order_product+" "+order_validity)
 print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
+print("Quantity:"+str(Quantity))
 
 proceed = input()
 if proceed in {"G","g"}:    #{} is a set
@@ -160,8 +161,8 @@ while one_shot_flag == True:
                                                                 transaction_type=order_sell,
                                                                 quantity=Quantity,
                                                                 validity=order_validity,
-                                                                product=order_product,
-                                                                price = 1239.00)
+                                                                product=order_product
+                                                                )
 
                 hedge_call = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
@@ -170,8 +171,8 @@ while one_shot_flag == True:
                                                                 transaction_type=order_buy,
                                                                 quantity=Quantity,
                                                                 validity=order_validity,
-                                                                product=order_product,
-                                                                price = 4)  
+                                                                product=order_product
+                                                                )  
                 sell_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,
@@ -179,8 +180,8 @@ while one_shot_flag == True:
                                                                 transaction_type=order_sell,
                                                                 quantity=Quantity,
                                                                 validity=order_validity,
-                                                                product=order_product,
-                                                                price = 1039.00)
+                                                                product=order_product
+                                                                )
 
                 hedge_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
@@ -189,8 +190,8 @@ while one_shot_flag == True:
                                                                 transaction_type=order_buy,
                                                                 quantity=Quantity,
                                                                 validity=order_validity,
-                                                                product=order_product,
-                                                                price = 4)
+                                                                product=order_product
+                                                                )
 
         
                                                                                                                                                                                               
