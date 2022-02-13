@@ -9,11 +9,7 @@ with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
-<<<<<<< HEAD
-def order():
-=======
 def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity):
->>>>>>> master_2
     logging.basicConfig(level=logging.DEBUG)
 
 
@@ -34,18 +30,6 @@ def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Va
     kite.set_access_token(access_tok)
 
     # Place an order
-<<<<<<< HEAD
-
-    try:
-        order_id = kite.place_order(tradingsymbol="INFY",
-                                    exchange=kite.EXCHANGE_NSE,
-                                    transaction_type=kite.TRANSACTION_TYPE_BUY,
-                                    quantity=1,
-                                    variety=kite.VARIETY_AMO,
-                                    order_type=kite.ORDER_TYPE_MARKET,
-                                    product=kite.PRODUCT_CNC,
-                                    validity=kite.VALIDITY_DAY)
-=======
     
     dict = {"MARKET":kite.ORDER_TYPE_MARKET,"LIMIT":kite.ORDER_TYPE_LIMIT,"NSE":kite.EXCHANGE_NSE,"NFO":kite.EXCHANGE_NFO,"MCX":kite.EXCHANGE_MCX,"CDS":kite.EXCHANGE_CDS,
             "buy":kite.TRANSACTION_TYPE_BUY,"sell":kite.TRANSACTION_TYPE_SELL,"AMO":kite.VARIETY_AMO,"REGULAR":kite.VARIETY_REGULAR,"NRML":kite.PRODUCT_NRML,"MIS":kite.PRODUCT_MIS,
@@ -65,7 +49,6 @@ def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Va
                                     product=dict[Product],
                                     validity=dict[Validity]
                                     )
->>>>>>> master_2
 
         logging.info("Order placed. ID is: {}".format(order_id))
     except Exception as e:

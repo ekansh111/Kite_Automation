@@ -1,6 +1,9 @@
+<<<<<<< HEAD
+=======
 from ast import Constant
 from codecs import decode
 from email import message
+>>>>>>> master_2
 import logging
 from kiteconnect import KiteConnect
 
