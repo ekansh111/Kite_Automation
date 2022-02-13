@@ -10,22 +10,6 @@ raw_data = ""
 @app.route('/', methods=['POST'])
 def webhook():
     if request.method == 'POST':
-<<<<<<< HEAD
-        #print(request.json())
-        #json = request.get_json()
-        #parse_json = request._parse_content_type(json)
-        #print("parse_json" + parse_json)
-        #print(request.is_json)
-        #print(request.get_data())
-        #raw_data = request.get_data(as_text=True)
-        #print(bool(raw_data))
-        #print(raw_data)
-        #test
-        #print(request.get_json())
-        order_details_fetch = request.get_json()
-        print(order_details_fetch)
-        order()
-=======
 
         order_details_fetch = request.get_json()
         print(order_details_fetch)
@@ -38,12 +22,12 @@ def webhook():
         Ordertype = order_details_fetch['Ordertype']
         Product = order_details_fetch['Product']
         Validity = order_details_fetch['Validity']
+        Price = order_details_fetch['Price'] or 0.0
         #Price = order_details_fetch['Price'] or ''
         #print(Tradetype+Exchange+Tradingsymbol+Quantity+Variety+Ordertype+Product+Validity)
 
 
-        order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity)
->>>>>>> master_2
+        order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price)
         
         print("null")
         return 'success',200
@@ -56,7 +40,3 @@ if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=80)
     app.run()
     parse()
-<<<<<<< HEAD
-    order()
-=======
->>>>>>> master_2
