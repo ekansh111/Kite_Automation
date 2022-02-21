@@ -1,3 +1,4 @@
+
 from flask import Flask, request, abort
 from flask_ngrok import run_with_ngrok
 from json import loads
@@ -6,7 +7,7 @@ app = Flask(__name__)
 run_with_ngrok(app)
 json = ""
 raw_data = ""
-
+print(app)
 @app.route('/', methods=['POST'])
 def webhook():
     if request.method == 'POST':
@@ -33,10 +34,8 @@ def webhook():
         return 'success',200
     else:
         abort(400)
-def parse():
-        parse_data = json.loads(raw_data)
-        print(parse_data['not'])
+
 if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=80)
     app.run()
-    parse()
+    

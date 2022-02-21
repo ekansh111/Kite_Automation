@@ -1,6 +1,4 @@
-from ast import Constant
-from codecs import decode
-from email import message
+
 import logging
 from kiteconnect import KiteConnect
 
@@ -18,14 +16,6 @@ def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Va
         access_tok = f.read()
         f.close()
 
-    
-
-    # Redirect the user to the login url obtained
-    # from kite.login_url(), and receive the request_token
-    # from the registered redirect url after the login flow.
-    # Once you have the request_token, obtain the access_token
-    # as follows.
-    print("login here:",kite.login_url())
 
     kite.set_access_token(access_tok)
 

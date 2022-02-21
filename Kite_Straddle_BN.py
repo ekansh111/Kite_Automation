@@ -7,6 +7,8 @@ from datetime import date
 
 logging.basicConfig(level=logging.DEBUG)
 
+
+
 with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
         api_key = a.read()
         a.close()
@@ -66,7 +68,7 @@ order_sell = kite.TRANSACTION_TYPE_SELL
 
 order_validity = kite.VALIDITY_DAY
 
-hedge_percent = int(7)
+hedge_percent = int(9)
 
 print(" "*10+"Verify the following parameters for the order to be placed. G--Go Ahead!  N-->Abort the execution  M-->Modify any of the parameters")
 
@@ -101,15 +103,17 @@ if proceed in {"N","n"}:
     abort()
 
 while one_shot_flag == True:
+
     ##################################################################################################################################
     #Find the current value of the bank nifty index
     Banknifty_index = {260105:'NIFTY BANK'}
-
+    
     for val in Banknifty_index:
         price = kite.ltp('NSE:' + Banknifty_index[val])#this will send ohlc price in dictionary format
         #print(price)
         ltp = price['NSE:'+Banknifty_index[val]]['last_price']#to get ltp of whichever stick is declared in token
         print("BankNifty LTP:"+str(ltp))
+            
 
     ##################################################################################################################################
     #Get the ATM contract
@@ -126,10 +130,10 @@ while one_shot_flag == True:
 
     #Calculate the proper hedging value for the ATM option
     r = ATM_ltp#to round to the nearest 10,000
-    ATM_HEDGE_CE = round(int(r*((100+hedge_percent)/100) + ATM_ltp%1000),-2)#-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
+    ATM_HEDGE_CE = round(int(r*((100+hedge_percent)/100)),-2)#-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
     #print(ATM_HEDGE_CE)
 
-    ATM_HEDGE_PE = round(int(r*((100-hedge_percent)/100) - ATM_ltp%1000),-2)
+    ATM_HEDGE_PE = round(int(r*((100-hedge_percent)/100)),-2)
     #print(ATM_HEDGE_PE)
     #print("Hedging the short call by"+ATM_HEDGE_CE)
     #print("Hedging the short put by"+ATM_HEDGE_PE)
@@ -172,7 +176,7 @@ while one_shot_flag == True:
                                                                 quantity=Quantity,
                                                                 validity=order_validity,
                                                                 product=order_product
-                                                                )  
+                                                                )
                 sell_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,

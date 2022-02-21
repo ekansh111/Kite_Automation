@@ -5,12 +5,9 @@ from datetime import date
 
 logging.basicConfig(level=logging.DEBUG)
 
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
+
 kite = KiteConnect(api_key="nget8iniou5mlnfj")
-=======
->>>>>>> master_2
+
 with open('C:/Users/ekans/Documents/inputs/api_secret_yd.txt','r') as a:
         api_secret = a.read()
         a.close()
@@ -19,10 +16,7 @@ with open('C:/Users/ekans/Documents/inputs/api_key_yd.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
-<<<<<<< HEAD
-=======
->>>>>>> 95bec5e (Server_working)
->>>>>>> master_2
+
 
 # Redirect the user to the login url obtained
 # from kite.login_url(), and receive the request_token
@@ -31,15 +25,9 @@ kite = KiteConnect(api_key=api_key)
 # as follows.
 print("login here:",kite.login_url())
 req_tkn = input("Enter the request token")
-<<<<<<< HEAD
+
 data = kite.generate_session(req_tkn, api_secret=api_secret)
-=======
-<<<<<<< HEAD
-data = kite.generate_session(req_tkn, api_secret="p9z3b74nfx5izarcr62w3xe111k8lnuz")
-=======
-data = kite.generate_session(req_tkn, api_secret=api_secret)
->>>>>>> 95bec5e (Server_working)
->>>>>>> master_2
+
 kite.set_access_token(data["access_token"])
 token = data["access_token"] 
 print(data["access_token"])

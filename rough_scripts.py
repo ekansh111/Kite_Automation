@@ -1,9 +1,11 @@
+from calendar import TUESDAY
 from datetime import date, datetime,timedelta
 from datetime import datetime
 from decimal import ROUND_UP
 import math
 from typing import Type
-#from DateTime import date
+from dateutil.relativedelta import TH, relativedelta
+import datetime
 
 
 '''tokens = {738561:'RELIANCE'}
@@ -90,5 +92,29 @@ def round_half_away_from_zero(n, decimals=1):
 kk = (m[1:-1])
 print(kk'''
 
-dict = {"tradetype":print}
-print(dict["tradetype"])
+'''dict = {"tradetype":print}
+print(dict["tradetype"])'''
+
+
+#y = datetime.date.today()+relativedelta(day=31, weekday=TH(1))
+#print(y)
+#datetime.date(2021, 6, 25)
+
+k = (datetime.date(2022,7,1)+relativedelta(day=31, weekday=TH(-1)))
+d = k.strftime("%d")
+m = k.strftime("%B")
+y = k.strftime("%y")
+
+print(d)
+print(m)
+print(y)
+print(k)
+
+
+atm_ltp = 37300
+print(atm_ltp%1000)
+
+
+Token = {260105:'NIFTY BANK'}
+for val in Token:
+    print(Token[val])
