@@ -4,6 +4,7 @@ import string
 from kiteconnect import KiteConnect
 from datetime import datetime,timedelta
 from datetime import date
+from Set_Gtt_Exit import Set_Gtt
 
 logging.basicConfig(level=logging.DEBUG)
 y = ''
@@ -96,7 +97,7 @@ if proceed in {"M","m"}:
     d = input("Enter the day of the option contract you intend to place order in --Format in %d%d") or day
     #################################################################################################################################
     #Get the time at which you want the order to be placed
-    hedge_percent = int(input("Enter how far OTM percent short calls should be hedged by")) or int(7)
+    hedge_percent = input("Enter how far OTM percent short calls should be hedged by") or int(7)
 
     hr = input("Hour at which the order should be routed") or datetime.now().hour
     min = input("Minute at which the order should be routed") or datetime.now().minute
@@ -134,10 +135,10 @@ while one_shot_flag == True:
 
     #Calculate the proper hedging value for the ATM option
     r = ATM_ltp#to round to the nearest 10,000
-    ATM_HEDGE_CE = round(int(r*((100+hedge_percent)/100)),-2)#-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
+    ATM_HEDGE_CE = round(int(r*((100+int(hedge_percent))/100)),-2)#-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
     #print(ATM_HEDGE_CE)
 
-    ATM_HEDGE_PE = round(int(r*((100-hedge_percent)/100)),-2)
+    ATM_HEDGE_PE = round(int(r*((100-int(hedge_percent))/100)),-2)
     #print(ATM_HEDGE_PE)
     #print("Hedging the short call by"+ATM_HEDGE_CE)
     #print("Hedging the short put by"+ATM_HEDGE_PE)
@@ -171,6 +172,7 @@ while one_shot_flag == True:
                                                                 validity=order_validity,
                                                                 product=order_product
                                                                 )
+                Set_Gtt(ATM_CALL,Quantity)                                            
 
                 '''hedge_call = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
@@ -190,7 +192,7 @@ while one_shot_flag == True:
                                                                 validity=order_validity,
                                                                 product=order_product
                                                                 )
-
+                Set_Gtt(ATM_PUT,Quantity)
                 '''hedge_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,
