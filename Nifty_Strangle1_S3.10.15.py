@@ -51,11 +51,11 @@ if date.today().weekday() ==3:
 
 #Default time the order must be placed
 sec = str("00")
-min = str("15")
-hr = str("11")
+min = str("00")
+hr = str("10")
 ##################################################################################################################################
 #Order Inputs
-Quantity = 25
+Quantity = 50
 order_type = kite.ORDER_TYPE_MARKET
 
 order_exchange = kite.EXCHANGE_NFO
@@ -75,7 +75,7 @@ hedge_percent = int(9)
 print(" "*10+"Verify the following parameters for the order to be placed. G--Go Ahead!  N-->Abort the execution  M-->Modify any of the parameters")
 
 
-print("The option series that will be traded is" +" "+"BANKNIFTY"+str(year)+str(month)+str(day)+"*")
+print("The option series that will be traded is" +" "+"NIFTY"+str(year)+str(month)+str(day)+"*")
 print("Time at which the option trade will be executed" + " "*5 +str(hr)+":"+str(min)+":"+str(sec))
 print("Order parameters are :"+ order_type+" "+ order_exchange+" "+order_variety+" "+order_product+" "+order_validity)
 print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
@@ -108,13 +108,13 @@ while one_shot_flag == True:
 
     ##################################################################################################################################
     #Find the current value of the bank nifty index
-    Banknifty_index = {260105:'NIFTY BANK'}
+    NIFTY_index = {256265:'NIFTY 50'}
     
-    for val in Banknifty_index:
-        price = kite.ltp('NSE:' + Banknifty_index[val])#this will send ohlc price in dictionary format
+    for val in NIFTY_index:
+        price = kite.ltp('NSE:' + NIFTY_index[val])#this will send ohlc price in dictionary format
         #print(price)
-        ltp = price['NSE:'+Banknifty_index[val]]['last_price']#to get ltp of whichever stick is declared in token
-        print("BankNifty LTP:"+str(ltp))
+        ltp = price['NSE:'+NIFTY_index[val]]['last_price']#to get ltp of whichever stick is declared in token
+        print("NIFTY LTP:"+str(ltp))
             
 
     ##################################################################################################################################
@@ -126,7 +126,9 @@ while one_shot_flag == True:
         ATM_ltp = int(ltp+ (100-diff))
     if diff<50:
         ATM_ltp = int(ltp - diff)'''
-    ATM_ltp = int(round(ltp,-2))#This will round to the nearest hundrend place so that we can select the nearst ATM contract    
+    ltp_50 = (ltp/50)
+    print(ltp_50)
+    ATM_ltp = (int(round(ltp_50))*50)#This will round to the nearest hundrend place so that we can select the nearst ATM contract    
 
     #print("ATM Contract is:"+ATM_ltp)
 
@@ -141,11 +143,11 @@ while one_shot_flag == True:
     #print("Hedging the short put by"+ATM_HEDGE_PE)
     ##################################################################################################################################
     #Append the dates and the script name to create the complete contract names to be Traded
-    ATM_CALL = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'CE'
-    ATM_HEDGE_CALL = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_CE)+'CE'
+    ATM_CALL = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'CE'
+    ATM_HEDGE_CALL = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_CE)+'CE'
 
-    ATM_PUT = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'PE'
-    ATM_HEDGE_PUT = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_PE)+'PE'
+    ATM_PUT = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'PE'
+    ATM_HEDGE_PUT = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_PE)+'PE'
     print("The ATM CALL contract is:"+ATM_CALL)
     print("The ATM PUT contract is:"+ATM_PUT)
     print("Hedging the short call by"+ATM_HEDGE_CALL)

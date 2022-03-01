@@ -94,13 +94,13 @@ print(kk'''
 
 '''dict = {"tradetype":print}
 print(dict["tradetype"])'''
-
+print(round(937.8,-3))
 
 #y = datetime.date.today()+relativedelta(day=31, weekday=TH(1))
 #print(y)
 #datetime.date(2021, 6, 25)
 
-k = (datetime.date(2022,7,1)+relativedelta(day=31, weekday=TH(-1)))
+'''k = (datetime.date(2022,7,1)+relativedelta(day=31, weekday=TH(-1)))
 d = k.strftime("%d")
 m = k.strftime("%B")
 y = k.strftime("%y")
@@ -117,4 +117,4 @@ print(atm_ltp%1000)
 
 Token = {260105:'NIFTY BANK'}
 for val in Token:
-    print(Token[val])
+    print(Token[val])'''
