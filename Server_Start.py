@@ -4,7 +4,7 @@ from flask_ngrok import run_with_ngrok
 from json import loads
 from Server_Order_Place import order
 app = Flask(__name__)
-run_with_ngrok(app)
+run_with_ngrok(app,subdomain="auto2")
 json = ""
 raw_data = ""
 print(app)

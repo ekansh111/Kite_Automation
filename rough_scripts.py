@@ -6,8 +6,9 @@ import math
 from typing import Type
 from dateutil.relativedelta import TH, relativedelta
 import datetime
-
-
+import pyotp
+totp = pyotp.TOTP('ABCD')
+#print(totp.now())
 '''tokens = {738561:'RELIANCE'}
 for tokn in tokens:
     print(tokn)'''
@@ -94,7 +95,7 @@ print(kk'''
 
 '''dict = {"tradetype":print}
 print(dict["tradetype"])'''
-print(round(937.8,-3))
+#print(round(937.8,-3))
 
 #y = datetime.date.today()+relativedelta(day=31, weekday=TH(1))
 #print(y)
@@ -118,3 +119,42 @@ print(atm_ltp%1000)
 Token = {260105:'NIFTY BANK'}
 for val in Token:
     print(Token[val])'''
+
+with open('C:/Users/ekans/Documents/inputs/Login_Credentials_IK.txt','r') as a:
+        content = a.readlines()
+        a.close()
+
+user_id= content[0].strip('\n')
+user_pwd = content[1].strip('\n')
+api_key = content[2].strip('\n')
+api_secret = content[3].strip('\n')
+totp_key= content[4].strip('\n')
+
+print(user_id)
+print(user_pwd)
+print(api_key)
+print(api_secret)
+print(totp_key)
+
+with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
+        api_key = a.read()
+        a.close()
+with open('C:/Users/ekans/Documents/inputs/api_secret_IK.txt','r') as a:
+        api_secret = a.read()
+        a.close()
+with open('C:/Users/ekans/Documents/inputs/user_id_IK.txt','r') as a:
+        user_id = a.read()
+        a.close()
+with open('C:/Users/ekans/Documents/inputs/user_pwd_IK.txt','r') as a:
+        user_pwd = a.read()
+        a.close()
+with open('C:/Users/ekans/Documents/inputs/totp_key_IK.txt','r') as a:
+        totp_key = a.read()
+        a.close()
+
+
+print(api_key)
+print(api_secret)
+print(user_id)
+print(user_pwd)
+print(totp_key)
