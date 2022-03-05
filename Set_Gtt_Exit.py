@@ -4,13 +4,13 @@ from datetime import datetime,timedelta
 from datetime import date
 option_sl = 0
 
-with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/inputs/access_token.txt','r') as f:
+with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)

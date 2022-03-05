@@ -4,7 +4,7 @@ from datetime import datetime
 from datetime import date
 
 logging.basicConfig(level=logging.DEBUG)
-with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
@@ -15,7 +15,7 @@ kite = KiteConnect(api_key=api_key)
 # Once you have the request_token, obtain the access_token
 # as follows.
 
-with open('C:/Users/ekans/Documents/inputs/api_secret.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/api_secret_IK.txt','r') as a:
         api_secret = a.read()
         a.close()
 print("login here:",kite.login_url())
@@ -25,6 +25,6 @@ kite.set_access_token(data["access_token"])
 token = data["access_token"] 
 print(data["access_token"])
 
-with open('C:/Users/ekans/Documents/inputs/access_token.txt','w') as f:
+with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','w') as f:
         f.write(token)
         f.close()

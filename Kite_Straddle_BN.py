@@ -12,13 +12,13 @@ m = ''
 d = ''
 
 
-with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/inputs/access_token.txt','r') as f:
+with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -79,7 +79,7 @@ print(" "*10+"Verify the following parameters for the order to be placed. G--Go 
 print("The option series that will be traded is" +" "+"BANKNIFTY"+str(year)+str(month)+str(day)+"*")
 print("Time at which the option trade will be executed" + " "*5 +str(hr)+":"+str(min)+":"+str(sec))
 print("Order parameters are :"+ order_type+" "+ order_exchange+" "+order_variety+" "+order_product+" "+order_validity)
-print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
+#print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
 print("Quantity:"+str(Quantity))
 
 proceed = input()
@@ -97,7 +97,7 @@ if proceed in {"M","m"}:
     d = input("Enter the day of the option contract you intend to place order in --Format in %d%d") or day
     #################################################################################################################################
     #Get the time at which you want the order to be placed
-    hedge_percent = input("Enter how far OTM percent short calls should be hedged by") or int(7)
+    #hedge_percent = input("Enter how far OTM percent short calls should be hedged by") or int(7)
 
     hr = input("Hour at which the order should be routed") or datetime.now().hour
     min = input("Minute at which the order should be routed") or datetime.now().minute
@@ -147,10 +147,10 @@ while one_shot_flag == True:
 
     ATM_PUT = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'PE'
     ATM_HEDGE_PUT = 'BANKNIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_PE)+'PE'
-    print("The ATM CALL contract is:"+ATM_CALL)
-    print("The ATM PUT contract is:"+ATM_PUT)
-    print("Hedging the short call by"+ATM_HEDGE_CALL)
-    print("Hedging the short put by"+ATM_HEDGE_PUT)
+    print("The ATM CALL contract format is:"+ATM_CALL)
+    print("The ATM PUT contract format is:"+ATM_PUT)
+    #print("Hedging the short call by"+ATM_HEDGE_CALL)
+    #print("Hedging the short put by"+ATM_HEDGE_PUT)
     ##################################################################################################################################
     #Fetch the tokens from the csv file
 
