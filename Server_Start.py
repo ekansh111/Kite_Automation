@@ -1,4 +1,5 @@
 
+import string
 from flask import Flask, request, abort
 from flask_ngrok import run_with_ngrok
 from json import loads
@@ -17,7 +18,7 @@ def webhook():
 
         Tradetype = order_details_fetch['Tradetype']
         Exchange = order_details_fetch['Exchange']
-        Tradingsymbol = order_details_fetch['Tradingsymbol']
+        Tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
         Quantity = order_details_fetch['Quantity']
         Variety = order_details_fetch['Variety']
         Ordertype = order_details_fetch['Ordertype']

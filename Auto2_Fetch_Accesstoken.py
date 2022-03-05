@@ -1,15 +1,16 @@
+from multiprocessing import Value
 from kiteconnect import KiteConnect
 from kiteconnect import KiteTicker
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 import time, pyotp
-from Send_Email import send_mail
+
 
 options = uc.ChromeOptions()
 options.add_argument('--headless')
 
-with open('C:/Users/ekans/Documents/inputs/Login_Credentials_IK.txt','r') as a:
+with open('C:/Users/ekans/Documents/inputs/Login_Credentials.txt','r') as a:
         content = a.readlines()
         a.close()
 
@@ -27,23 +28,23 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
     try:
         driver = uc.Chrome(version_main=98,options=options)
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
-        login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element_by_xpath('//*[@id="userid"]'))
+        login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
         login_id.send_keys(user_id)
 
-        pwd = WebDriverWait(driver, 10).until(lambda x: x.find_element_by_xpath('//*[@id="password"]'))
+        pwd = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="password"]'))
         pwd.send_keys(user_pwd)
 
-        submit = WebDriverWait(driver, 10).until(lambda x: x.find_element_by_xpath('//*[@id="container"]/div/div/div[2]/form/div[4]/button'))
+        submit = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[4]/button'))
         submit.click()
 
         time.sleep(1)
         #adjustment to code to include totp
-        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element_by_xpath('//*[@id="totp"]'))
+        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="totp"]'))
         authkey = pyotp.TOTP(totp_key)
         totp.send_keys(authkey.now())
         #adjustment complete
 
-        continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element_by_xpath('//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
+        continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
         continue_btn.click()
         #print(driver.current_url)
         time.sleep(3)
@@ -65,13 +66,13 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
             f.write(token)
             f.close()
 
-        if(token):
-            send_mail('Successful',f'Initiating Login procedure for account {user_id} to the broker terminal with access code {token}')
+        '''if(token):
+            send_mail('Successful',f'Initiating Login procedure for account {user_id} to the broker terminal with access code {token}')'''
 
         return kite
 
     except:
-        send_mail('Failed',f'Login attempt to the Broker Terminal for account {user_id} has failed with access token{token}')
+        '''send_mail('Failed',f'Login attempt to the Broker Terminal for account {user_id} has failed with access token{token}')'''
         print('fail')
 
 if __name__ == '__main__':
