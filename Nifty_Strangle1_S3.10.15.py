@@ -5,6 +5,10 @@ from kiteconnect import KiteConnect
 from datetime import datetime,timedelta
 from datetime import date
 from Set_Gtt_Exit import Set_Gtt
+from inputimeout import inputimeout,TimeoutOccurred
+from dateutil.relativedelta import TH, relativedelta
+import time
+
 
 logging.basicConfig(level=logging.DEBUG)
 y = ''
@@ -12,13 +16,14 @@ m = ''
 d = ''
 
 
-with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
-        api_key = a.read()
+with open('C:/Users/ekans/Documents/inputs/Login_Credentials.txt','r') as a:
+        content = a.readlines()
         a.close()
+api_key = content[2].strip('\n')
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/inputs/access_token.txt','r') as f:
+with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -32,23 +37,24 @@ Thursday_date = date.today()
 while Thursday_date.weekday() != 3:# weekday() can be used to retrieve the day of the week. The datetime.today() method returns the current date, and the weekday() method returns the day of the week as an integer where Monday is indexed as 0 and Sunday is 6.
     Thursday_date += timedelta(1)  #Since the options expire on thursday their namefield will have the corresponding date field of that day
 y0= Thursday_date.strftime("%y")#if the last thursday comes in next year then the year will be rolled over
-year = int(y0)
-
-#Get the month for the option contract
-Thursday_date = date.today()
-while Thursday_date.weekday() != 3:
-    Thursday_date += timedelta(1)  
 m0= Thursday_date.strftime("%m")#find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
+d0= Thursday_date.strftime("%d")
+year = int(y0)
 month=int(m0)#month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract 
+day=d0
 
-#get the date of next thursday
-Thursday_date = date.today()
-while Thursday_date.weekday() != 3:
-    Thursday_date += timedelta(1)
-    d0= Thursday_date.strftime("%d")
-    day=d0
 if date.today().weekday() ==3: 
     day= date.today().strftime("%d")#needs to be in string format as it has to be passed in %d%d format , i.e 3rd March will go as '03'/3
+
+#Fetch the last thursday of the month
+last_day = (date.today()+relativedelta(day=31, weekday=TH(-1)))
+
+#Check if the day is last Thursday of the month (Since Thursday is the expiry day for options)
+if (Thursday_date == last_day):
+    #If true then need to change the value for month and day as the name format of the option contract(Month expiry Option ) changes
+    month=(date.today().strftime("%b")).upper()
+    day=''
+
 
 #Default time the order must be placed
 sec = str("00")
@@ -79,31 +85,38 @@ print(" "*10+"Verify the following parameters for the order to be placed. G--Go 
 print("The option series that will be traded is" +" "+"NIFTY"+str(year)+str(month)+str(day)+"*")
 print("Time at which the option trade will be executed" + " "*5 +str(hr)+":"+str(min)+":"+str(sec))
 print("Order parameters are :"+ order_type+" "+ order_exchange+" "+order_variety+" "+order_product+" "+order_validity)
-print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
+#print("The positions will be hedged by "+str(hedge_percent)+"%"+" "+"OTM options")
 print("Quantity:"+str(Quantity))
 
-proceed = input()
-if proceed in {"G","g"}:    #{} is a set
-    y=year
-    m=month
-    d=day
-    
+#Give multiple options to execute
+try:
+    proceed = inputimeout(timeout=5)
+    if proceed in {"G","g"}:    #{} is a set
+        y=year
+        m=month
+        d=day
 
+    if proceed in {"M","m"}:
 
-if proceed in {"M","m"}:
+        y = input("Enter the year of the option contract you intend to place order in --Format in %y%y") or year
+        m = input("Enter the month of the option contract you intend to place order in --Format in %m") or month
+        d = input("Enter the day of the option contract you intend to place order in --Format in %d%d (DEFAULT-->NULL)") or ''
+        #################################################################################################################################
+        #Get the time at which you want the order to be placed
+        #hedge_percent = input("Enter how far OTM percent short calls should be hedged by") or int(7)
 
-    y = input("Enter the year of the option contract you intend to place order in --Format in %y%y") or year
-    m = input("Enter the month of the option contract you intend to place order in --Format in %m") or month
-    d = input("Enter the day of the option contract you intend to place order in --Format in %d%d") or day
-    #################################################################################################################################
-    #Get the time at which you want the order to be placed
-    hedge_percent = input("Enter how far OTM percent short calls should be hedged by") or int(7)
+        hr = input("Hour at which the order should be routed") or datetime.now().hour
+        min = input("Minute at which the order should be routed") or datetime.now().minute
+        sec = input("Second at which the order should be routed") or datetime.now().second
+    if proceed in {"N","n"}:
+        abort()
 
-    hr = input("Hour at which the order should be routed") or datetime.now().hour
-    min = input("Minute at which the order should be routed") or datetime.now().minute
-    sec = input("Second at which the order should be routed") or datetime.now().second
-if proceed in {"N","n"}:
-    abort()
+#In case of timeout then the script will execute with the default values
+except TimeoutOccurred:
+        y=year
+        m=month
+        d=day
+
 
 while one_shot_flag == True:
 
@@ -112,6 +125,7 @@ while one_shot_flag == True:
     NIFTY_index = {256265:'NIFTY 50'}
     
     for val in NIFTY_index:
+        time.sleep(0.1)
         price = kite.ltp('NSE:' + NIFTY_index[val])#this will send ohlc price in dictionary format
         #print(price)
         ltp = price['NSE:'+NIFTY_index[val]]['last_price']#to get ltp of whichever stick is declared in token
@@ -130,7 +144,8 @@ while one_shot_flag == True:
     ltp_50 = (ltp/50)
     print(ltp_50)
     ATM_ltp = (int(round(ltp_50))*50)#This will round to the nearest hundrend place so that we can select the nearst ATM contract    
-
+    ATM_ltp = (ATM_ltp +150)#As we are selling 1% OTM options and Niifty as of 4-5-2022 is at 16000 range
+    ATM_ltp_PE = (ATM_ltp -300)
     #print("ATM Contract is:"+ATM_ltp)
 
     #Calculate the proper hedging value for the ATM option
@@ -147,12 +162,12 @@ while one_shot_flag == True:
     ATM_CALL = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'CE'
     ATM_HEDGE_CALL = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_CE)+'CE'
 
-    ATM_PUT = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp)+'PE'
+    ATM_PUT = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_ltp_PE)+'PE'
     ATM_HEDGE_PUT = 'NIFTY'+str(y)+str(m)+str(d)+str(ATM_HEDGE_PE)+'PE'
     print("The ATM CALL contract is:"+ATM_CALL)
     print("The ATM PUT contract is:"+ATM_PUT)
-    print("Hedging the short call by"+ATM_HEDGE_CALL)
-    print("Hedging the short put by"+ATM_HEDGE_PUT)
+    #print("Hedging the short call by"+ATM_HEDGE_CALL)
+    #print("Hedging the short put by"+ATM_HEDGE_PUT)
     ##################################################################################################################################
     #Fetch the tokens from the csv file
 
@@ -161,7 +176,7 @@ while one_shot_flag == True:
     #while True:
     if (datetime.now().second == int(sec)) and (datetime.now().minute == int(min)) and (datetime.now().hour == int(hr)) and (one_shot_flag == True): 
                                                                                                        #must be FRIDAY
-
+                #Set to false to ensure that the trade is executed only once
                 one_shot_flag = False
                 sell_call = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
@@ -172,6 +187,7 @@ while one_shot_flag == True:
                                                                 validity=order_validity,
                                                                 product=order_product
                                                                 )
+                #Set GTT for the stoploss amount
                 Set_Gtt(ATM_CALL,Quantity)                                            
 
                 '''hedge_call = kite.place_order(variety= order_variety,
