@@ -8,8 +8,12 @@ import time, pyotp
 
 
 options = uc.ChromeOptions()
+
+#Headless argument is given so that the web brower runs in background and is not triggered in forefront
 options.add_argument('--headless')
 
+
+#Fetch input values from the file
 with open('C:/Users/ekans/Documents/inputs/Login_Credentials.txt','r') as a:
         content = a.readlines()
         a.close()
@@ -26,22 +30,26 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
 
     
     try:
-        driver = uc.Chrome(version_main=98,options=options)
+        #driver is used to navigate the chrome,make sure that it matches with the version of chrome
+        driver = uc.Chrome(version_main=105,options=options)
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
+
+        #Fetch login details
         login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
         login_id.send_keys(user_id)
-
         pwd = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="password"]'))
         pwd.send_keys(user_pwd)
-
         submit = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[4]/button'))
         submit.click()
-
-        time.sleep(1)
+        time.sleep(2)
         #adjustment to code to include totp
-        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="totp"]'))
+        
+        #Points to the field where the Totp key needs to be entered
+        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//label[text()="External TOTP"]/following-sibling::input'))
+
         authkey = pyotp.TOTP(totp_key)
         totp.send_keys(authkey.now())
+        #print(totp)
         #adjustment complete
 
         continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
@@ -49,6 +57,8 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #print(driver.current_url)
         time.sleep(3)
         #print(driver.current_url)
+
+        #To split the Request Token from the returned link in which it is embedded
         url = driver.current_url
         initial_token = url.split('request_token=')[1]
         request_token = initial_token.split('&')[0]
@@ -56,12 +66,13 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
 
         driver.close()
 
+        #Generate the access token from the request token  
         kite = KiteConnect(api_key = api_key)
-        #print(request_token)
-        #print(api_secret)
         data = kite.generate_session(request_token,api_secret)
         print(data['access_token'])
         token = data["access_token"] 
+
+        #Populate the access token inside a file
         with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','w') as f:
             f.write(token)
             f.close()
