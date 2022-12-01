@@ -1,0 +1,62 @@
+				Position sizing and capital allocation
+Version--1--22-01-2022
+Initial eq:12,00,000(100%)
+Portfolio Exposure* + Additional Exposure due to instrument profits*
+Risk-->2% of initial equity for an instrument+ 2% of profits earned by the system
+METALS-->27.5%--330,000
+	
+	PRECIOUS METAL
+	Gold:-->37.5%(Allocated) 
+		Gold30A:33%(Allocated)
+		Gold30B:33%(Allocated)
+		Gold60C:33%(Allocated)
+
+	Silver:-->25%(Borrowed from Zinc15A and Cotton30B)//82500
+		Silver15A:50%
+		Silver30B:50%
+	
+	BASE METAL
+	Zinc:-->37.5%(Allocated) + 3,68,595(Zinc15A)[1-10-2020-->22-01-2022]{30%}
+		Zinc15A:100%(Allocated) +	//20%(Zinc15A)[Shared among other systems(Zinc30B) and instrument(Silver-50% and distributed equally among rest)]
+		Zinc30B:10%(Zinc15A)[Borrowed from Zinc15A to create the system]
+
+ENERGY-->27.5%
+	ENERGY
+	NaturalGas:-->50%(Allocated) + 4,01,700(NG15A)[14-10-2021-->22-01-2022]{33%} + 37,625(NG30B)[15-10-2021-->22-01-2022]{3%} = 48%
+		NaturalGas15A:33%(Allocated) + 20%(NG15A)
+		NaturalGas30B:33%(Allocated) + 3%(NG30B)
+		NaturalGas30C:33%(NG15A)[Borrowed from NG15A to create a system]  
+
+	CrudeOil:-->50%(Allocated)
+		CrudeOil60A:100%(Allocated)
+
+AGRICULTURAL-->5%	
+	ARICULTURAL
+	Cotton:-->100%(Allocated)
+		Cotton60A:100%(Allocated)
+
+EQUITY-->25%
+	EQUITY
+	Nifty:-->50%(Allocated) +2,02,169(Nifty15A)[1-12-2020-->22-01-2022]{16%}
+		Nifty15A:50%(Allocated) +1%(Nifty15A)
+		Nifty30B:50%(Nifty15A)[Borrowed from Nifty15A to create the system]
+
+	BankNifty:-->50%(Allocated) +1,23,386(Banknifty30A)[23-08-2021-->22-01-2022]{11%}
+		Banknifty30A:100%(Allocated) +1,23,386(Banknifty30A)[23-08-2021-->22-01-2022]{11%}
+		
+
+
+
+VOLATILITY-->15% //took 5% from equity and 5% from agri and 5 from (energy and metals)(higher % from equity due to higher correl bw both)
+	NIFTY:-->>50%(Allocated)
+		
+
+	BANKNIFTY:-->50%(Allocated)
+		Banknifty_Weekly_Positional:100%(Allocated)
+
+
+*Exposure means what is the max value that can be exposed for Position Sizing of the instrument,eg a expsure of 10% is 120,000 which means if the initial equity is 240,000 then the max exposure is 50% or 120,000, if 480,000 then the max exposure is 25% or 120,000 	
+
+Max Exposure for a contract payable upfront is 15% or lower
+
+look to add nifty 1HRS Timeframe strategy
