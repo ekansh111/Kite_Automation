@@ -4,6 +4,7 @@ End to end automation of Trading Systems using Python
 
 #Overview of working
 #A webhook is an HTTP-based callback function that allows lightweight,event-driven communication between 2 application programming interfaces (APIs). 
+
 #Set Up Ngrok account for creating a webhook at https://dashboard.ngrok.com/get-started/setup
 Additional Reference for ngrok working:
   https://www.youtube.com/watch?v=YMBzb_RBDAA&t=1s
