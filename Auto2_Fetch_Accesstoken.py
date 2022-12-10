@@ -31,7 +31,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
     
     try:
         #driver is used to navigate the chrome,make sure that it matches with the version of chrome
-        driver = uc.Chrome(version_main=105,options=options)
+        driver = uc.Chrome(version_main=108,options=options)
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
 
         #Fetch login details
@@ -52,6 +52,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #print(totp)
         #adjustment complete
 
+        #Points to the continue button on the page
         continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
         continue_btn.click()
         #print(driver.current_url)
