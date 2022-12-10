@@ -38,12 +38,12 @@ def Set_Gtt(ATM_VAL,Quantity):
     fetch_ltp = kite.ltp('NFO:' + ATM_VAL)
     option_ltp = int(fetch_ltp['NFO:'+ATM_VAL]['last_price'])
     if str(ATM_VAL)[0:1] in {"B","b"}:
-        option_trigger = (option_ltp*(201/100))
-        option_sl = (option_ltp*(241/100))
+        option_trigger = (round((option_ltp*(206/100))*2,1)/2)#Multiplying by 2 to probably make rounding off easier
+        option_sl = (round((option_ltp*(241/100))*2,1)/2)
 
     if str(ATM_VAL)[0:1] in {"N","n"}:
-        option_trigger = (option_ltp*(146/100))
-        option_sl = (option_ltp*(176/100))
+        option_trigger = (round((option_ltp*(148/100))*2,1)/2)
+        option_sl = (round((option_ltp*(176/100))*2,1)/2)
 
     sell_call = kite.place_gtt(trigger_type=gtt_trigger_type,
                                                     tradingsymbol=ATM_VAL,
