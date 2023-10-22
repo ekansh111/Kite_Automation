@@ -38,13 +38,13 @@ while Thursday_date.weekday() != 3:# weekday() can be used to retrieve the day o
     Thursday_date += timedelta(1)  #Since the options expire on thursday their namefield will have the corresponding date field of that day
 
 y0= Thursday_date.strftime("%y")#if the last thursday comes in next year then the year will be rolled over
-#m0= Thursday_date.strftime("%m")#No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
-m0 = (Thursday_date.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
+m0= Thursday_date.strftime("%m")#No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
+#m0 = (Thursday_date.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
 d0= Thursday_date.strftime("%d")
 
 year = int(y0)
-#month=int(m0)#month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract 
-month = m0[0]#Get the first letter of the month for new format
+month=int(m0)#month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract 
+#month = m0[0]#Get the first letter of the month for new format
 day=d0
 
 if date.today().weekday() ==3: 
@@ -192,7 +192,7 @@ while one_shot_flag == True:
                                                                 product=order_product
                                                                 )
                 #Set GTT for the stoploss amount
-                Set_Gtt(ATM_CALL,Quantity)                                            
+                Set_Gtt(ATM_CALL,Quantity,1)                                            
 
                 '''hedge_call = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
@@ -212,7 +212,7 @@ while one_shot_flag == True:
                                                                 validity=order_validity,
                                                                 product=order_product
                                                                 )
-                Set_Gtt(ATM_PUT,Quantity)
+                Set_Gtt(ATM_PUT,Quantity,1)
                 '''hedge_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,

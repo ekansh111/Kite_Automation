@@ -10,19 +10,24 @@ from inputimeout import inputimeout,TimeoutOccurred
 from dateutil.relativedelta import TH, relativedelta
 import time
 
+global Trigger
+
+#bY DEFAULT TRIGGER IS ASSUMED TO BE NOT NEEDED, SET TO 1 SO THAT IT WILL BE RECORDED AS 0 IN FILE
+Trigger = 1
+
 logging.basicConfig(level=logging.DEBUG)
 y = ''
 m = ''
 d = ''
 
 
-with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -37,13 +42,13 @@ while Thursday_date.weekday() != 3:# weekday() can be used to retrieve the day o
     Thursday_date += timedelta(1)  #Since the options expire on thursday their namefield will have the corresponding date field of that day
 
 y0= Thursday_date.strftime("%y")#if the last thursday comes in next year then the year will be rolled over
-#m0= Thursday_date.strftime("%m")#No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
-m0 = (Thursday_date.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
+m0= Thursday_date.strftime("%m")#No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
+#m0 = (Thursday_date.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
 d0= Thursday_date.strftime("%d")
 
 year = int(y0)
-#month=int(m0)#month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract 
-month = m0[0]#Get the first letter of the month for new format
+month=int(m0)#month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract 
+#month = m0[0]#Get the first letter of the month for new format
 day=d0
 
 if date.today().weekday() ==3: 
@@ -59,12 +64,27 @@ if (Thursday_date == last_day):
     day=''
 
 #Default time the order must be placed
-sec = str("00")
-min = str("15")
-hr = str("11")
+#Need to add a calendar to account for trading holidays as it will be placed on different days
+#If day is Friday then sell at 11:15 with no re-adjustments needded
+if (date.today().weekday() == 3):
+    sec = str("00")
+    min = str("15")
+    hr = str("11")
+
+#If option is sold on Tuesday then Re-adjustments and timings is different
+#Need to sell ATM contract on Tuesday
+elif (date.today().weekday() == 2) :#or (date.today().weekday() == 0):
+    sec = str("00")
+    min = str("30")
+    hr = str("9")
+
+    #The Re-adjustments should be done for a max of 2 times, set to three as 3 times the SL will need to be set
+    #including the first time
+    Trigger = 3
+
 ##################################################################################################################################
 #Order Inputs
-Quantity = 25
+Quantity = 15
 order_type = kite.ORDER_TYPE_MARKET
 
 order_exchange = kite.EXCHANGE_NFO
@@ -187,7 +207,7 @@ while one_shot_flag == True:
                                                                 product=order_product
                                                                 )
                 #Set GTT for the stoploss amount                                                
-                Set_Gtt(ATM_CALL,Quantity)
+                Set_Gtt(ATM_CALL,Quantity,Trigger)
                 '''hedge_call = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,
@@ -206,7 +226,7 @@ while one_shot_flag == True:
                                                                 validity=order_validity,
                                                                 product=order_product
                                                                 )
-                Set_Gtt(ATM_PUT,Quantity)
+                Set_Gtt(ATM_PUT,Quantity,Trigger)
                 '''hedge_put = kite.place_order(variety= order_variety,
                                                                 exchange=order_exchange,
                                                                 order_type=order_type,

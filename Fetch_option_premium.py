@@ -18,13 +18,13 @@ ATM_ltp = 0
 year = 0;month=0;day=0;index_val = [];df_inst_token_ce = [0]*n*2;df_inst_token_pe = [0]*n*2
 
 
-with open('C:/Users/ekans/Documents/inputs/api_key.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/Documents/inputs/access_token.txt','r') as f:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token.txt','r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)

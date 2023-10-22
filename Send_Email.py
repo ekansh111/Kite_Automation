@@ -16,10 +16,11 @@ ch_options.add_argument('--headless')
 ch_options.add_argument("--user-data-dir=C:\\Users\\ekans") #Extract this path from "chrome://version/"
 ch_options.add_argument('--profile-directory=n3')
 
-user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36'
+user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4844.51 Safari/537.36'
 ch_options.add_argument(f'--user-agent={user_agent}')
 
 driver = uc.Chrome(executable_path = ChromeDriverManager().install(), options = ch_options,use_subprocess=True) #Chrome_Options is deprecated. So we use options instead.
+#driver = uc.Chrome(version_main=100,options=ch_options)
 wait = WebDriverWait(driver, 10)
 
 

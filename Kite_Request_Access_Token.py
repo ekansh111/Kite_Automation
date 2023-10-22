@@ -8,11 +8,11 @@ logging.basicConfig(level=logging.DEBUG)
 
 kite = KiteConnect(api_key="nget8iniou5mlnfj")
 
-with open('C:/Users/ekans/Documents/inputs/api_secret_yd.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/api_secret_yd.txt','r') as a:
         api_secret = a.read()
         a.close()
 
-with open('C:/Users/ekans/Documents/inputs/api_key_yd.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key_yd.txt','r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
@@ -32,6 +32,6 @@ kite.set_access_token(data["access_token"])
 token = data["access_token"] 
 print(data["access_token"])
 
-with open('C:/Users/ekans/Documents/inputs/access_token_yd.txt','w') as f:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_yd.txt','w') as f:
         f.write(token)
         f.close()

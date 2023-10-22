@@ -235,7 +235,7 @@ if __name__ == '__main__':
 
 
 
-import time
+'''import time
 from click import option
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
@@ -352,7 +352,7 @@ def send_mail(status,message):
 
 if __name__ == '__main__':
     message = 'hi'
-    send_mail('ab',message)
+    send_mail('ab',message)'''
 
 '''import os
 
@@ -363,3 +363,9 @@ profile = os.path.join(dir_path, "profile", "facebook")
 option.add_argument(r"user-data-dir={}".format(profile))
 
 browser = webdriver.Chrome(options=option,executable_path='./chromedriver')'''
+
+
+from math import floor
+
+
+print(round((4.021*2),1)/2)
