@@ -17,29 +17,29 @@ FRIDAY = 4
 SUNDAY = 6
 #PreviousDate in yyyy-mm-dd format
 PREVIOUSDATE = date.today() + timedelta(-1)
-
+#print(PREVIOUSDATE)
 #If previous day is Sunday then last working day (friday) will be 3 days prior
-if PREVIOUSDATE.now().weekday() == SUNDAY:
+if PREVIOUSDATE.weekday() == SUNDAY:
     PREVIOUSDATE = date.today() + timedelta(-3)
 
 def PlaceOrders(OrderDetails):
-    with open('C:/Users/ekans/Documents/inputs/api_key_IK.txt','r') as a:
+    with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt','r') as a:
         api_key = a.read()
         a.close()
     kite = KiteConnect(api_key=api_key)
 
 
-    with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
+    with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
         access_tok = f.read()
         f.close()
         #print(access_tok)
     kite.set_access_token(access_tok)
 
-    sell_call = order(OrderDetails['Tradetype'],OrderDetails['Exchange'],OrderDetails['Tradingsymbol'] ,OrderDetails['Quantity'],OrderDetails['Variety'],OrderDetails['Ordertype'],OrderDetails['Product'],OrderDetails['Validity'],OrderDetails['Price'])
+    order(OrderDetails)#OrderDetails['Tradetype'],OrderDetails['Exchange'],OrderDetails['Tradingsymbol'] ,OrderDetails['Quantity'],OrderDetails['Variety'],OrderDetails['Ordertype'],OrderDetails['Product'],OrderDetails['Validity'],OrderDetails['Price'])
 
 #Function to iterate through the hash and place orders
 def LoopHashOrderRequest(OrderDetails):
-    print('Function called multiple times?')
+    #print('Function called multiple times?')
     #Iterate through the order details
     for OrderType in OrderDetails:
         #Fetch the contract name to place orders in , store as tuple for ease of looping /Multilple indexes as the dict has a child dict
@@ -47,17 +47,17 @@ def LoopHashOrderRequest(OrderDetails):
         
         ContractName = [FetchOptionName(OrderDetails[OrderType])]
         #Multiple contracts can be returned by the function , but if only one contract name is returned than ensure that the variable is a tuple, to avoid the next for loop from only fetching a single char in the contract name
-        print(ContractName)
+        #print(ContractName)
         #If there is only one value in the tuple then the name of the contract will in ideal circumstances have a minimum of one character and will have greater
         #than 4 characters, if there are multiple names fetched in the tuple, then for case of 2 values it will go inside loop and be extracted from the tuple
         #Can provision the max value of 3 to even more depending on the contract name
         if len(ContractName[0]) > 1 and len(ContractName[0]) < 3 :
-            print('Inside Multiple contract check'+str(ContractName[0]))
+            #print('Inside Multiple contract check'+str(ContractName[0]))
             ContractName = ContractName[0]
 
         for range in ContractName:
             OrderDetails[OrderType]['Tradingsymbol'] = range
-            print(range)
+            #print(range)
             PlaceOrders(OrderDetails[OrderType])
             
             #Set GTT for the orders, do not place GTT if the trade is a hedging trade
@@ -97,7 +97,7 @@ if __name__ == '__main__':
         CurrWkDy = datetime.now().weekday()
 
         now = datetime.now()
-        
+        #Condition for entering the specific trade and handling if the entry date is a market holiday
         NiftyStraddle_Mon_12Pm_100Sl =       str(now.strftime("%H:%M:%S")) == '12:00:00' and (CurrWkDy == MONDAY) or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE))
         BankNiftyStraddle_Mon_0930Am_125Sl = str(now.strftime("%H:%M:%S")) == '09:30:00' and (CurrWkDy == MONDAY  or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
         NiftyStraddle_Tue_11Am_110Sl =       str(now.strftime("%H:%M:%S")) == '11:00:00' and (CurrWkDy == TUESDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE))
@@ -156,11 +156,11 @@ if __name__ == '__main__':
         if NiftyStraddle_Tue_11Am_110Sl or Override == '2': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'111',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False'},
+                     'StopLossOrderPlacePercent':'155','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False'},
                      
                      'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'111',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}
+                     'StopLossOrderPlacePercent':'155','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -184,11 +184,11 @@ if __name__ == '__main__':
         if FINNiftyStraddle_Thu_1430Pm_50Sl or Override == '4': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'52',
-                     'StopLossOrderPlacePercent':'72','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False'},
+                     'StopLossOrderPlacePercent':'82','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False'},
                      
                      'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'52',
-                     'StopLossOrderPlacePercent':'72','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}#_#sltrigpercent
+                     'StopLossOrderPlacePercent':'82','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}#_#sltrigpercent
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -202,7 +202,7 @@ if __name__ == '__main__':
                      
                      'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'101',
-                     'StopLossOrderPlacePercent':'100','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}
+                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True'}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -212,7 +212,7 @@ if __name__ == '__main__':
         if BankNiftySellCall_Wed_1520Pm_50Sl or Override == '6': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'52',
-                     'StopLossOrderPlacePercent':'72','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False'}}
+                     'StopLossOrderPlacePercent':'92','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False'}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -222,7 +222,7 @@ if __name__ == '__main__':
         if NiftySellCall_Thu_1520Pm_50Sl or Override == '7': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'52',
-                     'StopLossOrderPlacePercent':'72','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False'}}
+                     'StopLossOrderPlacePercent':'92','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False'}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -233,7 +233,7 @@ if __name__ == '__main__':
             OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'999',
                      'StopLossOrderPlacePercent':'999','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'MonthlyCall'}}
-            one_shot_flag == False
+            #one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
             break   
@@ -243,7 +243,7 @@ if __name__ == '__main__':
             OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'999',
                      'StopLossOrderPlacePercent':'999','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'MonthlyCall'}}
-            one_shot_flag == False
+            #one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
             break 
