@@ -3,17 +3,32 @@ import logging
 from kiteconnect import KiteConnect
 
 
-with open('C:/Users/ekans/Documents/inputs/Login_Credentials.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt','r') as a:
         content = a.readlines()
         a.close()
 api_key = content[2].strip('\n')
 kite = KiteConnect(api_key=api_key)
-def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
-    logging.basicConfig(level=logging.DEBUG)
+#Function will place order on the broker terminal, will take the necessary validation values from the text file
+def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
+    
+    Tradetype = order_details_fetch['Tradetype']
+    Exchange = order_details_fetch['Exchange']
+    Tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
+    Quantity = order_details_fetch['Quantity']
+    Variety = order_details_fetch['Variety']
+    Ordertype = order_details_fetch['Ordertype']
+    Product = order_details_fetch['Product']
+    Validity = order_details_fetch['Validity']
+    Price = order_details_fetch['Price'] or 0.0
+    OrderTag = str(order_details_fetch.get("OrderTag"))
+    #print(order_details_fetch)  
+
+
+    #logging.basicConfig(level=logging.DEBUG)
 
 
 
-    with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','r') as f:
+    with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
         access_tok = f.read()
         f.close()
 
@@ -39,11 +54,16 @@ def order(Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Va
                                     order_type=dict[Ordertype],
                                     product=dict[Product],
                                     validity=dict[Validity],
-                                    price=Price)
+                                    price=(Price or 0),
+                                    tag = OrderTag)
 
-        logging.info("Order placed. ID is: {}".format(order_id))
+        print('Order Placed for contract-->' + str(order_id))
+        #logging.info("Order placed. ID is: {}".format(order_id))
     except Exception as e:
         logging.info("Order placement failed: {}".format(e.message))
+
+
+#def order_angel(Broker,Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
 
 
 if __name__ == '__main__':
