@@ -14,7 +14,7 @@ options.add_argument('--headless')
 
 
 #Fetch input values from the file
-with open('C:/Users/ekans/Documents/inputs/Login_Credentials.txt','r') as a:
+with open('C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt','r') as a:
         content = a.readlines()
         a.close()
 
@@ -25,15 +25,17 @@ api_secret = content[3].strip('\n')
 totp_key= content[4].strip('\n')
 
 token = ''
-
+#print(api_key)
 def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
 
     
     try:
-        #driver is used to navigate the chrome,make sure that it matches with the version of chrome
-        driver = uc.Chrome(version_main=108,options=options)
+        #Sometimes the firewall can block the Browser from accessing the Kite API on google chrome, so if stuck in endless loading loophten check for the firewall status
+        #driver is used to navigate the chrome,make sure that it matches with the version of chrome)
+        #When facing error of HTTP Error 404: Not Found, update the chrome driver with command pip install undetected_chromedriver --upgrade, 
+        #404 error can occur if there is no endpoint configured for the latest version of chrome in the driver
+        driver = uc.Chrome(version_main=118,options=options)
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
-
         #Fetch login details
         login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
         login_id.send_keys(user_id)
@@ -45,24 +47,31 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #adjustment to code to include totp
         
         #Points to the field where the Totp key needs to be entered
-        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//label[text()="External TOTP"]/following-sibling::input'))
-
+#        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//label[text()="External TOTP"]/following-sibling::input'))
+        #Field to be updated was changed in front end on 5-9-2023
+        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.ID,value='userid'))
+        #time.sleep(100)
         authkey = pyotp.TOTP(totp_key)
         totp.send_keys(authkey.now())
         #print(totp)
         #adjustment complete
 
         #Points to the continue button on the page
-        continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
-        continue_btn.click()
-        #print(driver.current_url)
-        time.sleep(3)
+        #Continue button click is no longer needed as Zerodoha updated the website to autologin after the toptp is entered
+        #continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
+        #continue_btn.click()
+        
+        print(driver.current_url)
+        time.sleep(10)
         #print(driver.current_url)
 
         #To split the Request Token from the returned link in which it is embedded
         url = driver.current_url
+        #print(url)
         initial_token = url.split('request_token=')[1]
+        #print(initial_token)
         request_token = initial_token.split('&')[0]
+        print(request_token)
         
 
         driver.close()
@@ -74,7 +83,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         token = data["access_token"] 
 
         #Populate the access token inside a file
-        with open('C:/Users/ekans/Documents/inputs/access_token_IK.txt','w') as f:
+        with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','w') as f:
             f.write(token)
             f.close()
 
@@ -83,9 +92,9 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
 
         return kite
 
-    except:
+    except Exception as e:
         '''send_mail('Failed',f'Login attempt to the Broker Terminal for account {user_id} has failed with access token{token}')'''
-        print('fail')
+        print(e)
 
 if __name__ == '__main__':
     login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key)
