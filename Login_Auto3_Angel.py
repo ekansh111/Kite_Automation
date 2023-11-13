@@ -6,6 +6,7 @@ import time
 from datetime import date, datetime
 import calendar
 import pytz
+from Directories import *
 
 #Types of Orders
 LimitOrder = 'LIMIT'
@@ -90,7 +91,7 @@ def Limit_Order_Type(smartApi,order_details_fetch):
     exchange = str(order_details_fetch['Exchange'])
     tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
     symboltoken = str(order_details_fetch['Symboltoken'])
-
+    print(exchange,tradingsymbol,symboltoken)
     #Fetch Instrument LTP
     LtpInfo = smartApi.ltpData(exchange=exchange,tradingsymbol=tradingsymbol,symboltoken=symboltoken)
     
@@ -161,10 +162,11 @@ def Angel_Order_place(smartApi,order_details_fetch):
                 order_details_fetch['MarketRetryFlag'] = False
                 print('The order ' + str(orderlistidhistory) + 'has already been placed')
                 #EXIT HERE ITSELF
-                exit(1)
+                return True
+                #exit(1)
                 print(orderId)
 
-    #If cancellation is successfull then place market order
+    #If cancellation is successfull then place market order(If the Market Retry flag is not populated with any value)
     if((str(cancel['status']) == 'True') and (str(cancel['message']) == 'SUCCESS') and (order_details_fetch.get("MarketRetryFlag") is None)):
         print("Order cancelled placing market order" + str(cancel))
         #PLace market order
@@ -173,8 +175,11 @@ def Angel_Order_place(smartApi,order_details_fetch):
 
 #Function to establish a connection with the API
 def Login_Angel_Api(order_details_fetch):
-
-    with open('C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials_Angel.txt','r') as a:
+    print(order_details_fetch)
+    Directory = AngelEkanshLoginCred
+    if str(order_details_fetch.get('User')) == 'nararush':
+        Directory = AngelNararushLoginCred      
+    with open(Directory,'r') as a:
         content = a.readlines()
         a.close()
     print(content)    
@@ -201,7 +206,13 @@ def Login_Angel_Api(order_details_fetch):
     smartApi.generateToken(refreshToken)
     res=res['data']['exchanges']
     #print(res)
+    if (str(order_details_fetch.get('User')) == 'nararush') or (str(order_details_fetch.get('User')) == 'ekansh'):
+        #Limit_Order_Type(smartApi,order_details_fetch)
+        return smartApi
+    else:
+        Validate_Order_Details(smartApi,order_details_fetch)
 
+def Validate_Order_Details(smartApi,order_details_fetch):
     #Validate quantity for disreparency between lot size and quantity
     Validate_Quantity(order_details_fetch)
 
