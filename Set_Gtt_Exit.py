@@ -2,16 +2,18 @@
 from kiteconnect import KiteConnect
 from datetime import datetime,timedelta
 from datetime import date
+from Login_Auto3_Angel import Login_Angel_Api
 import pandas as pd
+from Directories import *
 option_sl = 0
 
-with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt','r') as a:
+with open(KiteEkanshLoginAPIKey,'r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
+with open(KiteEkanshLoginAccessToken,'r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -35,22 +37,48 @@ order_validity = kite.VALIDITY_DAY
 
 
 
-def Set_Gtt(ATM_VAL,Quantity,Trigger,StopLossTriggerPercent,StopLossOrderPlacePercent,Hedge):
+def Set_Gtt(OrderDetails):
+    
+    ATM_VAL = OrderDetails['Tradingsymbol']
+    Quantity = OrderDetails['Quantity']
+    Trigger = int(OrderDetails['Trigger'])
+    StopLossTriggerPercent = int(OrderDetails['StopLossTriggerPercent'])
+    StopLossOrderPlacePercent = int(OrderDetails['StopLossOrderPlacePercent'])
+    Hedge = OrderDetails['Hedge']
+
     print(Hedge)
     if Hedge == 'False':
-        print('hi')
         #Trigger should be greater or equal to 0 as the least trigger value is 0
         if Trigger >= 0:
             Trigger = Trigger - 1
-        fetch_ltp = kite.ltp('NFO:' + ATM_VAL)
-        option_ltp = int(fetch_ltp['NFO:'+ATM_VAL]['last_price'])
-        print(option_ltp)
+        
+        #If the order needs to be placed Angel then route through a different process as Instrument names are different
+        if OrderDetails.get("Broker") == 'ANGEL':
+            smartApi = Login_Angel_Api(OrderDetails)
+            fetch_ltp = smartApi.ltpData(exchange= 'NFO',tradingsymbol=ATM_VAL,symboltoken=OrderDetails['Symboltoken'])
+            option_ltp = int(fetch_ltp['data']['ltp'])
+        else:             
+            fetch_ltp = kite.ltp('NFO:' + ATM_VAL)
+            option_ltp = int(fetch_ltp['NFO:'+ATM_VAL]['last_price'])
 
         option_trigger = (round((option_ltp*((100 + StopLossTriggerPercent)/100))*2,1)/2)#Multiplying by 2 to probably make rounding off easier
         option_sl = (round((option_ltp*((100 +StopLossOrderPlacePercent)/100))*2,1)/2)#set a slightly high sl value , since the order type sent is limit, so to 
                                                                                     #avoid a chance where the gtt is not triggered if the option values go past limit
-                                                            
-        sell_call = kite.place_gtt(trigger_type=gtt_trigger_type,
+        if OrderDetails.get("Broker") == 'ANGEL':
+            gttCreateParams = {
+                                "tradingsymbol": ATM_VAL,
+                                "symboltoken": OrderDetails['Symboltoken'],
+                                "exchange": 'NFO',
+                                "producttype": "CARRYFORWARD",
+                                "transactiontype": 'BUY',
+                                "price": option_sl,
+                                "qty": Quantity,
+                                "triggerprice": option_trigger,
+                                "timeperiod": OrderDetails['TimePeriod']
+                            }
+            smartApi.gttCreateRule(gttCreateParams)
+        else:
+            kite.place_gtt(trigger_type=gtt_trigger_type,
                                                         tradingsymbol=ATM_VAL,
                                                         exchange=order_exchange,
                                                         trigger_values=[option_trigger],
@@ -58,11 +86,13 @@ def Set_Gtt(ATM_VAL,Quantity,Trigger,StopLossTriggerPercent,StopLossOrderPlacePe
                                                         orders=[{"transaction_type":order_buy,"quantity":Quantity,"price":option_sl,"order_type": order_type,"product": order_product}])
     elif Hedge == 'True':
         option_trigger = 'Hedge'
+    elif Hedge == 'MonthlyCall':
+        option_trigger = 'MonthlyCallBuy'
     #if str(ATM_VAL)[0:1] in {"B","b"}:
     data = [[ATM_VAL,option_trigger,Quantity,Trigger]]
-    with open('C:/Users/ekans/Documents/inputs/option_details.csv', 'a', newline='') as newline:
+    with open(WriteOptionDetailsFile, 'a', newline='') as newline:
         newline.close
 
     df = pd.DataFrame(data, columns=['OptionName','SL','Quantity','TriggerLeft'])                                                 
-    df.to_csv('C:/Users/ekans/Documents/inputs/option_details.csv',header=True,index=False,mode='a')
+    df.to_csv(WriteOptionDetailsFile,header=True,index=False,mode='a')
     
