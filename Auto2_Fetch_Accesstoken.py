@@ -34,7 +34,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #driver is used to navigate the chrome,make sure that it matches with the version of chrome)
         #When facing error of HTTP Error 404: Not Found, update the chrome driver with command pip install undetected_chromedriver --upgrade, 
         #404 error can occur if there is no endpoint configured for the latest version of chrome in the driver
-        driver = uc.Chrome(version_main=118,options=options)
+        driver = uc.Chrome(version_main=119,options=options)
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
         #Fetch login details
         login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
