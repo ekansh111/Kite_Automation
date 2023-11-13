@@ -32,7 +32,7 @@ def webhook():
                 #print(order_details_fetch)
 
             #If the request is to place an option order through API
-            elif order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION':
+            elif (order_details_fetch.get("Option") != None) and (order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION'):
                 LoopHashOrderRequest(order_details_fetch)
                 Broker = 'null'
                 #Without the below return statement it causes the function to be called 4 times and the it causes order to be placed 4 times
@@ -40,16 +40,6 @@ def webhook():
 
             else:
                 Broker = 'null'
-            Tradetype = order_details_fetch['Tradetype']
-            Exchange = order_details_fetch['Exchange']
-            Tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
-            Quantity = order_details_fetch['Quantity']
-            Variety = order_details_fetch['Variety']
-            Ordertype = order_details_fetch['Ordertype']
-            Product = order_details_fetch['Product']
-            Validity = order_details_fetch['Validity']
-            Price = order_details_fetch['Price'] or 0.0
-            #Price = order_details_fetch['Price'] or ''
             #print(Tradetype+Exchange+Tradingsymbol+Quantity+Variety+Ordertype+Product+Validity)
 
             if Broker == 'ANGEL':
