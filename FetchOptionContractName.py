@@ -22,13 +22,15 @@ def FetchOptionName(OrderDetails):
     Hedge                        = OrderDetails['Hedge']
     CE_Return                    = OrderDetails['CallStrikeRequired']
     PE_Return                    = OrderDetails['PutStrikeRequired']
+    Broker                       = OrderDetails.get("Broker")
+    #order_details_fetch.get("Broker") == 'ANGEL':
 
     #Code block to check if the expiry day is a holiday or not###########################################################################################################################################################################################
-    LenOfWeek = 7
+    LenOfWeek = 6
     IdealExpiryDateForContract = date.today() + timedelta(LenOfWeek)
-
+    print(IdealExpiryDateForContract)
     CheckIfExpiryDateIsHoliday = CheckForDateHoliday(IdealExpiryDateForContract)
-
+    print(CheckIfExpiryDateIsHoliday)
     if str(CheckIfExpiryDateIsHoliday) == 'True':
         #If the Expiry date is on Monday then the contract will expire on friday
         if ExpiryDayInt == 0:
@@ -80,7 +82,7 @@ def FetchOptionName(OrderDetails):
     #m0= ExpiryDate.strftime("%m")#Old format
     m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
     d0= ExpiryDate.strftime("%d")
-
+    print(ExpiryDate)
     year = int(y0)
     #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
     #month=int(m0) 
@@ -103,14 +105,14 @@ def FetchOptionName(OrderDetails):
 
     #Check if the day is last Expiry day of the month (Since Expiry day is the expiry day for options)
     #Even if the last day turns out to be an holiday, no issues since the prior day will also be last instance for that month and Monthly contract name willl be used
-    if (ExpiryDate == last_day):
+    if (ExpiryDate == last_day) and (Broker != 'ANGEL'):
     #If true then need to change the value for month and day as the name format of the option contract(Month expiry Option ) changes
         month=(date.today().strftime("%b")).upper()
         day=''
     ########################################################################################################################################################################################################################
 
     #If the entry needs to be taken in the next month Call option, Then fetch the next month name for contract 
-    if(Hedge == 'MonthlyCall'):
+    if(Hedge == 'MonthlyCall') and (Broker != 'ANGEL'):
         #Fetch the next month name
         month=((date.today() + relativedelta(months=1)).strftime("%b") ).upper()
         day=''
@@ -188,34 +190,40 @@ def FetchOptionName(OrderDetails):
     #-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
     ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)),-2)
     ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)),-2)
+    #Date Format for Kite API 
+    DateFormat = str(year)+str(month)+str(day)
+
+    if Broker == 'ANGEL':
+        month = (ExpiryDate.strftime("%b")).upper()
+        DateFormat = str(day)+str(month)+str(year)
 
     if IndexName == 'BANKNIFTY':
         #Append the dates and the script name to create the complete contract names to be Traded
-        ATM_CALL = 'BANKNIFTY'+str(year)+str(month)+str(day)+str(ATM_CE_Strike)+'CE'
-        ATM_PUT = 'BANKNIFTY'+str(year)+str(month)+str(day)+str(ATM_PE_Strike)+'PE'
+        ATM_CALL = 'BANKNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
+        ATM_PUT = 'BANKNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
     elif IndexName == 'NIFTY':
         #Append the dates and the script name to create the complete contract names to be Traded
-        ATM_CALL = 'NIFTY'+str(year)+str(month)+str(day)+str(ATM_CE_Strike)+'CE'
-        ATM_PUT = 'NIFTY'+str(year)+str(month)+str(day)+str(ATM_PE_Strike)+'PE'
+        ATM_CALL = 'NIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
+        ATM_PUT = 'NIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
     
     elif IndexName == 'FINNIFTY':
         #Append the dates and the script name to create the complete contract names to be Traded
-        ATM_CALL = 'FINNIFTY'+str(year)+str(month)+str(day)+str(ATM_CE_Strike)+'CE'
-        ATM_PUT = 'FINNIFTY'+str(year)+str(month)+str(day)+str(ATM_PE_Strike)+'PE' 
+        ATM_CALL = 'FINNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
+        ATM_PUT = 'FINNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE' 
 
     elif IndexName == 'MIDCPNIFTY':
         #Append the dates and the script name to create the complete contract names to be Traded
-        ATM_CALL = 'MIDCPNIFTY'+str(year)+str(month)+str(day)+str(ATM_CE_Strike)+'CE'
-        ATM_PUT = 'MIDCPNIFTY'+str(year)+str(month)+str(day)+str(ATM_PE_Strike)+'PE'
+        ATM_CALL = 'MIDCPNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
+        ATM_PUT = 'MIDCPNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
     #print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
     #Return Only the required contracts
     if CE_Return == 'True' and PE_Return=='False':
-        #print(ATM_CALL)
+        print(ATM_CALL)
         return ATM_CALL
     elif PE_Return == 'True' and CE_Return=='False':
-        #print(ATM_PUT)
+        print(ATM_PUT)
         return ATM_PUT
     elif PE_Return == 'True' and CE_Return=='True':
         return ATM_CALL,ATM_PUT
