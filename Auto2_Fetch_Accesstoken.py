@@ -1,20 +1,23 @@
-from multiprocessing import Value
+#from multiprocessing import Value
 from kiteconnect import KiteConnect
 from kiteconnect import KiteTicker
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 import time, pyotp
+from Directories import *
 
 
 options = uc.ChromeOptions()
+options.headless = True
 
 #Headless argument is given so that the web brower runs in background and is not triggered in forefront
-options.add_argument('--headless')
+#options.add_argument('--headless')
+#options.add_argument("--kiosk")
 
 
 #Fetch input values from the file
-with open('C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt','r') as a:
+with open(KiteEkanshLogin,'r') as a:
         content = a.readlines()
         a.close()
 
@@ -34,8 +37,14 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #driver is used to navigate the chrome,make sure that it matches with the version of chrome)
         #When facing error of HTTP Error 404: Not Found, update the chrome driver with command pip install undetected_chromedriver --upgrade, 
         #404 error can occur if there is no endpoint configured for the latest version of chrome in the driver
-        driver = uc.Chrome(version_main=119,options=options)
+
+        #If the chrome browser is getting stuck in endless loading screen then it can be due
+        #Python version not at 3.8,chrome version higher than 119..124,port number not accessible,
+        #or the VS code terminal default profile not set to command prompt
+        driver = uc.Chrome(options=options,debug = True)#,port=49187)
+
         driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
+
         #Fetch login details
         login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
         login_id.send_keys(user_id)
@@ -48,6 +57,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         
         #Points to the field where the Totp key needs to be entered
 #        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//label[text()="External TOTP"]/following-sibling::input'))
+        
         #Field to be updated was changed in front end on 5-9-2023
         totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.ID,value='userid'))
         #time.sleep(100)
@@ -83,18 +93,23 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         token = data["access_token"] 
 
         #Populate the access token inside a file
-        with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','w') as f:
+        with open(KiteEkanshLoginAccessToken,'w') as f:
             f.write(token)
             f.close()
 
         '''if(token):
             send_mail('Successful',f'Initiating Login procedure for account {user_id} to the broker terminal with access code {token}')'''
 
+        #exit(0)
         return kite
 
     except Exception as e:
+        driver.quit()
         '''send_mail('Failed',f'Login attempt to the Broker Terminal for account {user_id} has failed with access token{token}')'''
+        print('except')
         print(e)
+        #driver.close()
+        exit(1)
 
 if __name__ == '__main__':
     login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key)

@@ -11,6 +11,7 @@ import re
 import string
 from dateutil.relativedelta import TH, relativedelta
 import datetime
+from Directories import *
 #logging.basicConfig(level=logging.DEBUG) #This line is commented to prevent the connection debug message from being printed
 n = int(input("How many percent OTM option values to be fetched"))
 ltp = 0
@@ -18,13 +19,13 @@ ATM_ltp = 0
 year = 0;month=0;day=0;index_val = [];df_inst_token_ce = [0]*n*2;df_inst_token_pe = [0]*n*2
 
 
-with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key.txt','r') as a:
+with open(KiteEkanshLoginAPIKey,'r') as a:
         api_key = a.read()
         a.close()
 kite = KiteConnect(api_key=api_key)
 
 
-with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token.txt','r') as f:
+with open(KiteEkanshLoginAccessToken,'r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)

@@ -10,6 +10,7 @@ from inputimeout import inputimeout,TimeoutOccurred
 from dateutil.relativedelta import TH,MO,TU,WE,FR, relativedelta
 import time
 from Holidays import CheckForDateHoliday
+from Directories import *
 
 #Function to fetch the option name of the script
 def FetchOptionName(OrderDetails):
@@ -28,9 +29,9 @@ def FetchOptionName(OrderDetails):
     #Code block to check if the expiry day is a holiday or not###########################################################################################################################################################################################
     LenOfWeek = 6
     IdealExpiryDateForContract = date.today() + timedelta(LenOfWeek)
-    print(IdealExpiryDateForContract)
+    #print(IdealExpiryDateForContract)
     CheckIfExpiryDateIsHoliday = CheckForDateHoliday(IdealExpiryDateForContract)
-    print(CheckIfExpiryDateIsHoliday)
+    #print(CheckIfExpiryDateIsHoliday)
     if str(CheckIfExpiryDateIsHoliday) == 'True':
         #If the Expiry date is on Monday then the contract will expire on friday
         if ExpiryDayInt == 0:
@@ -56,13 +57,15 @@ def FetchOptionName(OrderDetails):
 
     #print(IndexName,ExpiryDayInt,ContractStrikeFromATMPercent,Hedge,CE_Return,PE_Return)
     #Configure the API for fetching the ltp value
-    with open('C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt','r') as a:
-        api_key = a.read()
+    with open(KiteEkanshLogin,'r') as a:
+        content = a.readlines()
         a.close()
+    api_key = content[2].strip('\n')
     kite = KiteConnect(api_key=api_key)
 
 
-    with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
+
+    with open(KiteEkanshLoginAccessToken,'r') as f:
         access_tok = f.read()
         f.close()
         #print(access_tok)
@@ -82,7 +85,7 @@ def FetchOptionName(OrderDetails):
     #m0= ExpiryDate.strftime("%m")#Old format
     m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
     d0= ExpiryDate.strftime("%d")
-    print(ExpiryDate)
+    #print(ExpiryDate)
     year = int(y0)
     #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
     #month=int(m0) 
@@ -220,10 +223,10 @@ def FetchOptionName(OrderDetails):
     #print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
     #Return Only the required contracts
     if CE_Return == 'True' and PE_Return=='False':
-        print(ATM_CALL)
+        #print(ATM_CALL)
         return ATM_CALL
     elif PE_Return == 'True' and CE_Return=='False':
-        print(ATM_PUT)
+        #print(ATM_PUT)
         return ATM_PUT
     elif PE_Return == 'True' and CE_Return=='True':
         return ATM_CALL,ATM_PUT

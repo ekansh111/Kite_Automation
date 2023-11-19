@@ -1,9 +1,9 @@
 
 import logging
 from kiteconnect import KiteConnect
+from Directories import *
 
-
-with open('C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt','r') as a:
+with open(KiteEkanshLogin,'r') as a:
         content = a.readlines()
         a.close()
 api_key = content[2].strip('\n')
@@ -24,11 +24,8 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
     #print(order_details_fetch)  
 
 
-    #logging.basicConfig(level=logging.DEBUG)
 
-
-
-    with open('C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt','r') as f:
+    with open(KiteEkanshLoginAccessToken,'r') as f:
         access_tok = f.read()
         f.close()
 
@@ -39,10 +36,10 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
     
     dict = {"MARKET":kite.ORDER_TYPE_MARKET,"LIMIT":kite.ORDER_TYPE_LIMIT,"NSE":kite.EXCHANGE_NSE,"NFO":kite.EXCHANGE_NFO,"MCX":"MCX","CDS":kite.EXCHANGE_CDS,
             "buy":kite.TRANSACTION_TYPE_BUY,"sell":kite.TRANSACTION_TYPE_SELL,"AMO":kite.VARIETY_AMO,"REGULAR":kite.VARIETY_REGULAR,"NRML":kite.PRODUCT_NRML,"MIS":kite.PRODUCT_MIS,
-            "CNC":kite.PRODUCT_CNC,"DAY":kite.VALIDITY_DAY,"IOC":kite.VALIDITY_IOC,"BO":kite.VARIETY_BO,"CO":kite.VARIETY_CO,"SL":kite.ORDER_TYPE_SL,"SLM":kite.ORDER_TYPE_SLM,
+            "CNC":kite.PRODUCT_CNC,"DAY":kite.VALIDITY_DAY,"IOC":kite.VALIDITY_IOC,"BO":kite.VARIETY_CO,"CO":kite.VARIETY_CO,"SL":kite.ORDER_TYPE_SL,"SLM":kite.ORDER_TYPE_SLM,
             "market":kite.ORDER_TYPE_MARKET,"limit":kite.ORDER_TYPE_LIMIT,"nse":kite.EXCHANGE_NSE,"nfo":kite.EXCHANGE_NFO,"mcx":"MCX","cds":kite.EXCHANGE_CDS,
             "BUY":kite.TRANSACTION_TYPE_BUY,"SELL":kite.TRANSACTION_TYPE_SELL,"amo":kite.VARIETY_AMO,"regular":kite.VARIETY_REGULAR,"nrml":kite.PRODUCT_NRML,"mis":kite.PRODUCT_MIS,
-            "cnc":kite.PRODUCT_CNC,"day":kite.VALIDITY_DAY,"ioc":kite.VALIDITY_IOC,"bo":kite.VARIETY_BO,"co":kite.VARIETY_CO,"sl":kite.ORDER_TYPE_SL,"slm":kite.ORDER_TYPE_SLM            
+            "cnc":kite.PRODUCT_CNC,"day":kite.VALIDITY_DAY,"ioc":kite.VALIDITY_IOC,"bo":kite.VARIETY_CO,"co":kite.VARIETY_CO,"sl":kite.ORDER_TYPE_SL,"slm":kite.ORDER_TYPE_SLM            
              }
  
     try:
@@ -58,9 +55,12 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
                                     tag = OrderTag)
 
         print('Order Placed for contract-->' + str(order_id))
+        
         #logging.info("Order placed. ID is: {}".format(order_id))
     except Exception as e:
-        logging.info("Order placement failed: {}".format(e.message))
+        logging.basicConfig(level=logging.DEBUG)
+        logging.info("Order placement failed: {}".format(e))
+        exit(1)
 
 
 #def order_angel(Broker,Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):

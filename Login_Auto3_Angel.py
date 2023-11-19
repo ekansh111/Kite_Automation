@@ -91,12 +91,12 @@ def Limit_Order_Type(smartApi,order_details_fetch):
     exchange = str(order_details_fetch['Exchange'])
     tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
     symboltoken = str(order_details_fetch['Symboltoken'])
-    print(exchange,tradingsymbol,symboltoken)
+    #print(exchange,tradingsymbol,symboltoken)
     #Fetch Instrument LTP
     LtpInfo = smartApi.ltpData(exchange=exchange,tradingsymbol=tradingsymbol,symboltoken=symboltoken)
     
     Instrumentdata = LtpInfo['data']
-    print(Instrumentdata['ltp'])
+    #print(Instrumentdata['ltp'])
     
     order_details_fetch['Price'] = Instrumentdata['ltp']
     order_details_fetch['Ordertype'] = LimitOrder
@@ -164,7 +164,7 @@ def Angel_Order_place(smartApi,order_details_fetch):
                 #EXIT HERE ITSELF
                 return True
                 #exit(1)
-                print(orderId)
+                #print(orderId)
 
     #If cancellation is successfull then place market order(If the Market Retry flag is not populated with any value)
     if((str(cancel['status']) == 'True') and (str(cancel['message']) == 'SUCCESS') and (order_details_fetch.get("MarketRetryFlag") is None)):
@@ -175,14 +175,14 @@ def Angel_Order_place(smartApi,order_details_fetch):
 
 #Function to establish a connection with the API
 def Login_Angel_Api(order_details_fetch):
-    print(order_details_fetch)
+    #print(order_details_fetch)
     Directory = AngelEkanshLoginCred
     if str(order_details_fetch.get('User')) == 'nararush':
         Directory = AngelNararushLoginCred      
     with open(Directory,'r') as a:
         content = a.readlines()
         a.close()
-    print(content)    
+    #print(content)    
     api_key = content[0].strip('\n')
     clientId = content[1].strip('\n')
     pwd = content[2].strip('\n')
