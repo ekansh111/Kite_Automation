@@ -50,8 +50,8 @@ order_validity = kite.VALIDITY_DAY
 
 
 def Set_Gtt(OrderDetails):
-    print('setgtt')
-    print(OrderDetails)
+    #print('setgtt')
+    #print(OrderDetails)
     ATM_VAL = OrderDetails['Tradingsymbol']
     Quantity = OrderDetails['Quantity']
     Trigger = int(OrderDetails['Trigger'])
@@ -77,7 +77,7 @@ def Set_Gtt(OrderDetails):
         option_trigger = (round((option_ltp*((100 + StopLossTriggerPercent)/100))*2,1)/2)#Multiplying by 2 to probably make rounding off easier
         option_sl = (round((option_ltp*((100 +StopLossOrderPlacePercent)/100))*2,1)/2)#set a slightly high sl value , since the order type sent is limit, so to 
                                                                                     #avoid a chance where the gtt is not triggered if the option values go past limit
-        print(str(ATM_VAL) +'|'+ str(OrderDetails['Symboltoken']) +'|'+ str(option_sl) +'|'+ str(Quantity) +'|'+ str(option_trigger) +'|'+ str(OrderDetails['TimePeriod']))
+        #print(str(ATM_VAL) +'|'+ str(OrderDetails['Symboltoken']) +'|'+ str(option_sl) +'|'+ str(Quantity) +'|'+ str(option_trigger) +'|'+ str(OrderDetails['TimePeriod']))
         #If the order needs to be placed for angel broking account
         if OrderDetails.get("Broker") == 'ANGEL':
             gttCreateParams = {
