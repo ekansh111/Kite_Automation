@@ -95,7 +95,7 @@ if __name__ == '__main__':
         if proceed in {"M","m"}:
             print("1A--NiftyStraddle_Mon_12Pm_100Sl \n 1B--BankNiftyStraddle_Mon_1030Am_125Sl \n 2--NiftyStraddle_Tue_11Am_110Sl \n 3--MidCPNiftyStraddle_Wed_13Pm_90Sl \n 4--FINNiftyStraddle_Thu_1430Pm_50Sl \n 5--BankNiftyStraddle_Fri_930Am_100Sl \n  6--BankNiftySellCall_Wed_1520Pm_50Sl \n  7--NiftySellCall_Thu_1520Pm_50Sl \n 8--NiftyLongCallMonthlyFirstDayMonExpiry \n 9--BankNiftyLongCallMonthlyFirstDayMonExpiry")
             print("12--AngelNararushNiftySellPut_Mon_1000Am_100Sl \n  17--AngelNararushBankNiftySellCall_Tue_1000Am_100Sl  \n 14--AngelNararushNiftySellCall_Wed_1000Am_100Sl \n 15--AngelNararushBankNiftySellPut_Fri_1000Am_100Sl")
-            print("Testing-->|99|FINNIFTY_RG_K, ->|98|FINNIFTY_AMO_K, ->|97|BANKNIFTY_AMO_ANGEL_NARAYANA, ->|96|BANKNIFTY_AMO_ANGEL_EK, ->|NCDEX|ANGEL_EKANSH_TV_ALERT ")
+            print("Testing-->|99|FINNIFTY_RG_K, ->|98|FINNIFTY_AMO_K, ->|97|BANKNIFTY_AMO_ANGEL_NARAYANA, ->|96|BANKNIFTY_AMO_ANGEL_EK, ->|NCDEX|ANGEL_EKANSH_TV_ALERT, ->|95|NIFTY_AMO_KITE_EK ")
             Override = input("Enter the Override value \n") or False
         if proceed in {"N","n"}:
             abort()
@@ -373,6 +373,16 @@ if __name__ == '__main__':
             #print(OrderDetails['Straddle']['Tradingsymbol'])
             break  
 
+        #testing purpose
+        #Place Nifty order post market hour for testing with GTT order set for Kite
+        if  Override == '95':
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
+                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
+                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}    
+            one_shot_flag == False
+            Override = False
+            #print(OrderDetails['Straddle']['Tradingsymbol'])
+            break
     LoopHashOrderRequest(OrderDetails)
 
 

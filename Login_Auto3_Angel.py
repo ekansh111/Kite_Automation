@@ -91,7 +91,7 @@ def Limit_Order_Type(smartApi,order_details_fetch):
     exchange = str(order_details_fetch['Exchange'])
     tradingsymbol = str(order_details_fetch['Tradingsymbol']).replace(" ","")
     symboltoken = str(order_details_fetch['Symboltoken'])
-    #print(exchange,tradingsymbol,symboltoken)
+    print(exchange,tradingsymbol,symboltoken)
     #Fetch Instrument LTP
     LtpInfo = smartApi.ltpData(exchange=exchange,tradingsymbol=tradingsymbol,symboltoken=symboltoken)
     

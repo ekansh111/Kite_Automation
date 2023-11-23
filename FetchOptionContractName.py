@@ -27,8 +27,11 @@ def FetchOptionName(OrderDetails):
     #order_details_fetch.get("Broker") == 'ANGEL':
 
     #Code block to check if the expiry day is a holiday or not###########################################################################################################################################################################################
-    LenOfWeek = 6
-    IdealExpiryDateForContract = date.today() + timedelta(LenOfWeek)
+    ExpiryDate = date.today() 
+    while ExpiryDate.weekday() != ExpiryDayInt:
+        ExpiryDate += timedelta(1)
+
+    IdealExpiryDateForContract = ExpiryDate
     #print(IdealExpiryDateForContract)
     CheckIfExpiryDateIsHoliday = CheckForDateHoliday(IdealExpiryDateForContract)
     #print(CheckIfExpiryDateIsHoliday)
@@ -45,8 +48,6 @@ def FetchOptionName(OrderDetails):
     ContractStrikeOverride = 'False'
 
     ContractStrikeOverridePrice  = False or OrderDetails.get("ContractStrikeOverridePrice")
-    #print(ContractStrikeOverridePrice)
-    #print('contractstrikeoverride-->' + str(OrderDetails.get("ContractStrikeOverridePrice")))
     
     #If the ContractStrikeOverridePrice is not entry and is not null, then in that case it must be having the ltp ovveride value for 
     #the option entry contract
@@ -74,29 +75,16 @@ def FetchOptionName(OrderDetails):
     #Get the date of this year ,month and day
     ExpiryDate = date.today()
     
+    #If the contract expiry weekday is the same as the weekday on which the trade is placed, then fetch the next weekend date,
+    #to place order in the corresponding next weekday contract.
+    if  ExpiryDate.weekday() == ExpiryDayInt:
+        ExpiryDate += timedelta(7)
+
     # weekday() can be used to retrieve the day of the week. The datetime.today() method returns the current date, and the weekday() method returns the day of the week as an integer where Monday is indexed as 0 and Sunday is 6.
+    #Fetch the expiry date for the contract
     while ExpiryDate.weekday() != ExpiryDayInt:
         #Since the options expire on Expiry their namefield will have the corresponding date field of that day
         ExpiryDate += timedelta(1)  
-
-    #if the last Expiry day comes in next year then the year will be rolled over
-    y0= ExpiryDate.strftime("%y")
-    #No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
-    #m0= ExpiryDate.strftime("%m")#Old format
-    m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
-    d0= ExpiryDate.strftime("%d")
-    #print(ExpiryDate)
-    year = int(y0)
-    #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
-    #month=int(m0) 
-    month = m0[0]#Get the first letter of the month for new format
-    day=d0
-
-    if date.today().weekday() ==ExpiryDayInt:
-        #needs to be in string format as it has to be passed in %d%d format , i.e 3rd March will go as '03'/3 
-        day= date.today().strftime("%d")
-    
-    #_#######################################################################################################################################################################################################################
 
     #For the provided expiry day(in int) fetch the day of the week in char format and then fetch the last date for the final instance of the particular day in the month
     HashOfDays = {0:MO,1:TU,2:WE,3:TH,4:FR}
@@ -104,7 +92,22 @@ def FetchOptionName(OrderDetails):
 
     #Fetch the last Expiry date of the month,Needs correction for various different contracts
     last_day = (date.today()+relativedelta(day=31, weekday=ExpiryDay(-1)))
-    #print('Expiry day-->' + str(ExpiryDate))
+
+    #If the contract the order is being place on corresponds with the last week contract for the month then add 
+    #one more day to the contract as the last day for the banknifty contract expires on thursday, other weeks on wed
+    if (str(ExpiryDate) == str(last_day)) and (Broker == 'ANGEL') and (IndexName == 'BANKNIFTY'):
+        ExpiryDate = last_day  + timedelta(1)
+    
+    #if the last Expiry day comes in next year then the year will be rolled over
+    y0= ExpiryDate.strftime("%y")
+    #No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
+
+    m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
+    d0= ExpiryDate.strftime("%d")
+    year = int(y0)
+    #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
+    month = m0[0]#Get the first letter of the month for new format
+    day=d0
 
     #Check if the day is last Expiry day of the month (Since Expiry day is the expiry day for options)
     #Even if the last day turns out to be an holiday, no issues since the prior day will also be last instance for that month and Monthly contract name willl be used

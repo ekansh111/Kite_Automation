@@ -5,5 +5,6 @@ KiteEkanshLoginAccessToken = 'C:/Users/ekans/OneDrive/Documents/inputs/access_to
 
 AngelEkanshLoginCred = 'C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials_Angel.txt'
 AngelNararushLoginCred = 'Login_Credentials_Angel_Dad.txt' 
+AngelInstrumentDirectory = 'AngelInstrumentDetails.txt'
 
 WriteOptionDetailsFile = 'C:/Users/ekans/OneDrive/Documents/inputs/option_details.csv'

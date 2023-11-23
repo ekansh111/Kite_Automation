@@ -1,13 +1,14 @@
 from Login_Auto3_Angel import *
 from FetchOptionContractName import *
 import pandas as pd
+from Directories import *
 
 
 #Function to fetch the Symbol token for any provided symbol
 def FetchAngelInstrumentSymbolToken(order_details_fetch):
     InstrumentName = order_details_fetch['Tradingsymbol']
     #Fetch the consolidated list of symboltoken,tradingsymbol.. data from the file which should be updated periodically
-    df = pd.read_csv('AngelInstrumentDetails.txt', dtype={"token": "string", "symbol": "string","name": "string", "expiry": "string","strike": int, "lotsize": int,"instrumenttype": "string", "exch_seg": "string", "tick_size": int})
+    df = pd.read_csv(AngelInstrumentDirectory, dtype={"token": "string", "symbol": "string","name": "string", "expiry": "string","strike": int, "lotsize": int,"instrumenttype": "string", "exch_seg": "string", "tick_size": int})
     AngelInstrumentSymbolToken = df.loc[df['symbol'] == InstrumentName]['token'].to_string(index=False, header=False)
     #print('Instrument name-->' + str(AngelInstrumentSymbolToken))
     
