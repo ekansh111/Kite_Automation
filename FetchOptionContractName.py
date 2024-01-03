@@ -101,12 +101,12 @@ def FetchOptionName(OrderDetails):
     #if the last Expiry day comes in next year then the year will be rolled over
     y0= ExpiryDate.strftime("%y")
     #No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
-
-    m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
+    m0 = ExpiryDate.strftime("%m")
+    #m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
     d0= ExpiryDate.strftime("%d")
     year = int(y0)
     #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
-    month = m0[0]#Get the first letter of the month for new format
+    month = int(m0)#[0]#Get the first letter of the month for new format
     day=d0
 
     #Check if the day is last Expiry day of the month (Since Expiry day is the expiry day for options)
@@ -197,7 +197,7 @@ def FetchOptionName(OrderDetails):
     ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)),-2)
     ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)),-2)
     #Date Format for Kite API 
-    DateFormat = str(year)+str(month)+str(day)
+    DateFormat = str(year)+ str(month) +str(day)
 
     if Broker == 'ANGEL':
         month = (ExpiryDate.strftime("%b")).upper()
@@ -224,6 +224,7 @@ def FetchOptionName(OrderDetails):
         ATM_PUT = 'MIDCPNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
     #print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
+
     #Return Only the required contracts
     if CE_Return == 'True' and PE_Return=='False':
         #print(ATM_CALL)

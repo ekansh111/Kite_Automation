@@ -5,6 +5,7 @@ from datetime import date
 from Login_Auto3_Angel import Login_Angel_Api
 import pandas as pd
 from Directories import *
+import csv
 option_sl = 0
 
 #with open(KiteEkanshLoginAPIKey,'r') as a:
@@ -51,7 +52,7 @@ order_validity = kite.VALIDITY_DAY
 
 def Set_Gtt(OrderDetails):
     #print('setgtt')
-    #print(OrderDetails)
+    print(OrderDetails)
     ATM_VAL = OrderDetails['Tradingsymbol']
     Quantity = OrderDetails['Quantity']
     Trigger = int(OrderDetails['Trigger'])
@@ -103,11 +104,24 @@ def Set_Gtt(OrderDetails):
         option_trigger = 'Hedge'
     elif Hedge == 'MonthlyCall':
         option_trigger = 'MonthlyCallBuy'
-    #if str(ATM_VAL)[0:1] in {"B","b"}:
-    data = [[ATM_VAL,option_trigger,Quantity,Trigger]]
-    with open(WriteOptionDetailsFile, 'a', newline='') as newline:
-        newline.close
+    write_order_details_to_csv(OrderDetails, WriteOptionDetailsFile)
 
-    df = pd.DataFrame(data, columns=['OptionName','SL','Quantity','TriggerLeft'])                                                 
-    df.to_csv(WriteOptionDetailsFile,header=True,index=False,mode='a')
+def write_order_details_to_csv(OrderDetails, csv_file_path):
+    # Extract keys and values from the dictionary
+    keys = list(OrderDetails.keys())
+    values = list(OrderDetails.values())
+
+    # Get the current time
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # Check if the CSV file exists, create it if not
+    with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+        csvwriter = csv.writer(csvfile)
+
+
+        csvwriter.writerow(['Timestamp'] + keys)
+
+        # Write values row with current time
+        csvwriter.writerow([current_time] + values)
+
     

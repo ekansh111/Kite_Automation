@@ -42,7 +42,6 @@ def PlaceOrders(OrderDetails):
 
 #Function to iterate through the hash and place orders
 def LoopHashOrderRequest(OrderDetails):
-    #print('Function called multiple times?')
     #Iterate through the order details
     for OrderType in OrderDetails:
         #Fetch the contract name to place orders in , store as tuple for ease of looping /Multilple indexes as the dict has a child dict
@@ -50,7 +49,7 @@ def LoopHashOrderRequest(OrderDetails):
         
         ContractName = [FetchOptionName(OrderDetails[OrderType])]
         #Multiple contracts can be returned by the function , but if only one contract name is returned than ensure that the variable is a tuple, to avoid the next for loop from only fetching a single char in the contract name
-        #print(ContractName)
+
         #If there is only one value in the tuple then the name of the contract will in ideal circumstances have a minimum of one character and will have greater
         #than 4 characters, if there are multiple names fetched in the tuple, then for case of 2 values it will go inside loop and be extracted from the tuple
         #Can provision the max value of 3 to even more depending on the contract name
@@ -61,8 +60,6 @@ def LoopHashOrderRequest(OrderDetails):
         #Place trades for all the contract names returned
         for range in ContractName:
             OrderDetails[OrderType]['Tradingsymbol'] = range
-            #print(range)
-            #_#modify condition for angel
 
             #Route through different function if order needs to be placed for Angel 
             if OrderDetails[OrderType].get("Broker") == 'ANGEL':
