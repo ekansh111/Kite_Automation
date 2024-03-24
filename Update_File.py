@@ -1,20 +1,32 @@
-import time
 import pandas as pd
 from datetime import date
+from Directories import *
 
-
-data = pd.read_csv(filepath_or_buffer='C:/Users/ekans/Documents/inputs/option_details.csv')
-
-#Fetch the current date,month and year
+# Fetch the current date, month, and year
 Today_date = date.today().strftime("%d%m%y")
 
-#print(Today_date)
-
+# Define the file name
 File_Name = 'option_details'
 ConsFileName = File_Name + Today_date
 
-data.to_csv('C:/Users/ekans/Documents/inputs/'+str(ConsFileName) + '.csv',header=True,index=False,mode='a')
+# Suppress the warning about chained assignment
+pd.options.mode.chained_assignment = None  # default='warn'
 
-f = open("C:/Users/ekans/Documents/inputs/option_details.csv", "w")
+# Read the CSV file while handling errors
+try:
+    data = pd.read_csv(filepath_or_buffer=WriteOptionDetailsFile)
+except pd.errors.ParserError as e:
+    print(f"Error reading CSV file: {e}")
+    data = pd.read_csv(filepath_or_buffer=WriteOptionDetailsFile, skiprows=lambda x: x != 0)
+
+# Print the read data to check its structure
+print("Original Data:")
+print(data)
+
+# Save the data to a new CSV file
+data.to_csv(WorkDirectory + str(ConsFileName) + '.csv', header=True, index=False, mode='a')
+
+# Truncate the original file
+f = open(WriteOptionDetailsFile, "w")
 f.truncate()
 f.close()
