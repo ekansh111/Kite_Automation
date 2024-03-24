@@ -9,3 +9,5 @@ AngelInstrumentDirectory = 'AngelInstrumentDetails.txt'
 
 WriteOptionDetailsFile = 'C:/Users/ekans/OneDrive/Documents/inputs/option_details.csv'
 WriteAllContractDet = 'C:/Users/ekans/OneDrive/Documents/inputs/TEXT_INSTRUMENTS.csv'
+
+WorkDirectory = 'C:/Users/ekans/OneDrive/Documents/inputs/'
