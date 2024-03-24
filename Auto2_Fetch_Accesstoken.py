@@ -28,7 +28,6 @@ api_secret = content[3].strip('\n')
 totp_key= content[4].strip('\n')
 
 token = ''
-#print(api_key)
 def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
 
     
@@ -41,9 +40,10 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #If the chrome browser is getting stuck in endless loading screen then it can be due
         #Python version not at 3.8,chrome version higher than 119..124,port number not accessible,
         #or the VS code terminal default profile not set to command prompt
-        driver = uc.Chrome(options=options,debug = True)#,port=49187)
-
-        driver.get(f'https://kite.trade/connect/login?api_key={api_key}&v=3')
+        #modified script patcher.py and updated download url with a new url link, line 285
+        driver = uc.Chrome(version_main=122,options=options)#,port=49187)
+        webpagelink = f'https://kite.trade/connect/login?api_key={api_key}&v=3'
+        driver.get(webpagelink)
 
         #Fetch login details
         login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="userid"]'))
@@ -53,10 +53,6 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         submit = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[4]/button'))
         submit.click()
         time.sleep(2)
-        #adjustment to code to include totp
-        
-        #Points to the field where the Totp key needs to be entered
-#        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//label[text()="External TOTP"]/following-sibling::input'))
         
         #Field to be updated was changed in front end on 5-9-2023
         totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.ID,value='userid'))
@@ -64,16 +60,8 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         authkey = pyotp.TOTP(totp_key)
         totp.send_keys(authkey.now())
         #print(totp)
-        #adjustment complete
-
-        #Points to the continue button on the page
-        #Continue button click is no longer needed as Zerodoha updated the website to autologin after the toptp is entered
-        #continue_btn = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.XPATH,value='//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
-        #continue_btn.click()
         
-        print(driver.current_url)
         time.sleep(10)
-        #print(driver.current_url)
 
         #To split the Request Token from the returned link in which it is embedded
         url = driver.current_url
@@ -81,7 +69,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         initial_token = url.split('request_token=')[1]
         #print(initial_token)
         request_token = initial_token.split('&')[0]
-        print(request_token)
+        print("Request token"+"-->"+str(request_token))
         
 
         driver.close()
@@ -89,7 +77,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #Generate the access token from the request token  
         kite = KiteConnect(api_key = api_key)
         data = kite.generate_session(request_token,api_secret)
-        print(data['access_token'])
+        print("Access token"+"-->"+str(data['access_token']))
         token = data["access_token"] 
 
         #Populate the access token inside a file
