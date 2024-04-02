@@ -13,6 +13,8 @@ LimitOrder = 'LIMIT'
 MarketOrder = 'MARKET'
 #Limit Order wait time in seconds
 LimitOrderWaitTime = 120
+complete = 'complete'
+OrderBookWaitTime = 10
 
 #Function to handle disreparency in quantity and lotsizes for order to be placed
 def Validate_Quantity(order_details_fetch):
@@ -137,28 +139,29 @@ def Angel_Order_place(smartApi,order_details_fetch):
 
     #Place order cancellation after the specified wait time, if the order was placed successfully then the cancellation will fail
     cancel = smartApi.cancelOrder(orderId,str(order_details_fetch['Variety']))
-    
-    #Sleep for 3 seconds to let the Tradebook get updated
-    time.sleep(3)
+    print(cancel)
+    #Sleep for few seconds to let the OrderBook get updated
+    time.sleep(OrderBookWaitTime)
 
-    #Fetch the Tradebook for all the trades placed today, To check if the cancelled order was already successfully placed or not.
-    TradeBook = smartApi.tradeBook()
-
-    if TradeBook['data'] != None:
+    #Fetch the Orderbook for all the trades placed today, To check if the  order was already successfully placed or not.
+    OrderBook = smartApi.orderBook()
+    #print('Orderbook-->' + str(OrderBook))
+    if OrderBook['data'] != None:
         #Hold the number of trades that were placed upto that trading day, -1 for adjusting for indexation from 0
         #Add a check here to handle if no trades were placed in entire day 
-        LengthTrades = len(TradeBook['data']) -1
-        #orderId = 230905001463384
-        #Loop through the order details for all orders placed on the da. TradeBook['data'] is an array of hash of orders
-        for orderlist in TradeBook['data'] :
+        LengthTrades = len(OrderBook['data']) -1
 
+        #Loop through the order details for all orders placed on the da. OrderBook['data'] is an array of hash of orders
+        for orderlist in OrderBook['data'] :
+            
             #Fetch the order id for all the orders of the day
-            orderlistidhistory = TradeBook['data'][LengthTrades]['orderid']
+            orderlistidhistory = OrderBook['data'][LengthTrades]['orderid']
+            orderstatus = OrderBook['data'][LengthTrades]['status']
             #Loop through trade list
             LengthTrades = LengthTrades-1
 
             #If the current order has been successfully placed , then set the Market retry flag to false, and the order should not be placed
-            if str(orderId) == str(orderlistidhistory):
+            if (str(orderId) == str(orderlistidhistory) and str(orderstatus) == complete):
                 order_details_fetch['MarketRetryFlag'] = False
                 print('The order ' + str(orderlistidhistory) + 'has already been placed')
                 #EXIT HERE ITSELF
@@ -235,6 +238,6 @@ def Validate_Order_Details(smartApi,order_details_fetch):
 if __name__ == '__main__':
 
     #k = {'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY31AUG23FUT', 'Quantity': '15', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': '45017', 'Symboltoken':'35014', 'Squareoff':'', 'Stoploss':''}
-    m = {'Tradetype': 'BUY', 'Exchange': 'NCDEX', 'Tradingsymbol': 'CASTOR20OCT2023', 'Quantity': '1*5', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': '45017', 'Symboltoken':'CASTOR20OCT2023', 'Squareoff':'', 'Stoploss':''}
+    m = {'Tradetype': 'BUY', 'Exchange': 'NCDEX', 'Tradingsymbol': 'GUARSEED1019APR2024', 'Quantity': '1*5', 'Variety': 'NORMAL', 'Ordertype': 'LIMIT', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': '5000', 'Symboltoken':'GUARSEED1019APR2024', 'Squareoff':'', 'Stoploss':''}
 
     Login_Angel_Api(m)
