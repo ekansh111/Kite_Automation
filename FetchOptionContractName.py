@@ -92,11 +92,6 @@ def FetchOptionName(OrderDetails):
 
     #Fetch the last Expiry date of the month,Needs correction for various different contracts
     last_day = (date.today()+relativedelta(day=31, weekday=ExpiryDay(-1)))
-
-    #If the contract the order is being place on corresponds with the last week contract for the month then add 
-    #one more day to the contract as the last day for the banknifty contract expires on thursday, other weeks on wed
-    if (str(ExpiryDate) == str(last_day)) and (Broker == 'ANGEL') and (IndexName == 'BANKNIFTY'):
-        ExpiryDate = last_day  + timedelta(1)
     
     #if the last Expiry day comes in next year then the year will be rolled over
     y0= ExpiryDate.strftime("%y")
