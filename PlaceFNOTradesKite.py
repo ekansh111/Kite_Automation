@@ -122,7 +122,7 @@ if __name__ == '__main__':
         NiftyStraddle_Tue_11Am_110Sl =       str(now.strftime("%H:%M:%S")) == '11:00:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         MidCPNiftyStraddle_Wed_13Pm_90Sl =   str(now.strftime("%H:%M:%S")) == '13:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         FINNiftyStraddle_Thu_1430Pm_50Sl =   str(now.strftime("%H:%M:%S")) == '14:30:00' and ((CurrWkDy == THURSDAY) or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        BankNiftyStraddle_Fri_930Am_100Sl =  str(now.strftime("%H:%M:%S")) == '9:30:00' and ((CurrWkDy == FRIDAY)   or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        BankNiftyStraddle_Fri_930Am_100Sl =  str(now.strftime("%H:%M:%S")) == '09:30:00' and ((CurrWkDy == FRIDAY)   or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
 
         BankNiftySellCall_Wed_1520Pm_50Sl =  str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))#((CurrWkDy == WEDNESDAY) or CheckForDateHoliday(PREVIOUSDATE))
         NiftySellCall_Thu_1520Pm_50Sl =      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == THURSDAY)or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))#((CurrWkDy == THURSDAY)  or CheckForDateHoliday(PREVIOUSDATE))
@@ -363,8 +363,8 @@ if __name__ == '__main__':
 
         #Buy NCDEX order post market hours for ekansh using existing format
         if  Override == 'NCDEX': 
-            OrderDetails = {"Tradetype": "BUY", "Exchange": "NCDEX", "Tradingsymbol": "CASTOR20DEC2023", "Quantity": "1*5", "Variety": "AMO", "Ordertype": "LIMIT", "Product": "CARRYFORWARD",
-                             "Validity": "DAY", "Price": 5930, "Symboltoken":"CASTOR20DEC2023", "Squareoff":"", "Stoploss":"", "Broker":"ANGEL"}
+            OrderDetails = {'NCDEX':{"Tradetype": "BUY", "Exchange": "NCDEX", "Tradingsymbol": "CASTOR20DEC2023", "Quantity": "1*5", "Variety": "AMO", "Ordertype": "LIMIT", "Product": "CARRYFORWARD",
+                             "Validity": "DAY", "Price": 5930, "Symboltoken":"CASTOR20DEC2023", "Squareoff":"", "Stoploss":"", "Broker":"ANGEL"}}
             #one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
