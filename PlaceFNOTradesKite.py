@@ -102,11 +102,11 @@ if __name__ == '__main__':
         Override = False
 
     #Hash consisting of order details,Modify Variety and OrderType and price
-    '''OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '75', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': '10',
+    '''OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': '10',
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'0','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'202',
                      'StopLossOrderPlacePercent':'250','CallStrikeRequired':True,'PutStrikeRequired':True,'Hedge':False},
                      
-                     'Hedge':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '75', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': '3',
+                     'Hedge':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': '3',
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'0','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'202',
                      'StopLossOrderPlacePercent':'250','CallStrikeRequired':False,'PutStrikeRequired':True,'Hedge':True}}'''
     #print(1)
@@ -198,11 +198,11 @@ if __name__ == '__main__':
         
         #Sell MN straddle every Wednesday @1300 with 90sl
         if MidCPNiftyStraddle_Wed_13Pm_90Sl or Override == '3': 
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '75', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'0','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'92',
                      'StopLossOrderPlacePercent':'140','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"4MN-STR-WE-13-90"},
                      
-                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '75', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'0','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'92',
                      'StopLossOrderPlacePercent':'140','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"4MN-STRH-WE-13-90"}}
             one_shot_flag == False
@@ -212,11 +212,11 @@ if __name__ == '__main__':
 
         #Sell FN straddle every Thursday @1430 with 50sl
         if FINNiftyStraddle_Thu_1430Pm_50Sl or Override == '4': 
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'52',
                      'StopLossOrderPlacePercent':'82','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"5FN-STR-TH-1430-50"},
                      
-                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'52',
                      'StopLossOrderPlacePercent':'82','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"5FN-STRH-TH-1430-50"}}#_#sltrigpercent
             one_shot_flag == False
@@ -322,7 +322,7 @@ if __name__ == '__main__':
         #testing purpose
         #Place Finifty order during active market hour for testing with GTT order set for Kite
         if  Override == '99':
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
                      'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}    
             one_shot_flag == False
@@ -333,7 +333,7 @@ if __name__ == '__main__':
         #testing purpose
         #Place Finifty order post market hour for testing with GTT order set for Kite
         if  Override == '98':
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '40', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '50', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
                      'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}    
             one_shot_flag == False
