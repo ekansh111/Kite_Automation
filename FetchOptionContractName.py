@@ -5,6 +5,7 @@ import string
 from kiteconnect import KiteConnect
 from datetime import datetime,timedelta
 from datetime import date
+from ContractDetails import ContractStrikeValue
 from Set_Gtt_Exit import Set_Gtt
 from inputimeout import inputimeout,TimeoutOccurred
 from dateutil.relativedelta import TH,MO,TU,WE,FR, relativedelta
@@ -39,9 +40,18 @@ def FetchOptionName(OrderDetails):
         #If the Expiry date is on Monday then the contract will expire on friday
         if ExpiryDayInt == 0:
             ExpiryDayInt = 4
+            if Broker == 'ANGEL':
+                GTTOrderTimePeriodExpiryDay = int(OrderDetails.get("TimePeriod"))
+                GTTOrderTimePeriodExpiryDay = GTTOrderTimePeriodExpiryDay - 3
+                OrderDetails['TimePeriod']  = GTTOrderTimePeriodExpiryDay   
         else:
             #If the expiry day is a holiday then fetch the prior date
-            ExpiryDayInt = ExpiryDayInt - 1 
+            ExpiryDayInt = ExpiryDayInt - 1
+            
+            if Broker == 'ANGEL':
+                GTTOrderTimePeriodExpiryDay = int(OrderDetails.get("TimePeriod"))
+                GTTOrderTimePeriodExpiryDay = GTTOrderTimePeriodExpiryDay - 1
+                OrderDetails['TimePeriod']  = GTTOrderTimePeriodExpiryDay 
     ######################################################################################################################################################################################################################################################
 
     #Contract Strike should not be overriden by default, Unless specified in the request
@@ -189,8 +199,9 @@ def FetchOptionName(OrderDetails):
     ATM_ltp = int(round(ltp,-2))
     #print(ATM_ltp)
     #-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
-    ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)),-2)
-    ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)),-2)
+    #ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)),-2)
+    #ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)),-2)
+    ATM_CE_Strike,ATM_PE_Strike = ContractStrikeValue(ContractStrikeFromATMPercent,ATM_ltp,IndexName)
     #Date Format for Kite API 
     DateFormat = str(year)+ str(month) +str(day)
 
@@ -228,6 +239,7 @@ def FetchOptionName(OrderDetails):
         #print(ATM_PUT)
         return ATM_PUT
     elif PE_Return == 'True' and CE_Return=='True':
+        print(ATM_CALL,ATM_PUT)
         return ATM_CALL,ATM_PUT
 
 
