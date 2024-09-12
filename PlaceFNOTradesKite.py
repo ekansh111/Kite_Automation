@@ -158,11 +158,11 @@ if __name__ == '__main__':
         if NiftyStraddle_Mon_12Pm_100Sl or Override == '1A': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"1NF-STR-MO-12-100"},
+                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"1NF-STR-MO-12-100"}}#,
                      
-                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'102',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"1NF-STRH-MO-12-100"}}
+                     #'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     #'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'102',
+                     #'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"1NF-STRH-MO-12-100"}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -186,11 +186,11 @@ if __name__ == '__main__':
         if NiftyStraddle_Tue_11Am_110Sl or Override == '2': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'111',
-                     'StopLossOrderPlacePercent':'155','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"3NF-STR-TU-11-110"},
+                     'StopLossOrderPlacePercent':'155','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"3NF-STR-TU-11-110"}}#,
                      
-                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'111',
-                     'StopLossOrderPlacePercent':'155','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"3NF-STRH-TU-11-110"}}
+                     #'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     #'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'111',
+                     #'StopLossOrderPlacePercent':'155','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"3NF-STRH-TU-11-110"}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
@@ -228,11 +228,11 @@ if __name__ == '__main__':
         if BankNiftyStraddle_Fri_930Am_100Sl or Override == '5': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'101',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"6BN-STR-FR-930-100"},
+                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"6BN-STR-FR-930-100"}}#,
                      
-                     'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'101',
-                     'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"6BN-STRH-FR-930-100"}}
+                     #'Hedge':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     #'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'4','Trigger':'1','StopLossTriggerPercent':'101',
+                     #'StopLossOrderPlacePercent':'150','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'True',"OrderTag":"6BN-STRH-FR-930-100"}}
             one_shot_flag == False
             Override = False
             #print(OrderDetails['Straddle']['Tradingsymbol'])
