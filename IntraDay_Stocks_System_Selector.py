@@ -1,3 +1,67 @@
+"""
+This script is designed to fetch historical stock data for a list of symbols from the Nifty 500 constituents,
+compute technical indicators, filter stocks based on specific criteria, and optionally place intraday orders.
+
+**Main Functionalities:**
+
+1. **Read Stock Symbols**:
+   - Reads a CSV file containing stock symbols (`Nifty500ConstituentList`).
+
+2. **Fetch Historical Data**:
+   - Uses the `yfinance` library to download historical **Open**, **Low**, and **Close** prices for the specified symbols over a defined date range.
+   - Fetches data in batches to avoid overwhelming the API.
+
+3. **Compute Technical Indicators**:
+   - **Simple Moving Average (SMA)**: Calculates the SMA over a specified window (default is 20 days).
+   - **Standard Deviation (Std Dev)**: Calculates the standard deviation over a specified window (default is 90 days).
+   - **Open_PrevLow_Diff**: Computes the difference between today's Open price and yesterday's Low price.
+   - **Open_PrevLow_Diff_Percent**: Calculates the percentage difference between today's Open and yesterday's Low.
+
+4. **Data Saving**:
+   - Saves the fetched data and computed indicators to CSV files.
+   - Saves sorted data based on `Open_PrevLow_Diff_Percent`.
+
+5. **Filtering Stocks**:
+   - Filters stocks where the **Open Price** is higher than the 20-day SMA (for potential long positions).
+   - Filters stocks where the **Open Price** is lower than the 20-day SMA (for potential short positions).
+
+6. **Place Intraday Orders** (Optional):
+   - Determines trade type based on current time:
+     - **Before 11 AM**: `BUY` (long positions).
+     - **After 11 AM**: `SELL` (short positions).
+   - Places intraday orders using the `PlaceIntradayOrders` function imported from the `IntraDay_Stocks_Place_Order` module.
+   - The `PlaceOrderIK6635` flag controls whether to place orders.
+
+7. **Logging and Error Handling**:
+   - Uses the `logging` module to capture warnings and errors.
+   - Handles exceptions during data fetching and processing.
+   - Logs missing data and other issues.
+
+8. **Multiprocessing**:
+   - Uses multiprocessing to speed up data processing for multiple symbols.
+
+**Notes:**
+
+- The script is tailored for the **National Stock Exchange of India (NSE)**, appending `.NS` to the stock symbols.
+- The directories and file paths (`IntraDayDirectory`, `Nifty500ConstituentList`) are imported from the `Directories` module.
+- Adjust the `PlaceOrderIK6635` flag and other parameters as needed.
+- Ensure all required modules are installed and necessary files are available.
+
+**Usage:**
+
+- Run the script to fetch data, compute indicators, and optionally place intraday orders based on the criteria.
+- The script can be scheduled to run daily to automate data fetching and order placement.
+
+**Dependencies:**
+
+- **Python 3.x**
+- **Required Libraries**: `pandas`, `yfinance`, `datetime`, `multiprocessing`, `logging`, etc.
+- **Custom Modules**:
+  - `IntraDay_Stocks_Place_Order` (contains the `PlaceIntradayOrders` function).
+  - `Directories` (contains directory paths like `IntraDayDirectory`, `Nifty500ConstituentList`).
+
+"""
+
 import os
 import pandas as pd
 import time
@@ -162,7 +226,7 @@ def process_symbol_data(args):
 
             # Sort the data by date just in case
             ticker_data = ticker_data.sort_index()
-
+            ticker_data = ticker_data.dropna()
             # Compute SMA and Std Dev using rolling windows
             ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean()
             ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std()
@@ -552,7 +616,7 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
     if PlaceOrderIK6635:
 
         trade_type_1,trade_type_2 = determine_trade_type()
-        PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1,trade_type_2)
+        #PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1,trade_type_2)
 
 def determine_trade_type():
     """
