@@ -1,3 +1,57 @@
+"""
+This script is designed to automate the placement of intraday orders based on stock data.
+
+**Main Functionalities:**
+
+1. **Order Placement Automation**:
+   - Reads stock data from a pandas DataFrame.
+   - Selects stocks based on criteria such as lowest and highest open prices.
+   - Calculates the quantity to trade based on the open price and capital risked per trade.
+   - Prepares order details for both long and short positions.
+   - Executes orders using the `order` function from the `Server_Order_Place` module.
+
+2. **Configuration and Validation**:
+   - Configures logging to capture important events and errors.
+   - Validates the input DataFrame to ensure it contains required columns.
+
+3. **Stock Selection**:
+   - Selects the top N stocks with the lowest open prices.
+   - Selects the bottom N stocks with the highest open prices.
+
+4. **Order Preparation**:
+   - Prepares order details for long (buy) and short (sell) trades.
+   - Calculates the quantity of shares to trade based on risk per trade and open price.
+
+5. **Order Execution**:
+   - Executes the prepared orders by calling the `order` function.
+
+6. **Logging and Output**:
+   - Logs important steps and any errors that occur during execution.
+   - Prints out information about the orders being placed.
+
+**Notes:**
+
+- **Global Variables**:
+  - `NumberOfStocksToSelectLowestOpenPrice`: Number of stocks to select with the lowest open prices.
+  - `NumberOfStocksToSelectHighestOpenPrice`: Number of stocks to select with the highest open prices.
+  - `CapitalRiskedPerLongTrade`: Amount of capital to risk per long trade.
+  - `CapitalRiskedPerShortTrade`: Amount of capital to risk per short trade.
+
+- **Dependencies**:
+  - `Server_Order_Place`: Module that contains the `order` function used to execute orders.
+  - `Directories`: Module that provides directory paths.
+
+- **Sample Data**:
+  - A sample DataFrame is provided in the `__main__` block for testing purposes.
+
+**Usage:**
+
+- Import or run the script as part of a trading system.
+- Ensure that the `order` function and necessary directories are properly set up.
+- Adjust the global variables and parameters as needed for your trading strategy.
+
+"""
+
 from Server_Order_Place import order
 import logging
 import pandas as pd
@@ -9,6 +63,62 @@ NumberOfStocksToSelectHighestOpenPrice = 10
 
 CapitalRiskedPerLongTrade = 84561
 CapitalRiskedPerShortTrade = 120588
+
+
+import multiprocessing
+import logging
+import traceback
+
+# Define the target function at the top level
+def order_execution_target(queue, order_detail):
+    try:
+        execute_order(order_detail)
+        queue.put(None)  # Indicate successful execution
+    except Exception as e:
+        # Pass exception to the parent process
+        queue.put(e)
+
+def execute_order_with_timeout(order_detail, timeout=10):
+    """
+    Executes the order using the execute_order function with a timeout.
+    
+    Parameters:
+    - order_detail (dict): The order details.
+    - timeout (int): The maximum time (in seconds) to wait for the order execution.
+    
+    Returns:
+    - None
+    """
+    # Create a queue to communicate with the subprocess
+    queue = multiprocessing.Queue()
+    # Start the subprocess
+    process = multiprocessing.Process(target=order_execution_target, args=(queue, order_detail))
+    process.start()
+    # Wait for the specified timeout
+    process.join(timeout)
+
+    if process.is_alive():
+        # Terminate the process if it's still running
+        process.terminate()
+        process.join()
+        logging.error(f"execute_order timed out for {order_detail['Tradingsymbol']}")
+        print(f"Error: execute_order timed out for {order_detail['Tradingsymbol']}")
+    else:
+        # Check for exceptions raised in the subprocess
+        if not queue.empty():
+            exception = queue.get()
+            if exception is not None:
+                logging.error(f"Exception in execute_order for {order_detail['Tradingsymbol']}: {exception}")
+                print(f"Error placing order for {order_detail['Tradingsymbol']}: {exception}")
+                # Optionally, you can log the traceback
+                traceback_str = ''.join(traceback.format_exception(None, exception, exception.__traceback__))
+                logging.error(f"Traceback for {order_detail['Tradingsymbol']}:\n{traceback_str}")
+                print(f"Traceback:\n{traceback_str}")
+        else:
+            # Order executed successfully
+            logging.info(f"Order placed successfully for {order_detail['Tradingsymbol']}.")
+            print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}")
+
 
 def configure_logging(log_file="intraday_orders.log"):
     """
@@ -227,6 +337,7 @@ def execute_order(order_detail):
         logging.error(f"Failed to place order for {order_detail['Tradingsymbol']}: {e}")
         print(f"Error placing order for {order_detail['Tradingsymbol']}: {e}")
 
+
 def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_type_2, risk_per_trade_long= CapitalRiskedPerLongTrade, risk_per_trade_short= CapitalRiskedPerShortTrade):
     """
     Orchestrates the placement of intraday buy/sell orders based on Open Price and risk per trade.
@@ -295,9 +406,8 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
                 continue
             
             print(order_detail)
-            execute_order(order_detail)
+            execute_order_with_timeout(order_detail, timeout=10)
     
-    # **[New Section] Process HighestOpenPriceStocks**
     if not HighestOpenPriceStocks.empty:
         print("Entering the order placement loop for Highest Open Price Stocks.")
         logging.info("Entering the order placement loop for Highest Open Price Stocks.")
@@ -328,7 +438,8 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
                 continue
             
             print(order_detail)
-            execute_order(order_detail)
+            # Use the execute_order_with_timeout function
+            execute_order_with_timeout(order_detail, timeout=10)
     # **[End of New Section]**
     
     logging.info("Completed PlaceIntradayOrders function.")
