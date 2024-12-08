@@ -8,7 +8,7 @@ compute technical indicators, filter stocks based on specific criteria, and opti
    - Reads a CSV file containing stock symbols (`Nifty500ConstituentList`).
 
 2. **Fetch Historical Data**:
-   - Uses the `yfinance` library to download historical **Open**, **Low**, and **Close** prices for the specified symbols over a defined date range.
+   - Uses the `yfinance` library to download historical **Open**, **Low**, **High**, and **Close** prices for the specified symbols over a defined date range.
    - Fetches data in batches to avoid overwhelming the API.
 
 3. **Compute Technical Indicators**:
@@ -16,10 +16,13 @@ compute technical indicators, filter stocks based on specific criteria, and opti
    - **Standard Deviation (Std Dev)**: Calculates the standard deviation over a specified window (default is 90 days).
    - **Open_PrevLow_Diff**: Computes the difference between today's Open price and yesterday's Low price.
    - **Open_PrevLow_Diff_Percent**: Calculates the percentage difference between today's Open and yesterday's Low.
+   - **Open_PrevHigh_Diff**: Computes the difference between today's Open price and yesterday's High price.
+   - **Open_PrevHigh_Diff_Percent**: Calculates the percentage difference between today's Open and yesterday's High.
+   - **Open_Today_Close_Diff**: Calculates the percentage return from today's Open to today's Close.
 
 4. **Data Saving**:
    - Saves the fetched data and computed indicators to CSV files.
-   - Saves sorted data based on `Open_PrevLow_Diff_Percent`.
+   - Saves sorted data based on `Open_PrevLow_Diff_Percent` and `Open_PrevHigh_Diff_Percent`.
 
 5. **Filtering Stocks**:
    - Filters stocks where the **Open Price** is higher than the 20-day SMA (for potential long positions).
@@ -76,8 +79,8 @@ from Directories import *
 
 # Set a smaller batch size to avoid overwhelming the API
 total_batch_size = 500
-#Flag to decide if to place order on Zerodha acc
-PlaceOrderIK6635 = 1
+# Flag to decide if to place order on Zerodha acc
+PlaceOrderIK6635 = False
 
 def read_csv_file(file_path, delimiter=','):
     """
@@ -110,13 +113,15 @@ def batch_iterator(iterable, batch_size):
 
 def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch_size, pause=1):
     """
-    Fetches the Closing Price (Close), Open Price (Open), and Low Price (Low) for each stock symbol 
-    on specified dates using yfinance, computes SMA and Std Dev, calculates the difference 
-    between today's Open and yesterday's Low, and computes the percentage difference.
+    Fetches the Closing Price (Close), Open Price (Open), High Price (High), and Low Price (Low) for each stock symbol
+    on specified dates using yfinance, computes SMA and Std Dev, calculates the difference
+    between today's Open and yesterday's Low and High, computes the percentage differences,
+    and calculates the percentage return from today's Open to today's Close.
 
     Returns:
-    - pandas DataFrame: Contains 'Symbol', 'Date', 'Open Price', 'Low Price', 'Close Price', 
-      'SMA', 'Std Dev', 'Open_PrevLow_Diff', and 'Open_PrevLow_Diff_Percent'.
+    - pandas DataFrame: Contains 'Symbol', 'Date', 'Open Price', 'Low Price', 'High Price', 'Close Price',
+      'SMA', 'Std Dev', 'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent',
+      'Open_PrevHigh_Diff', 'Open_PrevHigh_Diff_Percent', 'Open_Today_Close_Diff'.
     """
     # Initialize a list to store the data
     close_prices = []
@@ -172,11 +177,15 @@ def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch
                     'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
                     'Open Price': [None] * len(desired_dates),
                     'Low Price': [None] * len(desired_dates),
+                    'High Price': [None] * len(desired_dates),
                     'Close Price': [None] * len(desired_dates),
                     'SMA': [None] * len(desired_dates),
                     'Std Dev': [None] * len(desired_dates),
                     'Open_PrevLow_Diff': [None] * len(desired_dates),
                     'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
+                    'Open_PrevHigh_Diff': [None] * len(desired_dates),
+                    'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
+                    'Open_Today_Close_Diff': [None] * len(desired_dates),
                 })
                 close_prices.append(empty_data)
             time.sleep(pause)
@@ -231,19 +240,34 @@ def process_symbol_data(args):
             ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean()
             ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std()
 
-            # Compute Previous Low for calculating the difference
+            # Compute Previous Low and High for calculating the differences
             ticker_data['Prev_Low'] = ticker_data['Low'].shift(1)
-            ticker_data['Open_PrevLow_Diff'] = ticker_data['Open'] - ticker_data['Prev_Low']
+            ticker_data['Prev_High'] = ticker_data['High'].shift(1)
 
-            # Compute Open_PrevLow_Diff_Percent
+            # Compute Open_PrevLow_Diff and Open_PrevLow_Diff_Percent
+            ticker_data['Open_PrevLow_Diff'] = ticker_data['Open'] - ticker_data['Prev_Low']
             ticker_data['Open_PrevLow_Diff_Percent'] = (
                 ticker_data['Open_PrevLow_Diff'] / ticker_data['Prev_Low']
             ) * 100
 
-            # Handle division by zero or NaN in Prev_Low
+            # Compute Open_PrevHigh_Diff and Open_PrevHigh_Diff_Percent
+            ticker_data['Open_PrevHigh_Diff'] = ticker_data['Open'] - ticker_data['Prev_High']
+            ticker_data['Open_PrevHigh_Diff_Percent'] = (
+                ticker_data['Open_PrevHigh_Diff'] / ticker_data['Prev_High']
+            ) * 100
+
+            # Handle division by zero or NaN in Prev_Low and Prev_High
             ticker_data['Open_PrevLow_Diff_Percent'] = ticker_data['Open_PrevLow_Diff_Percent'].replace(
                 [float('inf'), -float('inf')], pd.NA
             )
+            ticker_data['Open_PrevHigh_Diff_Percent'] = ticker_data['Open_PrevHigh_Diff_Percent'].replace(
+                [float('inf'), -float('inf')], pd.NA
+            )
+
+            # Compute Open_Today_Close_Diff
+            ticker_data['Open_Today_Close_Diff'] = (
+                (ticker_data['Close'] - ticker_data['Open']) / ticker_data['Open']
+            ) * 100
 
             # Convert index to date strings
             ticker_data['Date'] = ticker_data.index.strftime("%Y-%m-%d")
@@ -260,14 +284,18 @@ def process_symbol_data(args):
 
                 # Select the necessary columns
                 ticker_data = ticker_data[[
-                    'Symbol', 'Date', 'Open', 'Low', 'Close', 'SMA', 'Std Dev',
-                    'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent'
+                    'Symbol', 'Date', 'Open', 'Low', 'High', 'Close', 'SMA', 'Std Dev',
+                    'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent',
+                    'Open_PrevHigh_Diff', 'Open_PrevHigh_Diff_Percent',
+                    'Open_Today_Close_Diff'
                 ]]
 
                 # Rename columns to match expected output
                 ticker_data.columns = [
-                    'Symbol', 'Date', 'Open Price', 'Low Price', 'Close Price',
-                    'SMA', 'Std Dev', 'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent'
+                    'Symbol', 'Date', 'Open Price', 'Low Price', 'High Price', 'Close Price',
+                    'SMA', 'Std Dev', 'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent',
+                    'Open_PrevHigh_Diff', 'Open_PrevHigh_Diff_Percent',
+                    'Open_Today_Close_Diff'
                 ]
 
                 return ticker_data
@@ -278,11 +306,15 @@ def process_symbol_data(args):
                     'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
                     'Open Price': [None] * len(desired_dates),
                     'Low Price': [None] * len(desired_dates),
+                    'High Price': [None] * len(desired_dates),
                     'Close Price': [None] * len(desired_dates),
                     'SMA': [None] * len(desired_dates),
                     'Std Dev': [None] * len(desired_dates),
                     'Open_PrevLow_Diff': [None] * len(desired_dates),
                     'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
+                    'Open_PrevHigh_Diff': [None] * len(desired_dates),
+                    'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
+                    'Open_Today_Close_Diff': [None] * len(desired_dates),
                 })
                 return empty_data
         else:
@@ -292,11 +324,15 @@ def process_symbol_data(args):
                 'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
                 'Open Price': [None] * len(desired_dates),
                 'Low Price': [None] * len(desired_dates),
+                'High Price': [None] * len(desired_dates),
                 'Close Price': [None] * len(desired_dates),
                 'SMA': [None] * len(desired_dates),
                 'Std Dev': [None] * len(desired_dates),
                 'Open_PrevLow_Diff': [None] * len(desired_dates),
                 'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
+                'Open_PrevHigh_Diff': [None] * len(desired_dates),
+                'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
+                'Open_Today_Close_Diff': [None] * len(desired_dates),
             })
             logging.warning(f"No data found for symbol {symbol}.")
             return empty_data
@@ -307,23 +343,27 @@ def process_symbol_data(args):
             'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
             'Open Price': [None] * len(desired_dates),
             'Low Price': [None] * len(desired_dates),
+            'High Price': [None] * len(desired_dates),
             'Close Price': [None] * len(desired_dates),
             'SMA': [None] * len(desired_dates),
             'Std Dev': [None] * len(desired_dates),
             'Open_PrevLow_Diff': [None] * len(desired_dates),
             'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
+            'Open_PrevHigh_Diff': [None] * len(desired_dates),
+            'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
+            'Open_Today_Close_Diff': [None] * len(desired_dates),
         })
         logging.error(f"Error processing data for symbol {symbol}: {e}")
         return empty_data
 
 def save_to_csv(df, output_file, selected_date_input):
     """
-    Saves the DataFrame with Close prices, SMA, Std Dev, Open Price, Low Price, 
-    Open_PrevLow_Diff, and Open_PrevLow_Diff_Percent to a CSV file.
+    Saves the DataFrame with Close prices, SMA, Std Dev, Open Price, Low Price,
+    Open_PrevLow_Diff, Open_PrevLow_Diff_Percent, Open_PrevHigh_Diff, Open_PrevHigh_Diff_Percent,
+    and Open_Today_Close_Diff to a CSV file.
 
     Parameters:
-    - df (pandas DataFrame): DataFrame containing 'Symbol', 'Date', 'Open Price', 'Low Price', 
-      'Close Price', 'SMA', 'Std Dev', 'Open_PrevLow_Diff', and 'Open_PrevLow_Diff_Percent'.
+    - df (pandas DataFrame): DataFrame containing the data.
     - output_file (str): Path to the output CSV file.
     """
     try:
@@ -346,16 +386,23 @@ def save_to_csv(df, output_file, selected_date_input):
             print(f"Error saving unavailable tickers to CSV: {e}")
             logging.error(f"Error saving unavailable tickers to CSV {unavailable_file}: {e}")
 
-def save_sorted_to_csv(df, selected_date, output_directory):
+def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=True):
     """
-    Saves a sorted DataFrame based on Open_PrevLow_Diff_Percent for the selected date.
+    Saves sorted DataFrames based on Open_PrevLow_Diff_Percent and Open_PrevHigh_Diff_Percent for the selected date,
+    filters stocks where the Open Price is higher than the 20-day SMA for long positions,
+    and where Open Price is lower than the 20-day SMA for short positions.
 
     Parameters:
     - df (pandas DataFrame): The main DataFrame containing all data.
     - selected_date (str): The date for which sorting is to be performed ('YYYY-MM-DD').
     - output_directory (str): Directory where the sorted CSV will be saved.
+    - PlaceOrderIK6635 (bool): Flag to determine whether to place orders. Defaults to True.
+
+    Returns:
+    - None
     """
     # Filter the DataFrame for the selected date
+    print(df['Date'])
     df_selected_date = df[df['Date'] == selected_date]
 
     if df_selected_date.empty:
@@ -363,31 +410,102 @@ def save_sorted_to_csv(df, selected_date, output_directory):
         logging.warning(f"No data available for the selected date: {selected_date}.")
         return
 
-    # Drop rows where 'Open_PrevLow_Diff_Percent' is NaN to avoid sorting issues
-    df_sorted = df_selected_date.dropna(subset=['Open_PrevLow_Diff_Percent'])
+    # Drop rows where required fields are NaN to avoid sorting and filtering issues
+    df_filtered = df_selected_date.dropna(subset=['Open_PrevLow_Diff_Percent', 'Open_PrevHigh_Diff_Percent', 'SMA'])
 
-    if df_sorted.empty:
-        print(f"\nAll entries for the selected date have NaN in 'Open_PrevLow_Diff_Percent'.")
-        logging.warning(f"All entries for the selected date have NaN in 'Open_PrevLow_Diff_Percent'.")
+    if df_filtered.empty:
+        print(f"\nAll entries for the selected date have NaN in required fields.")
+        logging.warning(f"All entries for the selected date have NaN in required fields.")
         return
 
-    # Sort the DataFrame in ascending order based on 'Open_PrevLow_Diff_Percent'
-    df_sorted = df_sorted.sort_values(by='Open_PrevLow_Diff_Percent', ascending=True)
+    # Filter for long positions: Open Price > SMA
+    df_sorted = df_filtered[df_filtered['Open Price'] > df_filtered['SMA']]
+    # Filter for short positions: Open Price < SMA
+    df_sorted_short = df_filtered[df_filtered['Open Price'] < df_filtered['SMA']]
 
-    # Define the sorted output file path
-    sorted_output_file = os.path.join(output_directory, 'close_prices_sorted.csv')
-
-    try:
-        df_sorted.to_csv(sorted_output_file, index=False)
-        print(f"\nSuccessfully saved sorted data to {sorted_output_file}")
-        logging.info(f"Saved sorted data to {sorted_output_file}")
-    except Exception as e:
-        print(f"Error saving sorted data to CSV: {e}")
-        logging.error(f"Error saving sorted data to CSV {sorted_output_file}: {e}")
-
-    # Optionally, print the sorted DataFrame
-    print("\nSorted Tickers based on Open_PrevLow_Diff_Percent for the selected date:")
+    print('Filtered details for Long Positions:')
     print(df_sorted)
+    print('Filtered details for Short Positions:')
+    print(df_sorted_short)
+
+    if df_sorted.empty:
+        print(f"\nNo stocks have Open Price higher than the 20-day SMA on {selected_date}.")
+        logging.warning(f"No stocks have Open Price higher than the 20-day SMA on {selected_date}.")
+    else:
+        # Sort the DataFrame in ascending order based on 'Open_PrevLow_Diff_Percent'
+        df_sorted = df_sorted.sort_values(by='Open_PrevLow_Diff_Percent', ascending=True)
+
+    if df_sorted_short.empty:
+        print(f"\nNo stocks have Open Price lower than the 20-day SMA on {selected_date}.")
+        logging.warning(f"No stocks have Open Price lower than the 20-day SMA on {selected_date}.")
+    else:
+        # Sort the DataFrame in descending order based on 'Open_PrevHigh_Diff_Percent'
+        df_sorted_short = df_sorted_short.sort_values(by='Open_PrevHigh_Diff_Percent', ascending=False)
+
+    # Get today's date as a string in 'YYYY-MM-DD' format
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    print(today_str)
+    # Define the sorted output file paths with today's date in the filename
+    sorted_output_file = os.path.join(output_directory, f'close_prices_sorted_long_{selected_date}.csv')
+    sorted_output_file_short = os.path.join(output_directory, f'close_prices_sorted_short_{selected_date}.csv')
+
+    # Save the sorted DataFrames to CSV files
+    if not df_sorted.empty:
+        try:
+            df_sorted.to_csv(sorted_output_file, index=False)
+            print(f"\nSuccessfully saved sorted data to {sorted_output_file}")
+            logging.info(f"Saved sorted data to {sorted_output_file}")
+        except Exception as e:
+            print(f"Error saving sorted data to CSV: {e}")
+            logging.error(f"Error saving sorted data to CSV {sorted_output_file}: {e}")
+
+    if not df_sorted_short.empty:
+        try:
+            df_sorted_short.to_csv(sorted_output_file_short, index=False)
+            print(f"\nSuccessfully saved sorted data to {sorted_output_file_short}")
+            logging.info(f"Saved sorted data to {sorted_output_file_short}")
+        except Exception as e:
+            print(f"Error saving sorted data to CSV: {e}")
+            logging.error(f"Error saving sorted data to CSV {sorted_output_file_short}: {e}")
+
+    # Optionally, print the sorted DataFrames
+    # print("\nSorted Tickers for Long Positions:")
+    # print(df_sorted)
+    # print("\nSorted Tickers for Short Positions:")
+    # print(df_sorted_short)
+
+    # Call Function to place orders on Zerodha account IK6635 if flag is True
+    if PlaceOrderIK6635:
+        trade_type_1, trade_type_2 = determine_trade_type()
+        PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1, trade_type_2)
+
+def determine_trade_type():
+    """
+    Determines the trade type based on the current time.
+    - Before 11 AM: 'BUY' (long)
+    - After 11 AM: 'SELL' (short)
+
+    Returns:
+    - str: 'BUY' or 'SELL' for long positions
+    - str: 'SELL' or 'BUY' for short positions
+    """
+    current_time = datetime.now().time()
+    eleven_am = datetime.strptime("11:00:00", "%H:%M:%S").time()
+
+    if current_time < eleven_am:
+        trade_type_1 = 'BUY'
+        trade_type_2 = 'SELL'
+    else:
+        trade_type_1 = 'SELL'
+        trade_type_2 = 'BUY'
+
+    logging.info(f"Determined trade type for long positions: {trade_type_1} based on current time: {current_time}")
+    print(f"Determined trade type for long positions: {trade_type_1} based on current time: {current_time}")
+
+    logging.info(f"Determined trade type for short positions: {trade_type_2} based on current time: {current_time}")
+    print(f"Determined trade type for short positions: {trade_type_2} based on current time: {current_time}")
+
+    return trade_type_1, trade_type_2
 
 def main():
     # Define the path to the CSV file
@@ -429,18 +547,17 @@ def main():
     # Prompt the user to input the selected date, lookback period, SMA window, and Std Dev window
     print("\nEnter the selected date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
+    selected_date_input = '2024-08-12'  # str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
 
-    #print("\nEnter the lookback period (number of trading days to look back from the selected date).")
-    #print("For example, enter 90 to fetch data from 90 trading days prior to the selected date:")
-    lookback_input = '120'#input("Lookback Period (trading days): ").strip() or '120'
+    # print("\nEnter the lookback period (number of trading days to look back from the selected date).")
+    # print("For example, enter 90 to fetch data from 90 trading days prior to the selected date:")
+    lookback_input = '120'  # input("Lookback Period (trading days): ").strip() or '120'
 
-    #print("\nEnter the SMA window (number of days for Simple Moving Average):")
-    sma_input = '20'#input("SMA Window (days): ").strip() or '20'
+    # print("\nEnter the SMA window (number of days for Simple Moving Average):")
+    sma_input = '20'  # input("SMA Window (days): ").strip() or '20'
 
-    #print("\nEnter the Std Dev window (number of days for Standard Deviation):")
-    std_dev_input = '90' #input("Std Dev Window (days): ").strip() or '90'
-
+    # print("\nEnter the Std Dev window (number of days for Standard Deviation):")
+    std_dev_input = '90'  # input("Std Dev Window (days): ").strip() or '90'
 
     # Validate the selected date
     try:
@@ -499,7 +616,7 @@ def main():
     print(f"Std Dev Window: {std_dev_window} days")
     print(f"Fetching Close prices from {trading_days[0]} to {trading_days[-1]}")
 
-    # Fetch Close prices in batches and compute SMA, Std Dev, Open_PrevLow_Diff Percent
+    # Fetch Close prices in batches and compute SMA, Std Dev, Open_PrevLow_Diff Percent, Open_Today_Close_Diff
     df_close = fetch_ltp(symbols, trading_days, sma_window, std_dev_window, batch_size=total_batch_size, pause=1)
 
     # Prepare the output
@@ -512,7 +629,7 @@ def main():
     # Create and save the sorted DataFrame based on 'Open_PrevLow_Diff_Percent' for the selected date
     save_sorted_to_csv(df_close, selected_date_input, output_directory)
 
-    # Optional: Print the results
+    # Optionally, print the results
     '''print("\nAvailable Tickers with Close Prices, SMA, Std Dev, Open Price, Low Price, and Open_PrevLow_Diff:")
     available_df = df_close[df_close['Close Price'].notna()]
     if not available_df.empty:
@@ -524,127 +641,9 @@ def main():
     unavailable_df = df_close[df_close['Close Price'].isna()]
     if not unavailable_df.empty:
         print("\nSome Tickers have No Data Available:")
-        #print(unavailable_df)
+        # print(unavailable_df)
     else:
         print("\nAll tickers have Close Prices available.")
-
-def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=True):
-    """
-    Saves a sorted DataFrame based on Open_PrevLow_Diff_Percent for the selected date,
-    and filters stocks where the Open Price is higher than the 20-day SMA.
-
-    Parameters:
-    - df (pandas DataFrame): The main DataFrame containing all data.
-    - selected_date (str): The date for which sorting is to be performed ('YYYY-MM-DD').
-    - output_directory (str): Directory where the sorted CSV will be saved.
-    - PlaceOrderIK6635 (bool): Flag to determine whether to place orders. Defaults to True.
-
-    Returns:
-    - None
-    """
-    # Filter the DataFrame for the selected date
-    df_selected_date = df[df['Date'] == selected_date]
-
-    if df_selected_date.empty:
-        print(f"\nNo data available for the selected date: {selected_date}.")
-        logging.warning(f"No data available for the selected date: {selected_date}.")
-        return
-
-    # Drop rows where 'Open_PrevLow_Diff_Percent' or 'SMA' is NaN to avoid sorting and filtering issues
-    df_filtered = df_selected_date.dropna(subset=['Open_PrevLow_Diff_Percent', 'SMA'])
-
-    if df_filtered.empty:
-        print(f"\nAll entries for the selected date have NaN in 'Open_PrevLow_Diff_Percent' or 'SMA'.")
-        logging.warning(f"All entries for the selected date have NaN in 'Open_PrevLow_Diff_Percent' or 'SMA'.")
-        return
-
-    # Further filter to include only stocks where 'Open Price' > 'SMA'
-    df_sorted = df_filtered[df_filtered['Open Price'] > df_filtered['SMA']]
-    df_sorted_short = df_filtered[df_filtered['Open Price'] < df_filtered['SMA']]
-    print('Sorted details for Long')
-    print(df_sorted)
-    print('Sorted details for Short')
-    print(df_sorted_short)
-
-
-    if df_sorted.empty:
-        print(f"\nNo stocks have Open Price higher than the 20-day SMA on {selected_date}.")
-        logging.warning(f"No stocks have Open Price higher than the 20-day SMA on {selected_date}.")
-        return
-    
-    if df_sorted_short.empty:
-        print(f"\nNo stocks have Open Price lower than the 20-day SMA on {selected_date}.")
-        logging.warning(f"No stocks have Open Price lower than the 20-day SMA on {selected_date}.")
-        return
-    # Sort the DataFrame in ascending order based on 'Open_PrevLow_Diff_Percent'
-    df_sorted = df_sorted.sort_values(by='Open_PrevLow_Diff_Percent', ascending=True)
-    df_sorted_short = df_sorted_short.sort_values(by='Open_PrevLow_Diff_Percent', ascending=False)
-
-    #print(df_sorted)
-    #print(df_sorted_short)
-
-    # Get today's date as a string in 'YYYY-MM-DD' format
-    today_str = datetime.today().strftime('%Y-%m-%d')
-    print(today_str)
-    # Define the sorted output file paths with today's date in the filename
-    sorted_output_file = os.path.join(output_directory, f'close_prices_sorted_long_{selected_date}.csv')
-    sorted_output_file_short = os.path.join(output_directory, f'close_prices_sorted_short_{selected_date}.csv')
-
-    try:
-        df_sorted.to_csv(sorted_output_file, index=False)
-        print(f"\nSuccessfully saved sorted data to {sorted_output_file}")
-        logging.info(f"Saved sorted data to {sorted_output_file}")
-    except Exception as e:
-        print(f"Error saving sorted data to CSV: {e}")
-        logging.error(f"Error saving sorted data to CSV {sorted_output_file}: {e}")
-        return  # Exit the function if saving fails
-
-    try:
-        df_sorted_short.to_csv(sorted_output_file_short, index=False)
-        print(f"\nSuccessfully saved sorted data to {sorted_output_file_short}")
-        logging.info(f"Saved sorted data to {sorted_output_file_short}")
-    except Exception as e:
-        print(f"Error saving sorted data to CSV: {e}")
-        logging.error(f"Error saving sorted data to CSV {sorted_output_file_short}: {e}")
-        return  # Exit the function if saving fails
-    
-    # Optionally, print the sorted DataFrame
-    #print("\nSorted Tickers based on Open_PrevLow_Diff_Percent and Open Price > 20-day SMA for the selected date:")
-    #print(df_sorted)
-
-    # Call Function to place orders on Zerodha account IK6635 if flag is True
-    if PlaceOrderIK6635:
-
-        trade_type_1,trade_type_2 = determine_trade_type()
-        #PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1,trade_type_2)
-
-def determine_trade_type():
-    """
-    Determines the trade type based on the current time.
-    - Before 11 AM: 'BUY' (long)
-    - After 11 AM: 'SELL' (short)
-
-    Returns:
-    - str: 'BUY' or 'SELL'
-    """
-    current_time = datetime.now().time()
-    eleven_am = datetime.strptime("11:00:00", "%H:%M:%S").time()
-    
-    if current_time < eleven_am:
-        trade_type_1 = 'BUY'
-        trade_type_2 = 'SELL'
-    else:
-        trade_type_1 = 'SELL'
-        trade_type_2 = 'BUY'
-    
-    logging.info(f"Determined trade type: {trade_type_1} based on current time: {current_time}")
-    print(f"Determined trade type: {trade_type_1} based on current time: {current_time}")
-
-    logging.info(f"Determined trade type: {trade_type_2} based on current time: {current_time}")
-    print(f"Determined trade type: {trade_type_2} based on current time: {current_time}")
-
-    return trade_type_1,trade_type_2
-
 
 if __name__ == "__main__":
     main()
