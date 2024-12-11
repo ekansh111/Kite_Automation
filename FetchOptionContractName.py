@@ -105,18 +105,27 @@ def FetchOptionName(OrderDetails):
     
     #if the last Expiry day comes in next year then the year will be rolled over
     y0= ExpiryDate.strftime("%y")
+    
     #No longeer in use as the format has been changed #find out using the days left to next month, if the next month value needs to be added. This can happen during the last week of the month when the next month's weekly contract needs to selected.
     m0 = ExpiryDate.strftime("%m")
+    
+    #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract    
+    month = int(m0)#[0]#Get the first letter of the month for new format
+
+    if month > 9:
+        m0 = (ExpiryDate.strftime("%b")).upper()
+        print('First day of the month' + str(m0))
+        month = m0[0]
+
     #m0 = (ExpiryDate.strftime("%b")).upper()#Fetch the name of the month of the option series to be executed
     d0= ExpiryDate.strftime("%d")
     year = int(y0)
-    #month has to be converted into an integer because it cannot have 0 suffixing it if it is a single digit month eg in the contract
-    month = int(m0)#[0]#Get the first letter of the month for new format
     day=d0
 
     #Check if the day is last Expiry day of the month (Since Expiry day is the expiry day for options)
     #Even if the last day turns out to be an holiday, no issues since the prior day will also be last instance for that month and Monthly contract name willl be used
-    if (ExpiryDate == last_day) and (Broker != 'ANGEL'):
+    #Post dec 2024 , even Angel will need same changes
+    if (ExpiryDate == last_day): #and (Broker != 'ANGEL'):
     #If true then need to change the value for month and day as the name format of the option contract(Month expiry Option ) changes
         month=(date.today().strftime("%b")).upper()
         day=''
@@ -189,7 +198,22 @@ def FetchOptionName(OrderDetails):
             print("MIDCPNIFTY LTP:"+str(ltp))
                 
 
-        ##################################################################################################################################        
+        ##################################################################################################################################     
+
+    elif IndexName == 'SENSEX' and (ContractStrikeOverride != 'True'):
+        ##################################################################################################################################
+        #Find the current value of the bank nifty index
+        NIFTY_index = {265:'SENSEX'}
+        
+        for val in NIFTY_index:
+            time.sleep(0.1)
+            price = kite.ltp('BSE:' + NIFTY_index[val])#this will send ohlc price in dictionary format
+            #print(price)
+            ltp = price['BSE:'+NIFTY_index[val]]['last_price']#to get ltp of whichever stick is declared in token
+            print("SENSEX LTP:"+str(ltp))
+                
+
+        ##################################################################################################################################      
 
     #Override the ltp value If the contract name needs to be Named according to ltp(when the contract position was entered) provided in the request
     if ContractStrikeOverride == 'True':
@@ -206,8 +230,11 @@ def FetchOptionName(OrderDetails):
     DateFormat = str(year)+ str(month) +str(day)
 
     if Broker == 'ANGEL':
-        month = (ExpiryDate.strftime("%b")).upper()
-        DateFormat = str(day)+str(month)+str(year)
+        if IndexName != 'SENSEX':
+            month = (ExpiryDate.strftime("%b")).upper()
+            DateFormat = str(day)+str(month)+str(year)
+        else:
+            DateFormat = str(year) +str(month) + str(day)
 
     if IndexName == 'BANKNIFTY':
         #Append the dates and the script name to create the complete contract names to be Traded
@@ -229,14 +256,18 @@ def FetchOptionName(OrderDetails):
         ATM_CALL = 'MIDCPNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'MIDCPNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
-    #print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
+    elif IndexName == 'SENSEX':
+        #Append the dates and the script name to create the complete contract names to be Traded
+        ATM_CALL = 'SENSEX'+ DateFormat +str(ATM_CE_Strike)+'CE'
+        ATM_PUT = 'SENSEX'+ DateFormat +str(ATM_PE_Strike)+'PE'
+    print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
 
     #Return Only the required contracts
     if CE_Return == 'True' and PE_Return=='False':
-        #print(ATM_CALL)
+        print(ATM_CALL)
         return ATM_CALL
     elif PE_Return == 'True' and CE_Return=='False':
-        #print(ATM_PUT)
+        print(ATM_PUT)
         return ATM_PUT
     elif PE_Return == 'True' and CE_Return=='True':
         print(ATM_CALL,ATM_PUT)
