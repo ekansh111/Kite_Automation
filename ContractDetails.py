@@ -3,6 +3,7 @@ BankNiftyContractWidth = 100
 NiftyContractWidth = 50
 FinNiftyContractWidth = 50
 MidCPNiftyContractWidth = 25
+SensexContractWidth = 10
 
 def ContractStrikeValue(ContractStrikeFromATMPercent,ATM_ltp,IndexName):
   
@@ -35,6 +36,13 @@ def ContractStrikeValue(ContractStrikeFromATMPercent,ATM_ltp,IndexName):
         ATM_CE_Strike = round(float(ATM_CE_Strike/MidCPNiftyContractWidth)) * MidCPNiftyContractWidth
         ATM_PE_Strike = round(float(ATM_PE_Strike/MidCPNiftyContractWidth)) * MidCPNiftyContractWidth
     
+    elif IndexName == 'SENSEX':
+        ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)))
+        ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)))  
+
+        ATM_CE_Strike = round(float(ATM_CE_Strike/SensexContractWidth)) * SensexContractWidth
+        ATM_PE_Strike = round(float(ATM_PE_Strike/SensexContractWidth)) * SensexContractWidth
+
     print('Contract Strike Value Function',ATM_ltp,ATM_CE_Strike,ATM_PE_Strike) 
     return ATM_CE_Strike,ATM_PE_Strike
 
