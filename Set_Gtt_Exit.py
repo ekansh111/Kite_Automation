@@ -48,10 +48,9 @@ order_sell = kite.TRANSACTION_TYPE_SELL
 
 order_validity = kite.VALIDITY_DAY  
 
-
+exchange = 'NFO'
 
 def Set_Gtt(OrderDetails):
-    #print('setgtt')
     print(OrderDetails)
     ATM_VAL = OrderDetails['Tradingsymbol']
     Quantity = OrderDetails['Quantity']
@@ -59,6 +58,7 @@ def Set_Gtt(OrderDetails):
     StopLossTriggerPercent = int(OrderDetails['StopLossTriggerPercent'])
     StopLossOrderPlacePercent = int(OrderDetails['StopLossOrderPlacePercent'])
     Hedge = OrderDetails['Hedge']
+    exchange = OrderDetails['Exchange']
 
     #print(Hedge)
     if Hedge == 'False':
@@ -67,10 +67,28 @@ def Set_Gtt(OrderDetails):
             Trigger = Trigger - 1
         
         #If the order needs to be placed Angel then route through a different process as Instrument names are different
-        if OrderDetails.get("Broker") == 'ANGEL':
+        if OrderDetails.get("Broker") == 'ANGEL' and (ATM_VAL[0:6] != 'SENSEX'):
+            exchange = exchange
             smartApi = Login_Angel_Api(OrderDetails)
-            fetch_ltp = smartApi.ltpData(exchange= 'NFO',tradingsymbol=ATM_VAL,symboltoken=OrderDetails['Symboltoken'])
+            fetch_ltp = smartApi.ltpData(exchange= exchange,tradingsymbol=ATM_VAL,symboltoken=OrderDetails['Symboltoken'])
             option_ltp = int(fetch_ltp['data']['ltp'])
+
+        elif (OrderDetails.get("Broker") == 'ANGEL') and (ATM_VAL[0:6] == 'SENSEX'):
+            smartApi = Login_Angel_Api(OrderDetails)
+            #Set the Exchange to BFO for sensex orders
+            exchange = exchange
+            fetch_ltp = smartApi.ltpData(exchange= exchange,tradingsymbol=ATM_VAL,symboltoken=OrderDetails['Symboltoken'])
+            option_ltp = int(fetch_ltp['data']['ltp'])
+            print('Option LTP')
+            print(option_ltp)
+        
+
+        elif ATM_VAL[0:6] == 'SENSEX':
+            fetch_ltp = kite.ltp('BFO:' + ATM_VAL)
+            option_ltp = int(fetch_ltp['BFO:'+ATM_VAL]['last_price'])
+            #Set the Exchange to BFO for sensex orders
+            order_exchange = kite.EXCHANGE_BFO
+        
         else:             
             fetch_ltp = kite.ltp('NFO:' + ATM_VAL)
             option_ltp = int(fetch_ltp['NFO:'+ATM_VAL]['last_price'])
@@ -81,10 +99,11 @@ def Set_Gtt(OrderDetails):
         #print(str(ATM_VAL) +'|'+ str(OrderDetails['Symboltoken']) +'|'+ str(option_sl) +'|'+ str(Quantity) +'|'+ str(option_trigger) +'|'+ str(OrderDetails['TimePeriod']))
         #If the order needs to be placed for angel broking account
         if OrderDetails.get("Broker") == 'ANGEL':
+
             gttCreateParams = {
                                 "tradingsymbol": ATM_VAL,
                                 "symboltoken": OrderDetails['Symboltoken'],
-                                "exchange": 'NFO',
+                                "exchange": exchange,
                                 "producttype": "CARRYFORWARD",
                                 "transactiontype": 'BUY',
                                 "price": option_sl,
@@ -92,6 +111,8 @@ def Set_Gtt(OrderDetails):
                                 "triggerprice": option_trigger,
                                 "timeperiod": OrderDetails['TimePeriod']
                             }
+            #print(gttCreateParams)
+
             smartApi.gttCreateRule(gttCreateParams)
         else:
             kite.place_gtt(trigger_type=gtt_trigger_type,
@@ -124,4 +145,15 @@ def write_order_details_to_csv(OrderDetails, csv_file_path):
         # Write values row with current time
         csvwriter.writerow([current_time] + values)
 
+if __name__ == '__main__':
+    #OrderDetails = {'Hedge':'False','StopLossOrderPlacePercent':150,'Trigger':1,'Tradingsymbol': 'SENSEX24D1381600CE', 'symboltoken': '1164987', 'exchange': 'BFO', 'producttype': 'CARRYFORWARD', 'transactiontype': 'BUY', 'price': 778.3, 'Quantity': '10', 'StopLossTriggerPercent': 716.3, 'timeperiod': '4'}
     
+    OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '50', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
+                     'Symboltoken':'1164987', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'27',
+                     'StopLossOrderPlacePercent':'38','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"2"}
+    '''
+    OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
+                     'Symboltoken':'46122', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
+                     'StopLossOrderPlacePercent':'152','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"3"}
+    '''       
+    Set_Gtt(OrderDetails)    
