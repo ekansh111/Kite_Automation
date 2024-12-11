@@ -39,7 +39,8 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
             "CNC":kite.PRODUCT_CNC,"DAY":kite.VALIDITY_DAY,"IOC":kite.VALIDITY_IOC,"BO":kite.VARIETY_CO,"CO":kite.VARIETY_CO,"SL":kite.ORDER_TYPE_SL,"SLM":kite.ORDER_TYPE_SLM,
             "market":kite.ORDER_TYPE_MARKET,"limit":kite.ORDER_TYPE_LIMIT,"nse":kite.EXCHANGE_NSE,"nfo":kite.EXCHANGE_NFO,"mcx":"MCX","cds":kite.EXCHANGE_CDS,
             "BUY":kite.TRANSACTION_TYPE_BUY,"SELL":kite.TRANSACTION_TYPE_SELL,"amo":kite.VARIETY_AMO,"regular":kite.VARIETY_REGULAR,"nrml":kite.PRODUCT_NRML,"mis":kite.PRODUCT_MIS,
-            "cnc":kite.PRODUCT_CNC,"day":kite.VALIDITY_DAY,"ioc":kite.VALIDITY_IOC,"bo":kite.VARIETY_CO,"co":kite.VARIETY_CO,"sl":kite.ORDER_TYPE_SL,"slm":kite.ORDER_TYPE_SLM            
+            "cnc":kite.PRODUCT_CNC,"day":kite.VALIDITY_DAY,"ioc":kite.VALIDITY_IOC,"bo":kite.VARIETY_CO,"co":kite.VARIETY_CO,"sl":kite.ORDER_TYPE_SL,"slm":kite.ORDER_TYPE_SLM ,
+            "bfo":kite.EXCHANGE_BFO,"BFO":kite.EXCHANGE_BFO           
              }
  
     try:
@@ -61,6 +62,8 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
         logging.basicConfig(level=logging.DEBUG)
         logging.info("Order placement failed: {}".format(e))
         exit(1)
+    
+    return order_id
 
 
 #def order_angel(Broker,Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
