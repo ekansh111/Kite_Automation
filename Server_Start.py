@@ -6,6 +6,7 @@ from json import loads
 from Server_Order_Place import order
 from Login_Auto3_Angel import Login_Angel_Api
 from PlaceFNOTradesKite import LoopHashOrderRequest
+from PlaceMonthlyContrctFNOtrades import *
 
 app = Flask(__name__)
 run_with_ngrok(app,subdomain="test111")#test111 subdomain for testing
@@ -21,7 +22,7 @@ def webhook():
     if request.method == 'POST':
 
         order_details_fetch = request.get_json()
-        #print(order_details_fetch)
+        print(order_details_fetch)
         #print(order_details_fetch)
         if(order_details_fetch == None):            
             return 'Server is Up,No values sent',200
@@ -33,6 +34,10 @@ def webhook():
 
             #If the request is to place an option order through API
             elif (order_details_fetch.get("Option") != None) and (order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION'):
+                if order_details_fetch.get("Option").get("OptionType") == 'MonthlyOption':
+                    print(order_details_fetch)
+                    set_week_based_sl(order_details_fetch)
+                    
                 LoopHashOrderRequest(order_details_fetch)
                 Broker = 'null'
                 #Without the below return statement it causes the function to be called 4 times and the it causes order to be placed 4 times
