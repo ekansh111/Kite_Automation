@@ -1,3 +1,10 @@
+"""
+Description:
+This script demonstrates a workflow for placing and exiting FNO trades in Zerodha Kite using a week-based SL (stop-loss) strategy, 
+and optionally setting GTT (Good Till Triggered) orders for exits. It also fetches historical GTT IDs based on stored CSV entries, 
+and processes exit orders using the retrieved GTT details. The script supports multiple order tags, each with a distinct SL configuration 
+per week of the month, including a special configuration after the last Thursday of the month.
+"""
 from PlaceFNOTradesKite import *
 from FetchOptionContractName import FetchOptionName
 from kiteconnect import KiteConnect
@@ -177,18 +184,14 @@ def FetchHistoricalDateOrderPlaced(OrderDetails):
         HistoricalOrderPlacedDate = (monday_of_current_week - timedelta(days=3)).strftime('%Y-%m-%d')
     
     elif OrderTag == "22MN-STR-TH":
-        # Last Tuesday of the current week
-        # Tuesday is weekday=1, so Tuesday of this week is Monday_of_current_week + 1 day
-        HistoricalOrderPlacedDate = (monday_of_current_week - timedelta(days=6)).strftime('%Y-%m-%d')
+        # Last Wednesday of the previous week
+        # Wednesday is weekday=2, so Wednesday of last week is Monday_of_current_week - 5 day
+        HistoricalOrderPlacedDate = (monday_of_current_week - timedelta(days=5)).strftime('%Y-%m-%d')
     
     elif OrderTag == "25BN-SP-MD-TH":
-        # Last Tuesday of the current week
-        # Tuesday is weekday=1, so Tuesday of this week is Monday_of_current_week + 1 day
         HistoricalOrderPlacedDate = (monday_of_current_week - timedelta(days=4)).strftime('%Y-%m-%d')
 
     elif OrderTag == "25BN-SC-MD-TH":
-        # Last Tuesday of the current week
-        # Tuesday is weekday=1, so Tuesday of this week is Monday_of_current_week + 1 day
         HistoricalOrderPlacedDate = (monday_of_current_week - timedelta(days=4)).strftime('%Y-%m-%d')
 
     else:
@@ -197,12 +200,10 @@ def FetchHistoricalDateOrderPlaced(OrderDetails):
 
     return HistoricalOrderPlacedDate
 
-#def PopulateExitHash():
-    #Function to populate the exit hash to place the exit order based on details retrived from gtt
 def process_exit_orders(OrderDetails, kite, WriteOptionDetailsFile):
     HistoricalOrderDate = FetchHistoricalDateOrderPlaced(OrderDetails)
     print('Last week historical order placed date ' + str(HistoricalOrderDate))
-    HistoricalOrderDate = '2024-12-18'
+    #HistoricalOrderDate = '2024-12-18'
     
     GTTId_To_Compare_List = Fetch_Historical_GTTId(OrderDetails, HistoricalOrderDate, WriteOptionDetailsFile)
     
@@ -241,7 +242,7 @@ if __name__ == '__main__':
         if proceed in {"G","g"}:
             Override = False    
         if proceed in {"M","m"}:
-            #print("1A--NiftyStraddle_Mon_12Pm_100Sl \n 2--NiftyStraddle_Tue_11Am_110Sl  \n  7--NiftySellCall_Thu_1520Pm_50Sl \n 18--SensexStraddle_Mon_930Am_150Sl \n 19--SensexStraddle_Tue_1020Am_135Sl \n 20--SensexSellCall_Fri_1520Pm_25Sl ")
+            print(" 95--BankNiftyStraddle_Fri_945Am_Monthly \n 96--BankNiftyStraddle_Fri_945Am_Monthly_Exit  \n 97--MidCPNiftyStraddle_Wed_13Pm_Monthly \n 98--MidCPNiftyStraddle_Wed_13Pm_Monthly_Exit \n 99--BankNiftyMACD_Thu_15Pm_Monthly_Exit \n 100--MidCPNiftyMACD_Mon_15Pm_Monthly_Exit ")
             Override = input("Enter the Override value \n") or False
         if proceed in {"N","n"}:
             abort()
@@ -259,9 +260,9 @@ if __name__ == '__main__':
         BankNiftyStraddle_Fri_945Am_Monthly =  str(now.strftime("%H:%M:%S")) == '09:45:00' and ((CurrWkDy == FRIDAY)   or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
         BankNiftyStraddle_Fri_945Am_Monthly_Exit =  str(now.strftime("%H:%M:%S")) == '15:15:00' and ((CurrWkDy == THURSDAY)   or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))
         MidCPNiftyStraddle_Wed_13Pm_Monthly =   str(now.strftime("%H:%M:%S")) == '13:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        MidCPNiftyStraddle_Wed_13Pm_Monthly_Exit =   str(now.strftime("%H:%M:%S")) == '15:00:00' and ((CurrWkDy == MONDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        BankNiftyMACD_Thu_15Pm_Monthly_Exit =    str(now.strftime("%H:%M:%S")) == '13:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        MidCPNiftyMACD_Mon_15Pm_Monthly_Exit =  str(now.strftime("%H:%M:%S")) == '13:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        MidCPNiftyStraddle_Wed_13Pm_Monthly_Exit =   str(now.strftime("%H:%M:%S")) == '15:15:00' and ((CurrWkDy == MONDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        BankNiftyMACD_Thu_15Pm_Monthly_Exit =    str(now.strftime("%H:%M:%S")) == '15:15:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        MidCPNiftyMACD_Mon_15Pm_Monthly_Exit =  str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
 
 
         # For testing the override scenario:
