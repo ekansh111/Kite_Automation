@@ -12,6 +12,9 @@ from dateutil.relativedelta import TH,MO,TU,WE,FR, relativedelta
 import time
 from Holidays import CheckForDateHoliday
 from Directories import *
+import calendar
+from datetime import date
+from dateutil.relativedelta import relativedelta
 
 #Function to fetch the option name of the script
 def FetchOptionName(OrderDetails):
@@ -25,6 +28,7 @@ def FetchOptionName(OrderDetails):
     CE_Return                    = OrderDetails['CallStrikeRequired']
     PE_Return                    = OrderDetails['PutStrikeRequired']
     Broker                       = OrderDetails.get("Broker")
+    OptionType                   = OrderDetails.get("OptionType")
     #order_details_fetch.get("Broker") == 'ANGEL':
 
     #Code block to check if the expiry day is a holiday or not###########################################################################################################################################################################################
@@ -136,7 +140,34 @@ def FetchOptionName(OrderDetails):
         #Fetch the next month name
         month=((date.today() + relativedelta(months=1)).strftime("%b") ).upper()
         day=''
-    
+
+    if OptionType == 'MonthlyOption':
+        today = date.today()
+        y = today.year
+        m = today.month
+        
+        # Determine the last Thursday of the current month
+        last_day = calendar.monthrange(y, m)[1]  # Last day of the current month
+        last_thursday = None
+        for d in range(last_day, 0, -1):
+            dt = date(y, m, d)
+            # weekday(): Monday=0, Tuesday=1, ..., Thursday=3
+            if dt.weekday() == 3:
+                last_thursday = dt
+                break
+
+        # If today is before the last Thursday, choose the current month.
+        # If today is on or after the last Thursday, choose the next month.
+        if today < last_thursday:
+            # Current month name in uppercase short form
+            month = today.strftime("%b").upper()
+        else:
+            # Next month's name
+            month = ((today + relativedelta(months=1)).strftime("%b")).upper()
+
+        day = ''
+
+
     #print(kite.instruments(exchange='NSE'))
     #Fetch the LTP based on the Indexes for preparing the contracts
     if IndexName == 'BANKNIFTY' and (ContractStrikeOverride != 'True'):
