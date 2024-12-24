@@ -92,6 +92,7 @@ def Set_Gtt(OrderDetails):
         else:             
             fetch_ltp = kite.ltp('NFO:' + ATM_VAL)
             option_ltp = int(fetch_ltp['NFO:'+ATM_VAL]['last_price'])
+            order_exchange = kite.EXCHANGE_NFO
 
         option_trigger = (round((option_ltp*((100 + StopLossTriggerPercent)/100))*2,1)/2)#Multiplying by 2 to probably make rounding off easier
         option_sl = (round((option_ltp*((100 +StopLossOrderPlacePercent)/100))*2,1)/2)#set a slightly high sl value , since the order type sent is limit, so to 
@@ -101,30 +102,36 @@ def Set_Gtt(OrderDetails):
         if OrderDetails.get("Broker") == 'ANGEL':
 
             gttCreateParams = {
-                                "tradingsymbol": ATM_VAL,
+                                "tradingsymbol": str(ATM_VAL),
                                 "symboltoken": OrderDetails['Symboltoken'],
-                                "exchange": exchange,
+                                "exchange": str(exchange),
                                 "producttype": "CARRYFORWARD",
-                                "transactiontype": 'BUY',
-                                "price": option_sl,
-                                "qty": Quantity,
-                                "triggerprice": option_trigger,
+                                "transactiontype": "BUY",
+                                "price": str(option_sl),
+                                "qty": str(Quantity),
+                                "triggerprice": str(option_trigger),
                                 "timeperiod": OrderDetails['TimePeriod']
                             }
-            #print(gttCreateParams)
+            print(gttCreateParams)
 
-            smartApi.gttCreateRule(gttCreateParams)
+            response = smartApi.gttCreateRule(gttCreateParams)
+            GTTId = response
         else:
-            kite.place_gtt(trigger_type=gtt_trigger_type,
+            response = kite.place_gtt(trigger_type=gtt_trigger_type,
                                                         tradingsymbol=ATM_VAL,
                                                         exchange=order_exchange,
                                                         trigger_values=[option_trigger],
                                                         last_price=option_ltp,
                                                         orders=[{"transaction_type":order_buy,"quantity":Quantity,"price":option_sl,"order_type": order_type,"product": order_product}])
+            GTTId = response['trigger_id']
     elif Hedge == 'True':
         option_trigger = 'Hedge'
     elif Hedge == 'MonthlyCall':
         option_trigger = 'MonthlyCallBuy'
+    
+    OrderDetails['GTTId'] = GTTId
+ 
+
     write_order_details_to_csv(OrderDetails, WriteOptionDetailsFile)
 
 def write_order_details_to_csv(OrderDetails, csv_file_path):
@@ -148,12 +155,17 @@ def write_order_details_to_csv(OrderDetails, csv_file_path):
 if __name__ == '__main__':
     #OrderDetails = {'Hedge':'False','StopLossOrderPlacePercent':150,'Trigger':1,'Tradingsymbol': 'SENSEX24D1381600CE', 'symboltoken': '1164987', 'exchange': 'BFO', 'producttype': 'CARRYFORWARD', 'transactiontype': 'BUY', 'price': 778.3, 'Quantity': '10', 'StopLossTriggerPercent': 716.3, 'timeperiod': '4'}
     
-    OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '50', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
+    '''OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '50', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'1164987', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'27',
                      'StopLossOrderPlacePercent':'38','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"2"}
-    '''
+    
     OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '50', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'46122', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
                      'StopLossOrderPlacePercent':'152','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"3"}
-    '''       
+    '''  
+
+    OrderDetails = {'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '10', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
+                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'26',
+                     'StopLossOrderPlacePercent':'50','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"10SX-SC2-FR-1520-25"}
+         
     Set_Gtt(OrderDetails)    
