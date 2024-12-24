@@ -1,3 +1,10 @@
+"""
+Description:
+This script demonstrates how to manage Good Till Triggered (GTT) orders using the Zerodha KiteConnect API.
+It shows how to fetch all GTT orders, compare a given GTT ID against existing orders, and cancel a specific GTT order.
+Additionally, the script sets up a KiteConnect session by reading necessary credentials from files.
+"""
+
 from kiteconnect import KiteConnect
 from Directories import *
 import pandas as pd
@@ -18,7 +25,6 @@ def get_all_gtt_orders(kite):
 
     # Convert the list of GTT orders to a DataFrame
     gtt_orders_df = pd.DataFrame(gtt_orders)
-
         
     return gtt_orders_df
 
@@ -36,7 +42,6 @@ def compare_gtt_id(gtt_id, gtt_orders_df):
     # Instead of using "in" on values, use .isin() which returns a boolean series,
     # then use .any() to see if any rows match.
     return gtt_orders_df["id"].isin([gtt_id]).any()
-
 
 def cancel_gtt(kite: KiteConnect, gtt_id: int) -> dict:
     """
@@ -67,8 +72,8 @@ def cancel_gtt(kite: KiteConnect, gtt_id: int) -> dict:
 
 # --- Main code execution ---
 
-#if __name__ == '__main__':
-        
+# if __name__ == '__main__':
+
 # Fetch input values from the file
 with open(KiteEkanshLogin,'r') as a:
     content = a.readlines()
@@ -86,9 +91,9 @@ with open(KiteEkanshLoginAccessToken,'r') as f:
 
 kite.set_access_token(access_tok)
 
-
 # Manually add the route if needed
 kite._routes["gtt.triggers"] = "/gtt/triggers"
+
 '''
 # Get all GTT orders
 gtt_orders_df = get_all_gtt_orders(kite)
@@ -96,9 +101,8 @@ gtt_orders_df = get_all_gtt_orders(kite)
 # Example usage of compare_gtt_id function
 test_gtt_id = 253271319  # Replace this with an actual GTT ID to test
 exists = compare_gtt_id(test_gtt_id, gtt_orders_df)
-
 print(f"Does GTT ID {test_gtt_id} exist? {exists}")
 
 if exists:
     cancel_gtt(kite,test_gtt_id)
-    '''
+'''
