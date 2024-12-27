@@ -51,7 +51,7 @@ This script is designed to automate the placement of intraday orders based on st
 - Adjust the global variables and parameters as needed for your trading strategy.
 
 """
-
+from kiteconnect import KiteConnect
 from Server_Order_Place import order
 import logging
 import pandas as pd
@@ -240,6 +240,20 @@ def calculate_quantity(open_price, risk_per_trade=10000):
     logging.info(f"Calculated quantity: {quantity} for open price: {open_price}")
     return quantity
 
+def fetch_ltp_instrument(symbol):
+    nse_instrument = "NSE:" + str(symbol).upper()
+    # Fetch LTP for the symbol
+    ltp_data = kite.ltp([nse_instrument])
+    # ltp_data is a dictionary keyed by instrument token, for example: {"NSE:INFY": {"instrument_token": 408065, "last_price": 1488.5, ...}}
+
+    if nse_instrument in ltp_data:
+        last_price = ltp_data[nse_instrument]["last_price"]
+        print(f"LTP for {nse_instrument} is {last_price}")
+    else:
+        print(f"No LTP data found for {nse_instrument}")
+    
+    return last_price
+
 def prepare_long_order(symbol, open_price, quantity):
     """
     Prepares the order details dictionary.
@@ -252,16 +266,19 @@ def prepare_long_order(symbol, open_price, quantity):
     Returns:
     - dict: Order details.
     """
+    
+    ltp = fetch_ltp_instrument(symbol)
+
     order_detail = {
         'Tradetype': 'BUY',
         'Exchange': 'NSE',
         'Tradingsymbol': str(symbol),
         'Quantity': str(quantity),
         'Variety': 'REGULAR',
-        'Ordertype': 'MARKET',#'LIMIT',
+        'Ordertype': 'LIMIT',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': '0',#str(open_price),
+        'Price': str(ltp),
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
@@ -291,16 +308,19 @@ def prepare_short_order(symbol, open_price, quantity):
     Returns:
     - dict: Order details.
     """
+    
+    ltp = fetch_ltp_instrument(symbol)
+
     order_detail = {
         'Tradetype': 'SELL',
         'Exchange': 'NSE',
         'Tradingsymbol': str(symbol),
         'Quantity': str(quantity),
         'Variety': 'REGULAR',
-        'Ordertype': 'MARKET',#'LIMIT', #'MARKET',
+        'Ordertype': 'LIMIT', #'MARKET',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': '0',#str(open_price),#'0',
+        'Price': str(ltp),#'0',
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
@@ -444,6 +464,24 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
     
     logging.info("Completed PlaceIntradayOrders function.")
     print("Finished placing intraday orders.")
+
+# Fetch input values from the file
+with open(KiteEkanshLogin,'r') as a:
+    content = a.readlines()
+
+user_id= content[0].strip('\n')
+user_pwd = content[1].strip('\n')
+api_key = content[2].strip('\n')
+api_secret = content[3].strip('\n')
+totp_key= content[4].strip('\n')
+
+kite = KiteConnect(api_key=api_key)
+
+with open(KiteEkanshLoginAccessToken,'r') as f:
+    access_tok = f.read()
+
+kite.set_access_token(access_tok)
+
 
 if __name__ == '__main__':
     # Sample DataFrame for testing
