@@ -267,7 +267,7 @@ if __name__ == '__main__':
 
         # For testing the override scenario:
         if  BankNiftyStraddle_Fri_945Am_Monthly or Override == '95':
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '30', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                      'StopLossOrderPlacePercent':'','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False','OptionType':'MonthlyOption','Exit':'False',"OrderTag":"21BN-STR-TH"}}
             one_shot_flag = False
@@ -276,7 +276,7 @@ if __name__ == '__main__':
 
             # Set SL based on week logic
         if  BankNiftyStraddle_Fri_945Am_Monthly_Exit or Override == '96':
-            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
+            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '30', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
                 'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                 'StopLossOrderPlacePercent':'','CallStrikeRequired':'False','PutStrikeRequired':'False','Hedge':'False','OptionType':'MonthlyOption','Exit':'True',"OrderTag":"21BN-STR-TH"}}
 
@@ -285,7 +285,7 @@ if __name__ == '__main__':
             break
 
         if  MidCPNiftyStraddle_Wed_13Pm_Monthly or Override == '97':
-            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
+            OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '120', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
                 'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                 'StopLossOrderPlacePercent':'','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False','OptionType':'MonthlyOption','Exit':'False',"OrderTag":"22MN-STR-TH"}}
 
@@ -294,7 +294,7 @@ if __name__ == '__main__':
             break
 
         if  MidCPNiftyStraddle_Wed_13Pm_Monthly_Exit or Override == '98':
-            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
+            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '120', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
                 'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                 'StopLossOrderPlacePercent':'','CallStrikeRequired':'False','PutStrikeRequired':'False','Hedge':'False','OptionType':'MonthlyOption','Exit':'True',"OrderTag":"22MN-STR-TH"}}
 
@@ -303,7 +303,7 @@ if __name__ == '__main__':
             break
         
         if  BankNiftyMACD_Thu_15Pm_Monthly_Exit or Override == '99':
-            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '15', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
+            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '30', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0,
                 'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                 'StopLossOrderPlacePercent':'','CallStrikeRequired':'False','PutStrikeRequired':'False','Hedge':'False','OptionType':'MonthlyOption','Exit':'True',"OrderTag":"25BN-SP-MD-TH"}}
 
@@ -312,7 +312,7 @@ if __name__ == '__main__':
             break
 
         if  MidCPNiftyMACD_Mon_15Pm_Monthly_Exit or Override == '100':
-            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '50', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
+            OrderDetails = {'Straddle':{'Tradetype': 'BUY', 'Exchange': 'NFO', 'Tradingsymbol': 'MIDCPNIFTY', 'Quantity': '120', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
                 'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'',
                 'StopLossOrderPlacePercent':'','CallStrikeRequired':'False','PutStrikeRequired':'False','Hedge':'False','OptionType':'MonthlyOption','Exit':'True',"OrderTag":""}}
 
