@@ -152,13 +152,13 @@ if __name__ == '__main__':
         NiftyStraddle_Mon_12Pm_100Sl =       str(now.strftime("%H:%M:%S")) == '12:00:00' and ((CurrWkDy == MONDAY) or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
         NiftyStraddle_Tue_11Am_110Sl =       str(now.strftime("%H:%M:%S")) == '11:00:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         
-        SensexStraddle_Mon_930Am_150Sl =     str(now.strftime("%H:%M:%S")) == '09:30:00' and ((CurrWkDy == MONDAY)   or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        SensexStraddle_Tue_1020Am_135Sl =    str(now.strftime("%H:%M:%S")) == '10:20:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        SensexStraddle_Wed_930Am_150Sl =     str(now.strftime("%H:%M:%S")) == '09:30:00' and ((CurrWkDy == WEDNESDAY)   or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        SensexStraddle_Thu_1020Am_135Sl =    str(now.strftime("%H:%M:%S")) == '10:20:00' and ((CurrWkDy == THURSDAY) or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))
 
 
         #BankNiftySellCall_Wed_1520Pm_50Sl =  str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))#((CurrWkDy == WEDNESDAY) or CheckForDateHoliday(PREVIOUSDATE))
         NiftySellCall_Thu_1520Pm_50Sl =      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == THURSDAY)or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))#((CurrWkDy == THURSDAY)  or CheckForDateHoliday(PREVIOUSDATE))
-        SensexSellCall_Fri_1520Pm_25Sl=      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == FRIDAY)or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))       
+        SensexSellCall_Tue_1520Pm_25Sl=      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))       
 
         #For testing
         AngelBankNiftyLongCallMonthlyFirstDayMonExpiry = str(now.strftime("%H:%M:%S")) == '16:20:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
@@ -207,9 +207,9 @@ if __name__ == '__main__':
         
 
         #Sell Sensex straddle every Monday @930 with 100sl
-        if SensexStraddle_Mon_930Am_150Sl or Override == '18': 
+        if SensexStraddle_Wed_930Am_150Sl or Override == '18': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'151',
+                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'151',
                      'StopLossOrderPlacePercent':'175','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-MO-930-150"}}#,
             one_shot_flag == False
             Override = False
@@ -217,9 +217,9 @@ if __name__ == '__main__':
             break
 
         #Sell Sensex straddle every Tuesday @1020 with 135sl
-        if SensexStraddle_Tue_1020Am_135Sl or Override == '19': 
+        if SensexStraddle_Thu_1020Am_135Sl or Override == '19': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'136',
+                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'136',
                      'StopLossOrderPlacePercent':'160','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-MO-930-150"}}#,
             one_shot_flag == False
             Override = False
@@ -227,9 +227,9 @@ if __name__ == '__main__':
             break
 
         #Sell Sensex Call every Friday @1520pm with 25sl
-        if SensexSellCall_Fri_1520Pm_25Sl or Override == '20': 
+        if SensexSellCall_Tue_1520Pm_25Sl or Override == '20': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
-                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'4','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'26',
+                     'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'26',
                      'StopLossOrderPlacePercent':'50','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"10SX-SC2-FR-1520-25"}}
             one_shot_flag == False
             Override = False
