@@ -75,12 +75,20 @@ from datetime import datetime, timedelta
 from IntraDay_Stocks_Place_Order import PlaceIntradayOrders
 from multiprocessing import Pool, cpu_count
 from Directories import *
-
+from Push_File_To_Email import *
+from Email_Config import *
 
 # Set a smaller batch size to avoid overwhelming the API
 total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
-PlaceOrderIK6635 = False
+PlaceOrderIK6635 = True
+#Date for which script will run
+selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
+#Should data be sent by email
+#SendFileDataByEmail = True
+SendFileDataByEmail = True
+#Time at which the order needs to be sent
+OrderTriggerTime = '09:15:00'
 
 def read_csv_file(file_path, delimiter=','):
     """
@@ -475,9 +483,26 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
     # print(df_sorted_short)
 
     # Call Function to place orders on Zerodha account IK6635 if flag is True
+    if SendFileDataByEmail:
+        
+        PayloadDataFrames = {f'IntradayLong{selected_date_input}.csv':df_sorted, f'IntradayShort{selected_date_input}.csv':df_sorted_short}
+        SendConfigurableMail(PayloadDataFrames, VMailDetails)
+        SendConfigurableMail(PayloadDataFrames, DadMailDetails)
+        SendConfigurableMail(PayloadDataFrames, EkanshMailDetails)
+
+    # Call Function to place orders on Zerodha account IK6635 if flag is True
     if PlaceOrderIK6635:
-        trade_type_1, trade_type_2 = determine_trade_type()
-        PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1, trade_type_2)
+        while True:
+            now_str = datetime.now().strftime("%H:%M:%S")
+            if now_str == OrderTriggerTime:
+                print("It's 09:15:00. Proceeding...")
+                trade_type_1, trade_type_2 = determine_trade_type()
+                PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1, trade_type_2)
+                break
+            else:
+                # Sleep for a short interval to avoid busy-waiting
+                print(f'waiting, current time is {now_str}')
+                time.sleep(1)
 
 def determine_trade_type():
     """
@@ -490,7 +515,7 @@ def determine_trade_type():
     - str: 'SELL' or 'BUY' for short positions
     """
     current_time = datetime.now().time()
-    eleven_am = datetime.strptime("11:00:00", "%H:%M:%S").time()
+    eleven_am = datetime.strptime("18:00:00", "%H:%M:%S").time()
 
     if current_time < eleven_am:
         trade_type_1 = 'BUY'
@@ -547,7 +572,6 @@ def main():
     # Prompt the user to input the selected date, lookback period, SMA window, and Std Dev window
     print("\nEnter the selected date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    selected_date_input = '2024-08-12'  # str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
 
     # print("\nEnter the lookback period (number of trading days to look back from the selected date).")
     # print("For example, enter 90 to fetch data from 90 trading days prior to the selected date:")
