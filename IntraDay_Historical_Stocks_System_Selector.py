@@ -83,6 +83,8 @@ total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = False
 
+CommissionPercent = 0.2
+
 def read_csv_file(file_path, delimiter=','):
     """
     Reads the CSV file and returns a pandas DataFrame.
@@ -581,11 +583,11 @@ def main():
     # Prompt the user to input the date range, lookback period, SMA window, and Std Dev window------------------------------------------
     print("\nEnter the start date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    start_date_input = '2024-12-26'  # Example start date
+    start_date_input = '2025-01-14'  # Example start date
 
     print("\nEnter the end date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-12-05):")
-    end_date_input = '2024-12-26'  # Example end date------------------------------------------------------------------------------------
+    end_date_input = '2025-01-14'  # Example end date------------------------------------------------------------------------------------
 
     # Validate the start and end dates
     try:
@@ -683,8 +685,8 @@ def main():
     target_results_long_file = os.path.join(output_directory, f'target_results_long_{start_date_input}_to_{end_date_input}.csv')
     target_results_short_file = os.path.join(output_directory, f'target_results_short_{start_date_input}_to_{end_date_input}.csv')
     
-    target_results_long_df['pnl'] = (((target_results_long_df['returns'] - 0.1) * CapitalRiskedPerLongTrade * NumberOfStocksToSelectLowestOpenPrice)/100)
-    target_results_short_df['pnl'] = (((target_results_short_df['returns'] + 0.1)* CapitalRiskedPerShortTrade * -1 *NumberOfStocksToSelectHighestOpenPrice)/100)
+    target_results_long_df['pnl'] = (((target_results_long_df['returns'] - CommissionPercent) * CapitalRiskedPerLongTrade * NumberOfStocksToSelectLowestOpenPrice)/100)
+    target_results_short_df['pnl'] = (((target_results_short_df['returns'] + CommissionPercent)* CapitalRiskedPerShortTrade * -1 *NumberOfStocksToSelectHighestOpenPrice)/100)
     try:
         target_results_long_df.to_csv(target_results_long_file, index=False)
         print(f"\nSuccessfully saved accumulated target results for long positions to {target_results_long_file}")
