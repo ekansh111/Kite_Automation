@@ -51,12 +51,14 @@ This script is designed to automate the placement of intraday orders based on st
 - Adjust the global variables and parameters as needed for your trading strategy.
 
 """
+import math
 from kiteconnect import KiteConnect
 from Server_Order_Place import order
 import logging
 import pandas as pd
 import os
 from Directories import *
+from Fetch_Positions_Data import *
 
 NumberOfStocksToSelectLowestOpenPrice = 5
 NumberOfStocksToSelectHighestOpenPrice = 10
@@ -64,16 +66,24 @@ NumberOfStocksToSelectHighestOpenPrice = 10
 CapitalRiskedPerLongTrade = 84561
 CapitalRiskedPerShortTrade = 120588
 
+DurationForSleep = 12
+#Factor by which the limit price has to be rounded up/down resp
+RoundingFactor = 0.1
+
+ListOfOrderId = []
 
 import multiprocessing
 import logging
 import traceback
 
 # Define the target function at the top level
-def order_execution_target(queue, order_detail):
+def order_execution_target(queue, order_detail, queueOrderId):
     try:
-        execute_order(order_detail)
+        OrderId = execute_order(order_detail)
         queue.put(None)  # Indicate successful execution
+
+        queueOrderId.put(OrderId)
+        return order_detail
     except Exception as e:
         # Pass exception to the parent process
         queue.put(e)
@@ -91,8 +101,12 @@ def execute_order_with_timeout(order_detail, timeout=10):
     """
     # Create a queue to communicate with the subprocess
     queue = multiprocessing.Queue()
+
+    # Create a queue to communicate with the subprocess for the OrderId
+    queueOrderId = multiprocessing.Queue()
+
     # Start the subprocess
-    process = multiprocessing.Process(target=order_execution_target, args=(queue, order_detail))
+    process = multiprocessing.Process(target=order_execution_target, args=(queue, order_detail, queueOrderId))
     process.start()
     # Wait for the specified timeout
     process.join(timeout)
@@ -104,6 +118,13 @@ def execute_order_with_timeout(order_detail, timeout=10):
         logging.error(f"execute_order timed out for {order_detail['Tradingsymbol']}")
         print(f"Error: execute_order timed out for {order_detail['Tradingsymbol']}")
     else:
+        #Fetch the OrderId from the subprocess
+        if not queueOrderId.empty():
+            OrderId = queueOrderId.get()
+            ListOfOrderId.append(OrderId)
+            print('List of order id')
+            print(ListOfOrderId)
+
         # Check for exceptions raised in the subprocess
         if not queue.empty():
             exception = queue.get()
@@ -269,6 +290,9 @@ def prepare_long_order(symbol, open_price, quantity):
     
     ltp = fetch_ltp_instrument(symbol)
 
+    longprice = ltp + (ltp * RoundingFactor)/100
+    rounded_longprice = math.floor(longprice * 20) / 20
+
     order_detail = {
         'Tradetype': 'BUY',
         'Exchange': 'NSE',
@@ -278,7 +302,7 @@ def prepare_long_order(symbol, open_price, quantity):
         'Ordertype': 'LIMIT',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': str(ltp),
+        'Price': str(rounded_longprice),
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
@@ -311,6 +335,9 @@ def prepare_short_order(symbol, open_price, quantity):
     
     ltp = fetch_ltp_instrument(symbol)
 
+    shortprice = ltp - (ltp * RoundingFactor)/100
+    rounded_shortprice = math.floor(shortprice * 20) / 20
+
     order_detail = {
         'Tradetype': 'SELL',
         'Exchange': 'NSE',
@@ -320,7 +347,7 @@ def prepare_short_order(symbol, open_price, quantity):
         'Ordertype': 'LIMIT', #'MARKET',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': str(ltp),#'0',
+        'Price': str(rounded_shortprice),#'0',
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
@@ -350,9 +377,10 @@ def execute_order(order_detail):
     - None
     """
     try:
-        order(order_detail)
+        OrderId = order(order_detail)
         logging.info(f"Order placed successfully for {order_detail['Tradingsymbol']}.")
-        print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}")
+        print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}, OrderId={OrderId}")
+        return OrderId
     except Exception as e:
         logging.error(f"Failed to place order for {order_detail['Tradingsymbol']}: {e}")
         print(f"Error placing order for {order_detail['Tradingsymbol']}: {e}")
@@ -458,9 +486,15 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
                 continue
             
             print(order_detail)
-            # Use the execute_order_with_timeout function
             execute_order_with_timeout(order_detail, timeout=10)
     # **[End of New Section]**
+    print('consolidated orderid are:')
+    print(ListOfOrderId)
+
+    #Get the order status and wait for the desired time, if order is still not placed, then convert to market
+    time.sleep(DurationForSleep)
+    OrderType = 'MARKET'
+    get_order_status(kite, ListOfOrderId, OrderType, ReorderFlag=1)
     
     logging.info("Completed PlaceIntradayOrders function.")
     print("Finished placing intraday orders.")
