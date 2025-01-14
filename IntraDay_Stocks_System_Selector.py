@@ -83,7 +83,8 @@ total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
 #Date for which script will run
-selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
+#selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
+selected_date_input = '2025-01-14'#input("Selected Date: ").strip() or '2024-10-21'
 #Should data be sent by email
 #SendFileDataByEmail = True
 SendFileDataByEmail = True
@@ -245,7 +246,7 @@ def process_symbol_data(args):
             ticker_data = ticker_data.sort_index()
             ticker_data = ticker_data.dropna()
             # Compute SMA and Std Dev using rolling windows
-            ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean()
+            ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean().shift(1)
             ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std()
 
             # Compute Previous Low and High for calculating the differences
