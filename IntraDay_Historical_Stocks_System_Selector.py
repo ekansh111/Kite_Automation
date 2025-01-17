@@ -241,7 +241,7 @@ def process_symbol_data(args):
             ticker_data = ticker_data.dropna()
             # Compute SMA and Std Dev using rolling windows
             ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean().shift(1)
-            ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std()
+            ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std().shift(1)
 
             # Compute Previous Low and High for calculating the differences
             ticker_data['Prev_Low'] = ticker_data['Low'].shift(1)
@@ -467,9 +467,56 @@ def save_sorted_to_csv(df, selected_date, output_directory, target_results_long_
     if not df_sorted_short.empty:
         short_condition = (df_sorted_short['High Price'] == df_sorted_short['Close Price']) & (df_sorted_short['forward_2_day_close'].notna())
         df_sorted_short.loc[short_condition, 'Open_Today_Close_Diff'] = (
-            (df_sorted_short.loc[short_condition, 'forward_2_day_close'] - df_sorted_short.loc[short_condition, 'Open Price']) /
+            (df_sorted_short.loc[short_condition, 'Open Price'] - df_sorted_short.loc[short_condition, 'forward_2_day_close']) /
             df_sorted_short.loc[short_condition, 'Open Price']
         ) * 100
+        # Update target_results DataFrames
+    
+    # Long positions: top 5 stocks
+    if not df_sorted.empty:
+        df_long_top5 = df_sorted.head(NumberOfStocksToSelectLowestOpenPrice)
+        average_return_long = df_long_top5['Open_Today_Close_Diff'].mean()
+       
+        absolute_return_points = (((df_sorted['Open Price']) * df_sorted['Open_Today_Close_Diff'])/100) 
+        average_absolute_pnl = (df_sorted['Open_Today_Close_Diff'] * (CapitalRiskedPerLongTrade))/100
+        average_stddev_adj__pnl = (absolute_return_points * (TargetVolatilityPerLongTrade / df_sorted['Std Dev']))
+
+        absolute_return_points_selected = ((((df_long_top5['Open Price']) * df_long_top5['Open_Today_Close_Diff'])/100)) - ((df_long_top5['Open Price'] * CommissionPercent)/100)
+        average_stddev_adj__pnl_selected = (absolute_return_points_selected * (TargetVolatilityPerLongTrade / df_long_top5['Std Dev']))
+
+        df_sorted['std dev adj quantity'] = (TargetVolatilityPerLongTrade / df_sorted['Std Dev'])
+        df_sorted['std dev adjusted pnl'] = average_stddev_adj__pnl
+        df_sorted['avg absolute pnl'] = average_absolute_pnl
+
+        cum_total_adj_stddev_pnl = average_stddev_adj__pnl_selected.sum()
+
+        new_row_long = {'date': selected_date, 'returns': average_return_long, 'stddev_adj_pnl': cum_total_adj_stddev_pnl}
+        target_results_long_df = pd.concat([target_results_long_df, pd.DataFrame([new_row_long])], ignore_index=True)
+    else:
+        print(f"\nNo long positions to calculate target results for {selected_date}.")
+
+    # Short positions: top 10 stocks
+    if not df_sorted_short.empty:
+        df_short_top10 = df_sorted_short.head(NumberOfStocksToSelectHighestOpenPrice)
+        average_return_short = df_short_top10['Open_Today_Close_Diff'].mean()
+                
+        absolute_return_points = (((df_sorted_short['Open Price']) * df_sorted_short['Open_Today_Close_Diff'])/100) * -1
+        average_absolute_pnl = (df_sorted_short['Open_Today_Close_Diff'] * (CapitalRiskedPerShortTrade * -1))/100
+        average_stddev_adj__pnl = (absolute_return_points * (TargetVolatilityPerShortTrade / df_sorted_short['Std Dev']))
+
+        absolute_return_points_selected = ((((df_short_top10['Open Price']) * df_short_top10['Open_Today_Close_Diff'])/100) * -1) - ((df_short_top10['Open Price'] * CommissionPercent)/100)
+        average_stddev_adj__pnl_selected = (absolute_return_points_selected * (TargetVolatilityPerShortTrade / df_short_top10['Std Dev']))
+        
+        df_sorted_short['std dev adj quantity'] = (TargetVolatilityPerShortTrade / df_sorted_short['Std Dev'])
+        df_sorted_short['std dev adjusted pnl no comm'] = average_stddev_adj__pnl
+        df_sorted_short['avg absolute pnl'] = average_absolute_pnl
+
+        cum_total_adj_stddev_pnl = average_stddev_adj__pnl_selected.sum()
+
+        new_row_short = {'date': selected_date, 'returns': average_return_short, 'stddev_adj_pnl': cum_total_adj_stddev_pnl}
+        target_results_short_df = pd.concat([target_results_short_df, pd.DataFrame([new_row_short])], ignore_index=True)
+    else:
+        print(f"\nNo short positions to calculate target results for {selected_date}.")
 
     # Save DataFrames
     sorted_output_file = os.path.join(output_directory, f'close_prices_sorted_long_{selected_date}.csv')
@@ -493,24 +540,6 @@ def save_sorted_to_csv(df, selected_date, output_directory, target_results_long_
             print(f"Error saving sorted data to CSV: {e}")
             logging.error(f"Error saving sorted data to CSV {sorted_output_file_short}: {e}")
 
-    # Update target_results DataFrames
-    # Long positions: top 5 stocks
-    if not df_sorted.empty:
-        df_long_top5 = df_sorted.head(5)
-        average_return_long = df_long_top5['Open_Today_Close_Diff'].mean()
-        new_row_long = {'date': selected_date, 'returns': average_return_long}
-        target_results_long_df = pd.concat([target_results_long_df, pd.DataFrame([new_row_long])], ignore_index=True)
-    else:
-        print(f"\nNo long positions to calculate target results for {selected_date}.")
-
-    # Short positions: top 10 stocks
-    if not df_sorted_short.empty:
-        df_short_top10 = df_sorted_short.head(10)
-        average_return_short = df_short_top10['Open_Today_Close_Diff'].mean()
-        new_row_short = {'date': selected_date, 'returns': average_return_short}
-        target_results_short_df = pd.concat([target_results_short_df, pd.DataFrame([new_row_short])], ignore_index=True)
-    else:
-        print(f"\nNo short positions to calculate target results for {selected_date}.")
 
     return target_results_long_df, target_results_short_df
 
@@ -583,11 +612,11 @@ def main():
     # Prompt the user to input the date range, lookback period, SMA window, and Std Dev window------------------------------------------
     print("\nEnter the start date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    start_date_input = '2025-01-14'  # Example start date
+    start_date_input = '2025-01-17'  # Example start date
 
     print("\nEnter the end date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-12-05):")
-    end_date_input = '2025-01-14'  # Example end date------------------------------------------------------------------------------------
+    end_date_input = '2025-01-17'  # Example end date------------------------------------------------------------------------------------
 
     # Validate the start and end dates
     try:
@@ -606,7 +635,7 @@ def main():
     # Set lookback period, SMA window, and Std Dev window
     lookback_input = '120'  # Lookback period in trading days
     sma_input = '20'        # SMA window
-    std_dev_input = '90'    # Std Dev window
+    std_dev_input = '21'    # Std Dev window
 
     # Validate the lookback period
     try:
