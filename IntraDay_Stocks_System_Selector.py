@@ -83,8 +83,7 @@ total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
 #Date for which script will run
-#selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
-selected_date_input = '2025-01-14'#input("Selected Date: ").strip() or '2024-10-21'
+selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
 #Should data be sent by email
 #SendFileDataByEmail = True
 SendFileDataByEmail = True
@@ -247,7 +246,7 @@ def process_symbol_data(args):
             ticker_data = ticker_data.dropna()
             # Compute SMA and Std Dev using rolling windows
             ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean().shift(1)
-            ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std()
+            ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std().shift(1)
 
             # Compute Previous Low and High for calculating the differences
             ticker_data['Prev_Low'] = ticker_data['Low'].shift(1)
@@ -411,7 +410,7 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
     - None
     """
     # Filter the DataFrame for the selected date
-    print(df['Date'])
+    #print(df['Date'])
     df_selected_date = df[df['Date'] == selected_date]
 
     if df_selected_date.empty:
@@ -582,7 +581,7 @@ def main():
     sma_input = '20'  # input("SMA Window (days): ").strip() or '20'
 
     # print("\nEnter the Std Dev window (number of days for Standard Deviation):")
-    std_dev_input = '90'  # input("Std Dev Window (days): ").strip() or '90'
+    std_dev_input = '21'  # input("Std Dev Window (days): ").strip() or '90'
 
     # Validate the selected date
     try:
