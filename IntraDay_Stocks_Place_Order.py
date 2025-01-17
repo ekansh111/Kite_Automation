@@ -66,6 +66,9 @@ NumberOfStocksToSelectHighestOpenPrice = 10
 CapitalRiskedPerLongTrade = 84561
 CapitalRiskedPerShortTrade = 120588
 
+TargetVolatilityPerLongTrade = 3200
+TargetVolatilityPerShortTrade = 4798
+
 DurationForSleep = 12
 #Factor by which the limit price has to be rounded up/down resp
 RoundingFactor = 0.1
@@ -240,25 +243,27 @@ def display_selected_stocks(LowestOpenPriceStocks, NumberOfStocks):
         print(LowestOpenPriceStocks[['Symbol', 'Open Price']])
         logging.info("Displayed Symbols and Open Prices.")
 
-def calculate_quantity(open_price, risk_per_trade=10000):
+def calculate_quantity(price, risk_per_trade):
     """
     Calculates the quantity of shares to purchase based on risk per trade.
 
     Parameters:
-    - open_price (float): The open price of the stock.
+    - price (float): The price/stddev of the stock.
     - risk_per_trade (int): The maximum amount to invest per trade.
 
     Returns:
     - int: Number of shares to purchase.
     """
-    if open_price <= 0:
-        logging.warning(f"Open price {open_price} is not positive.")
+    if price <= 0:
+        logging.warning(f" price {price} is not positive.")
         return 0
     
-    quantity = risk_per_trade // open_price
+    quantity = risk_per_trade // price
     if quantity < 1:
         quantity = 1
-    logging.info(f"Calculated quantity: {quantity} for open price: {open_price}")
+    
+    round(quantity)
+    logging.info(f"Calculated quantity: {quantity} for open price/stddev: {price}")
     return quantity
 
 def fetch_ltp_instrument(symbol):
@@ -433,10 +438,12 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
             open_price = row['Open Price']
             open_price = round(open_price)
             
-            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}")
-            print(f"Processing symbol: {symbol}, Open Price: {open_price}")
+            stddev = row['Std Dev']
             
-            quantity = calculate_quantity(open_price, risk_per_trade_long)
+            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+            print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+            
+            quantity = int(calculate_quantity(stddev, TargetVolatilityPerLongTrade))
             if quantity == 0:
                 warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
                 print(f"Warning: {warning_msg}")
@@ -465,10 +472,12 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
             open_price = row['Open Price']
             open_price = round(open_price)
             
-            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}")
-            print(f"Processing symbol: {symbol}, Open Price: {open_price}")
+            stddev = row['Std Dev']
             
-            quantity = int(calculate_quantity(open_price, risk_per_trade_short))
+            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+            print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+            
+            quantity = int(calculate_quantity(stddev, TargetVolatilityPerShortTrade))
             if quantity == 0:
                 warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
                 print(f"Warning: {warning_msg}")
