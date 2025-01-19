@@ -77,14 +77,4 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
     return order_id
 
 
-#def order_angel(Broker,Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
-
-
-if __name__ == '__main__':
-    order()
-    # Fetch all orders
-    kite.orders()
-
-    # Get instruments
-    kite.instruments()
 
