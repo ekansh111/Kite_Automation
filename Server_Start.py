@@ -8,6 +8,7 @@ from Login_Auto3_Angel import Login_Angel_Api
 from PlaceFNOTradesKite import LoopHashOrderRequest
 from PlaceMonthlyContrctFNOtrades import *
 from Server_Order_Handler import *
+from Kite_Server_Order_Handler import *
 
 app = Flask(__name__)
 run_with_ngrok(app,subdomain="test111")#test111 subdomain for testing
@@ -23,20 +24,19 @@ def webhook():
     if request.method == 'POST':
 
         order_details_fetch = request.get_json()
-        print(order_details_fetch)
-        #print(order_details_fetch)
         if(order_details_fetch == None):            
             return 'Server is Up,No values sent',200
         else:
             if order_details_fetch.get("UpdatedOrderRouting") == 'True':
-                ControlOrderFlowAngel(order_details_fetch)
-
-                return 'success',200
+                if order_details_fetch.get("Broker") == 'ZERODHA':
+                    ControlOrderFlowKite(order_details_fetch)
+                    return 'success',200
+                else:
+                    ControlOrderFlowAngel(order_details_fetch)          
+                    return 'success',200
 
             elif order_details_fetch.get("Broker") == 'ANGEL':
-            #if order_details_fetch['Broker'] == 'ANGEL':
                 Broker = order_details_fetch['Broker']
-                #print(order_details_fetch)
 
             #If the request is to place an option order through API
             elif (order_details_fetch.get("Option") != None) and (order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION'):
