@@ -1,74 +1,105 @@
-from calendar import THURSDAY
-import logging
-from os import abort
-import string
-from kiteconnect import KiteConnect
-from datetime import datetime,timedelta
-from datetime import date
-from Set_Gtt_Exit import Set_Gtt
-from inputimeout import inputimeout,TimeoutOccurred
-from dateutil.relativedelta import TH,WE, relativedelta
-import time
 import csv
+import logging
+from kiteconnect import KiteConnect
+from datetime import datetime
+import time
 import pandas as pd
 
-from kiteconnect import KiteConnect
-from datetime import datetime,timedelta
-from datetime import date
-from Set_Gtt_Exit import Set_Gtt
-from inputimeout import inputimeout,TimeoutOccurred
-from dateutil.relativedelta import TH, relativedelta
-import time
-import calendar
-from Directories import *
+# Example directory constants—adjust as needed
+from Directories import KiteEkanshLogin, ZerodhaInstrumentDirectory
 
-import logging
-from kiteconnect import KiteConnect
-
-
-with open(KiteEkanshLogin,'r') as a:
-        content = a.readlines()
-        a.close()
-api_key = content[2].strip('\n')
-kite = KiteConnect(api_key=api_key)
-
-with open(WriteAllContractDet,'w',newline='') as csvfile: 
-    # creating a csv writer object 
-    csvwriter = csv.writer(csvfile) 
+def download_instruments_kite():
+    """
+    Connects to the Kite API using credentials from a local file,
+    fetches the entire instrument list, and writes it to a CSV file.
     
-    k = kite.instruments(exchange= 'NFO')
-    # Write header row
-    header = ['instrument_token', 'exchange_token', 'tradingsymbol', 'name', 'last_price', 'expiry', 'strike', 'tick_size', 'lot_size', 'instrument_type', 'segment', 'exchange']
-    csvwriter.writerow(header)
-
-        # Write each record on a new line
-    for record in k:
-        # Extract values from the record dictionary
-        row_values = [
-                record['instrument_token'],
-                record['exchange_token'],
-                record['tradingsymbol'],
-                record['name'],
-                record['last_price'],
-                record['expiry'],
-                record['strike'],
-                record['tick_size'],
-                record['lot_size'],
-                record['instrument_type'],
-                record['segment'],
-                record['exchange']
+    Adds light "garbage" checks to skip records that are missing critical fields
+    like 'tradingsymbol' or 'instrument_token'.
+    """
+    # ----------------------------------------------------------------------
+    # 1. Read Credentials and Initialize KiteConnect
+    # ----------------------------------------------------------------------
+    with open(KiteEkanshLogin, 'r') as cred_file:
+        content = cred_file.readlines()
+        cred_file.close()
+    
+    # In this example, api_key is assumed to be on line 2. 
+    # Adjust indexing if your credentials file layout differs.
+    api_key = content[2].strip('\n')
+    
+    # Initialize KiteConnect with the api_key
+    kite = KiteConnect(api_key=api_key)
+    
+    # ----------------------------------------------------------------------
+    # 2. Retrieve Instruments
+    # ----------------------------------------------------------------------
+    try:
+        instruments = kite.instruments()
+    except Exception as e:
+        logging.error(f"Error fetching instruments from Kite: {e}")
+        return
+    
+    # ----------------------------------------------------------------------
+    # 3. Prepare CSV for Writing
+    # ----------------------------------------------------------------------
+    with open(ZerodhaInstrumentDirectory, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        
+        # Define header consistent with the order of data you’ll write
+        header = [
+            'token',           # record['instrument_token']
+            'symbol',          # record['tradingsymbol']
+            'name',            # record['name']
+            'expiry',          # record['expiry']
+            'strike',          # record['strike']
+            'lotsize',         # record['lot_size']
+            'instrumenttype',  # record['instrument_type']
+            'exch_seg',        # record['exchange']
+            'tick_size',       # record['tick_size']
+            'segment',         # record['segment']
+            'exchange_token',  # record['exchange_token']
+            'last_price'       # record['last_price']
         ]
         
-        csvwriter.writerow(row_values)
-
-csvfile.close()
-    #csvwriter.writerow(k) 
+        # Write header row
+        csvwriter.writerow(header)
         
-    # writing the data rows 
-    #csvwriter.writerows(rows)
-    
-    
-    #content = b.readlines()
-    #b.close()
-    #print()
-    
+        # ------------------------------------------------------------------
+        # 4. Write Cleaned Rows
+        # ------------------------------------------------------------------
+        record_count = 0
+        for record in instruments:
+            
+            # Skip or "clean" out any record missing essential fields.
+            # Adjust checks if your logic differs about "garbage" values.
+            if (not record.get('instrument_token') or 
+                not record.get('tradingsymbol')):
+                continue  # skip this record
+
+            # Create row_values from valid fields, handling possible None
+            # by converting them to empty strings or skipping them as needed.
+            row_values = [
+                record['instrument_token'] if record.get('instrument_token') else '',
+                record['tradingsymbol']     if record.get('tradingsymbol')     else '',
+                record['name']              if record.get('name')              else '',
+                record['expiry']            if record.get('expiry')            else '',
+                record['strike']            if record.get('strike')            else '',
+                record['lot_size']          if record.get('lot_size')          else '',
+                record['instrument_type']   if record.get('instrument_type')   else '',
+                record['exchange']          if record.get('exchange')          else '',
+                record['tick_size']         if record.get('tick_size')         else '',
+                record['segment']           if record.get('segment')           else '',
+                record['exchange_token']    if record.get('exchange_token')    else '',
+                record['last_price']        if record.get('last_price')        else ''
+            ]
+            
+            csvwriter.writerow(row_values)
+            record_count += 1
+        
+        logging.info(f"Successfully wrote {record_count} records to {ZerodhaInstrumentDirectory}.")
+
+# ----------------------------------------------------------------------
+# 5. Optionally call the function if running as a script
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    download_instruments_kite()
