@@ -3,11 +3,7 @@ import logging
 from kiteconnect import KiteConnect
 from Directories import *
 
-with open(KiteEkanshLogin,'r') as a:
-        content = a.readlines()
-        a.close()
-api_key = content[2].strip('\n')
-kite = KiteConnect(api_key=api_key)
+
 #Function will place order on the broker terminal, will take the necessary validation values from the text file
 def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price):
     
@@ -23,11 +19,26 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
     OrderTag = str(order_details_fetch.get("OrderTag"))
     #print(order_details_fetch)  
 
+    if str(order_details_fetch.get('User')) == 'YD6016': 
+        with open(KiteRashmiLogin,'r') as a:
+            content = a.readlines()
+            a.close()
+        api_key = content[2].strip('\n')
+        kite = KiteConnect(api_key=api_key)
 
+        with open(KiteRashmiLoginAccessToken,'r') as f:
+            access_tok = f.read()
+            f.close()
+    else:
+        with open(KiteEkanshLogin,'r') as a:
+            content = a.readlines()
+            a.close()
+        api_key = content[2].strip('\n')
+        kite = KiteConnect(api_key=api_key)
 
-    with open(KiteEkanshLoginAccessToken,'r') as f:
-        access_tok = f.read()
-        f.close()
+        with open(KiteEkanshLoginAccessToken,'r') as f:
+            access_tok = f.read()
+            f.close()
 
 
     kite.set_access_token(access_tok)
