@@ -427,86 +427,92 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
         logging.warning("No stocks available to place orders after selecting top N from both sets.")
         print("No stocks available to place orders.")
         return
-    
-    # Process LowestOpenPriceStocks
-    if not LowestOpenPriceStocks.empty:
-        print("Entering the order placement loop for Lowest Open Price Stocks.")
-        logging.info("Entering the order placement loop for Lowest Open Price Stocks.")
-        
-        for index, row in LowestOpenPriceStocks.iterrows():
-            symbol = row['Symbol']
-            open_price = row['Open Price']
-            open_price = round(open_price)
-            
-            stddev = row['Std Dev']
-            
-            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-            print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-            
-            quantity = int(calculate_quantity(stddev, TargetVolatilityPerLongTrade))
-            if quantity == 0:
-                warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
-                print(f"Warning: {warning_msg}")
-                logging.warning(warning_msg)
-                continue
-            
-            if trade_type1 == 'BUY':
-                order_detail = prepare_long_order(symbol, open_price, quantity)
-            elif trade_type1 == 'SELL':
-                order_detail = prepare_short_order(symbol, open_price, quantity)
-            else:
-                warning_msg = f"Invalid trade_type: {trade_type1}. Skipping order for {symbol}."
-                print(f"Warning: {warning_msg}")
-                logging.warning(warning_msg)
-                continue
-            
-            print(order_detail)
-            execute_order_with_timeout(order_detail, timeout=10)
-    
-    if not HighestOpenPriceStocks.empty:
-        print("Entering the order placement loop for Highest Open Price Stocks.")
-        logging.info("Entering the order placement loop for Highest Open Price Stocks.")
-        
-        for index, row in HighestOpenPriceStocks.iterrows():
-            symbol = row['Symbol']
-            open_price = row['Open Price']
-            open_price = round(open_price)
-            
-            stddev = row['Std Dev']
-            
-            logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-            print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-            
-            quantity = int(calculate_quantity(stddev, TargetVolatilityPerShortTrade))
-            if quantity == 0:
-                warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
-                print(f"Warning: {warning_msg}")
-                logging.warning(warning_msg)
-                continue
-            
-            if trade_type_2 == 'BUY':
-                order_detail = prepare_long_order(symbol, open_price, quantity)
-            elif trade_type_2 == 'SELL':
-                order_detail = prepare_short_order(symbol, open_price, quantity)
-            else:
-                warning_msg = f"Invalid trade_type: {trade_type_2}. Skipping order for {symbol}."
-                print(f"Warning: {warning_msg}")
-                logging.warning(warning_msg)
-                continue
-            
-            print(order_detail)
-            execute_order_with_timeout(order_detail, timeout=10)
-    # **[End of New Section]**
+
+
+    # 1) Create Processes for Parallel Execution
+    process_lowest = multiprocessing.Process(
+        target=ProcessSelectedStocks,
+        args=(LowestOpenPriceStocks, trade_type1, TargetVolatilityPerLongTrade, "Lowest Open Price Stocks")
+    )
+
+    process_highest = multiprocessing.Process(
+        target=ProcessSelectedStocks,
+        args=(HighestOpenPriceStocks, trade_type_2, TargetVolatilityPerShortTrade, "Highest Open Price Stocks")
+    )
+
+    # 2) Start the Processes
+    process_lowest.start()
+    process_highest.start()
+
+    # 3) Wait for Both to Complete (join)
+    process_lowest.join()
+    process_highest.join()
+
+    # After all orders are placed, handle the rest of your logic
     print('consolidated orderid are:')
     print(ListOfOrderId)
 
-    #Get the order status and wait for the desired time, if order is still not placed, then convert to market
+    # Get the order status and wait for the desired time
     time.sleep(DurationForSleep)
     OrderType = 'MARKET'
     get_order_status(kite, ListOfOrderId, OrderType, ReorderFlag=1)
     
     logging.info("Completed PlaceIntradayOrders function.")
     print("Finished placing intraday orders.")
+
+def ProcessSelectedStocks(
+    selected_stocks, 
+    trade_type,
+    target_volatility, 
+    description  # A string like "Lowest Open Price Stocks" or "Highest Open Price Stocks"
+):
+    """
+    Places orders for each stock in the provided DataFrame.
+
+    Args:
+        selected_stocks (pandas.DataFrame): The filtered DataFrame (lowest or highest open price stocks).
+        trade_type (str): 'BUY' or 'SELL'.
+        target_volatility (float): Volatility-based factor for quantity calculation.
+        description (str): Descriptive text for logging (e.g., "Lowest Open Price Stocks").
+    """
+    if selected_stocks.empty:
+        # Nothing to do if DataFrame is empty.
+        logging.warning(f"No stocks present for {description}.")
+        print(f"No stocks present for {description}.")
+        return
+
+    logging.info(f"Entering the order placement loop for {description}.")
+
+    for index, row in selected_stocks.iterrows():
+        symbol = row['Symbol']
+        open_price = row['Open Price']
+        open_price = round(open_price)
+
+        stddev = row['Std Dev']
+
+        logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+        print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+
+        quantity = int(calculate_quantity(stddev, target_volatility))
+        if quantity == 0:
+            warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
+            print(f"Warning: {warning_msg}")
+            logging.warning(warning_msg)
+            continue
+
+        # Prepare order based on trade type
+        if trade_type == 'BUY':
+            order_detail = prepare_long_order(symbol, open_price, quantity)
+        elif trade_type == 'SELL':
+            order_detail = prepare_short_order(symbol, open_price, quantity)
+        else:
+            warning_msg = f"Invalid trade_type: {trade_type}. Skipping order for {symbol}."
+            print(f"Warning: {warning_msg}")
+            logging.warning(warning_msg)
+            continue
+
+        # Execute order with a 10-second timeout
+        execute_order_with_timeout(order_detail, timeout=10)
 
 # Fetch input values from the file
 with open(KiteEkanshLogin,'r') as a:
