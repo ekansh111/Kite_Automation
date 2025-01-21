@@ -59,6 +59,9 @@ import pandas as pd
 import os
 from Directories import *
 from Fetch_Positions_Data import *
+import concurrent.futures
+import logging
+from multiprocessing import Manager
 
 NumberOfStocksToSelectLowestOpenPrice = 5
 NumberOfStocksToSelectHighestOpenPrice = 10
@@ -91,7 +94,7 @@ def order_execution_target(queue, order_detail, queueOrderId):
         # Pass exception to the parent process
         queue.put(e)
 
-def execute_order_with_timeout(order_detail, timeout=10):
+def execute_order_with_timeout(order_detail, timeout=10, OrderId=None):
     """
     Executes the order using the execute_order function with a timeout.
     
@@ -123,10 +126,10 @@ def execute_order_with_timeout(order_detail, timeout=10):
     else:
         #Fetch the OrderId from the subprocess
         if not queueOrderId.empty():
-            OrderId = queueOrderId.get()
-            ListOfOrderId.append(OrderId)
-            print('List of order id')
-            print(ListOfOrderId)
+            IndOrderId = queueOrderId.get()
+
+            if OrderId is not None:
+                OrderId.append(IndOrderId)
 
         # Check for exceptions raised in the subprocess
         if not queue.empty():
@@ -231,7 +234,6 @@ def display_selected_stocks(LowestOpenPriceStocks, NumberOfStocks):
     - None
     """
     print('Top' + str(NumberOfStocks) + 'rows based on Open Price:')
-    print(LowestOpenPriceStocks)
     logging.info(f"Top {NumberOfStocks} stocks:\n{LowestOpenPriceStocks}")
     
     if 'Open_PrevLow_Diff_Percent' in LowestOpenPriceStocks.columns:
@@ -384,60 +386,37 @@ def execute_order(order_detail):
     try:
         OrderId = order(order_detail)
         logging.info(f"Order placed successfully for {order_detail['Tradingsymbol']}.")
-        print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}, OrderId={OrderId}")
+        print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}, OrderId={OrderId}, Time={datetime.now()}")
         return OrderId
     except Exception as e:
         logging.error(f"Failed to place order for {order_detail['Tradingsymbol']}: {e}")
         print(f"Error placing order for {order_detail['Tradingsymbol']}: {e}")
 
 
-def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_type_2, risk_per_trade_long= CapitalRiskedPerLongTrade, risk_per_trade_short= CapitalRiskedPerShortTrade):
-    """
-    Orchestrates the placement of intraday buy/sell orders based on Open Price and risk per trade.
-
-    Parameters:
-    - OrderDetails (pandas DataFrame): DataFrame containing stock details.
-    - trade_type (str): Type of trade, either 'BUY' or 'SELL'.
-    - risk_per_trade (int, optional): Maximum amount to invest per trade. Defaults to CapitalRiskedPerTrade.
-
-    Returns:
-    - None
-    """
+def PlaceIntradayOrders(
+    LowestOpenPriceStocks, 
+    HighestOpenPriceStocks, 
+    trade_type1, 
+    trade_type_2, 
+    risk_per_trade_long=CapitalRiskedPerLongTrade, 
+    risk_per_trade_short=CapitalRiskedPerShortTrade
+):
     configure_logging()
     logging.info("Starting PlaceIntradayOrders function.")
-    
-    if not validate_order_details(OrderDetailsLong):
-        logging.error("OrderDetails validation failed. Exiting function.")
-        return
-    
-    if not validate_order_details(OrderDetailsShort):
-        logging.error("OrderDetails validation failed. Exiting function.")
-        return
-    # Select stocks with lowest open prices
-    LowestOpenPriceStocks = get_top_n_stocks(OrderDetailsLong, n=NumberOfStocksToSelectLowestOpenPrice)
-    # Select stocks with highest open prices
-    HighestOpenPriceStocks = get_top_n_stocks(OrderDetailsShort, n=NumberOfStocksToSelectHighestOpenPrice)  # **[Change] Selecting Highest Open Price Stocks**
 
-    # Display selected stocks for both lowest and highest open prices
-    display_selected_stocks(LowestOpenPriceStocks, NumberOfStocksToSelectLowestOpenPrice)
-    display_selected_stocks(HighestOpenPriceStocks, NumberOfStocksToSelectHighestOpenPrice)  # **[Change] Displaying Highest Open Price Stocks**
-    
-    # Check if both sets are empty
-    if LowestOpenPriceStocks.empty and HighestOpenPriceStocks.empty:
-        logging.warning("No stocks available to place orders after selecting top N from both sets.")
-        print("No stocks available to place orders.")
-        return
-
+    # Create a manager and shared list
+    manager = Manager()
+    shared_order_ids = manager.list()  # A list visible to all processes
 
     # 1) Create Processes for Parallel Execution
     process_lowest = multiprocessing.Process(
         target=ProcessSelectedStocks,
-        args=(LowestOpenPriceStocks, trade_type1, TargetVolatilityPerLongTrade, "Lowest Open Price Stocks")
+        args=(LowestOpenPriceStocks, trade_type1, TargetVolatilityPerLongTrade, shared_order_ids, "Lowest Open Price Stocks")
     )
 
     process_highest = multiprocessing.Process(
         target=ProcessSelectedStocks,
-        args=(HighestOpenPriceStocks, trade_type_2, TargetVolatilityPerShortTrade, "Highest Open Price Stocks")
+        args=(HighestOpenPriceStocks, trade_type_2, TargetVolatilityPerShortTrade, shared_order_ids, "Highest Open Price Stocks")
     )
 
     # 2) Start the Processes
@@ -448,14 +427,16 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
     process_lowest.join()
     process_highest.join()
 
-    # After all orders are placed, handle the rest of your logic
-    print('consolidated orderid are:')
-    print(ListOfOrderId)
+    # Convert to a normal Python list (if desired)
+    consolidated_order_ids = list(shared_order_ids)
 
+    print('Consolidated order IDs are:')
+    print(consolidated_order_ids)
+    
     # Get the order status and wait for the desired time
     time.sleep(DurationForSleep)
     OrderType = 'MARKET'
-    get_order_status(kite, ListOfOrderId, OrderType, ReorderFlag=1)
+    get_order_status(kite, consolidated_order_ids, OrderType, ReorderFlag=1)
     
     logging.info("Completed PlaceIntradayOrders function.")
     print("Finished placing intraday orders.")
@@ -463,8 +444,9 @@ def PlaceIntradayOrders(OrderDetailsLong, OrderDetailsShort, trade_type1, trade_
 def ProcessSelectedStocks(
     selected_stocks, 
     trade_type,
-    target_volatility, 
-    description  # A string like "Lowest Open Price Stocks" or "Highest Open Price Stocks"
+    target_volatility,
+    OrderId, 
+    description 
 ):
     """
     Places orders for each stock in the provided DataFrame.
@@ -473,46 +455,58 @@ def ProcessSelectedStocks(
         selected_stocks (pandas.DataFrame): The filtered DataFrame (lowest or highest open price stocks).
         trade_type (str): 'BUY' or 'SELL'.
         target_volatility (float): Volatility-based factor for quantity calculation.
+        orderid: shared list
         description (str): Descriptive text for logging (e.g., "Lowest Open Price Stocks").
     """
-    if selected_stocks.empty:
-        # Nothing to do if DataFrame is empty.
-        logging.warning(f"No stocks present for {description}.")
-        print(f"No stocks present for {description}.")
-        return
 
     logging.info(f"Entering the order placement loop for {description}.")
 
-    for index, row in selected_stocks.iterrows():
-        symbol = row['Symbol']
-        open_price = row['Open Price']
-        open_price = round(open_price)
+    # Create a list of rows
+    rows = [row for _, row in selected_stocks.iterrows()]
+    
+    # Use a thread pool. Adjust max_workers as needed (e.g., 5 or 10).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        # Map each row to the PlaceSingleOrder function
+        futures = [
+            executor.submit(PlaceSingleOrder, row, trade_type, target_volatility,OrderId)
+            for row in rows
+        ]
+        # Optionally wait for all tasks to complete
+        concurrent.futures.wait(futures)
 
-        stddev = row['Std Dev']
+    logging.info(f"Completed processing stocks for {description}.")
+    print(f"Completed processing stocks for {description}.")
 
-        logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-        print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
 
-        quantity = int(calculate_quantity(stddev, target_volatility))
-        if quantity == 0:
-            warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
-            print(f"Warning: {warning_msg}")
-            logging.warning(warning_msg)
-            continue
+def PlaceSingleOrder(row, trade_type, target_volatility, OrderId):
+    """Helper function to place a single order."""
+    symbol = row['Symbol']
+    open_price = round(row['Open Price'])
+    stddev = row['Std Dev']
+    
+    logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+    print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
 
-        # Prepare order based on trade type
-        if trade_type == 'BUY':
-            order_detail = prepare_long_order(symbol, open_price, quantity)
-        elif trade_type == 'SELL':
-            order_detail = prepare_short_order(symbol, open_price, quantity)
-        else:
-            warning_msg = f"Invalid trade_type: {trade_type}. Skipping order for {symbol}."
-            print(f"Warning: {warning_msg}")
-            logging.warning(warning_msg)
-            continue
+    quantity = int(calculate_quantity(stddev, target_volatility))
+    if quantity == 0:
+        warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
+        print(f"Warning: {warning_msg}")
+        logging.warning(warning_msg)
+        return
 
-        # Execute order with a 10-second timeout
-        execute_order_with_timeout(order_detail, timeout=10)
+    # Prepare order based on trade type
+    if trade_type == 'BUY':
+        order_detail = prepare_long_order(symbol, open_price, quantity)
+    elif trade_type == 'SELL':
+        order_detail = prepare_short_order(symbol, open_price, quantity)
+    else:
+        warning_msg = f"Invalid trade_type: {trade_type}. Skipping order for {symbol}."
+        print(f"Warning: {warning_msg}")
+        logging.warning(warning_msg)
+        return
+
+    # Execute order with a 10-second timeout (blocking I/O)
+    execute_order_with_timeout(order_detail, timeout=10, OrderId=OrderId)
 
 # Fetch input values from the file
 with open(KiteEkanshLogin,'r') as a:
