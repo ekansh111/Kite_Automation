@@ -72,7 +72,7 @@ CapitalRiskedPerShortTrade = 120588
 TargetVolatilityPerLongTrade = 3200
 TargetVolatilityPerShortTrade = 4798
 
-DurationForSleep = 12
+DurationForSleep = 10
 #Factor by which the limit price has to be rounded up/down resp
 RoundingFactor = 0.1
 
