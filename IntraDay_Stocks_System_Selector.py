@@ -72,7 +72,7 @@ import logging
 import yfinance as yf
 from itertools import islice
 from datetime import datetime, timedelta
-from IntraDay_Stocks_Place_Order import PlaceIntradayOrders
+from IntraDay_Stocks_Place_Order import *
 from multiprocessing import Pool, cpu_count
 from Directories import *
 from Push_File_To_Email import *
@@ -83,9 +83,8 @@ total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
 #Date for which script will run
-selected_date_input = str(datetime.today().date())#input("Selected Date: ").strip() or '2024-10-21'
+selected_date_input = str(datetime.today().date())
 #Should data be sent by email
-#SendFileDataByEmail = True
 SendFileDataByEmail = True
 #Time at which the order needs to be sent
 OrderTriggerTime = '09:15:00'
@@ -431,11 +430,6 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
     # Filter for short positions: Open Price < SMA
     df_sorted_short = df_filtered[df_filtered['Open Price'] < df_filtered['SMA']]
 
-    print('Filtered details for Long Positions:')
-    print(df_sorted)
-    print('Filtered details for Short Positions:')
-    print(df_sorted_short)
-
     if df_sorted.empty:
         print(f"\nNo stocks have Open Price higher than the 20-day SMA on {selected_date}.")
         logging.warning(f"No stocks have Open Price higher than the 20-day SMA on {selected_date}.")
@@ -476,12 +470,6 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
             print(f"Error saving sorted data to CSV: {e}")
             logging.error(f"Error saving sorted data to CSV {sorted_output_file_short}: {e}")
 
-    # Optionally, print the sorted DataFrames
-    # print("\nSorted Tickers for Long Positions:")
-    # print(df_sorted)
-    # print("\nSorted Tickers for Short Positions:")
-    # print(df_sorted_short)
-
     # Call Function to place orders on Zerodha account IK6635 if flag is True
     if SendFileDataByEmail:
         
@@ -489,20 +477,29 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
         SendConfigurableMail(PayloadDataFrames, VMailDetails)
         SendConfigurableMail(PayloadDataFrames, DadMailDetails)
         SendConfigurableMail(PayloadDataFrames, EkanshMailDetails)
+    
+    # Select stocks with lowest open prices
+    LowestOpenPriceStocks = get_top_n_stocks(df_sorted, n=NumberOfStocksToSelectLowestOpenPrice)
+    # Select stocks with highest open prices
+    HighestOpenPriceStocks = get_top_n_stocks(df_sorted_short, n=NumberOfStocksToSelectHighestOpenPrice)
 
+    # Check if both sets are empty
+    if LowestOpenPriceStocks.empty and HighestOpenPriceStocks.empty:
+        logging.warning("No stocks available to place orders after selecting top N from both sets.")
+        print("No stocks available to place orders.")
+        return    
+    
     # Call Function to place orders on Zerodha account IK6635 if flag is True
     if PlaceOrderIK6635:
         while True:
             now_str = datetime.now().strftime("%H:%M:%S")
             if now_str == OrderTriggerTime:
-                print("It's 09:15:00. Proceeding...")
                 trade_type_1, trade_type_2 = determine_trade_type()
-                PlaceIntradayOrders(df_sorted, df_sorted_short, trade_type_1, trade_type_2)
+                PlaceIntradayOrders(LowestOpenPriceStocks, HighestOpenPriceStocks, trade_type_1, trade_type_2)
                 break
             else:
                 # Sleep for a short interval to avoid busy-waiting
-                print(f'waiting, current time is {now_str}')
-                time.sleep(1)
+                time.sleep(0.01)
 
 def determine_trade_type():
     """
