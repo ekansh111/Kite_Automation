@@ -87,7 +87,7 @@ selected_date_input = str(datetime.today().date())
 SendFileDataByEmail = True
 print('Does the input time need to modified, Y/N')
 try:
-    proceed = inputimeout(timeout=5)
+    proceed = inputimeout(timeout=3)
     if proceed == 'Y':
         OrderTriggerTime = input("Enter the order trigger time in 'HH:MM:SS' format (e.g., 09:15:00): ")
         print("You entered:", OrderTriggerTime)
