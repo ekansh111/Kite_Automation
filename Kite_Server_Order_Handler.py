@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import pytz
 from Directories import *
+from Fetch_Positions_Data import get_order_status
 from Server_Order_Place import *
 
 # For Kite Connect
@@ -28,9 +29,9 @@ def PrepareInstrumentContractNameKite(kite,OrderDetails):
     This function calls the respective instrument contract preparation function.
     """
 
-    df_filtered = PrepareKiteInstrumentContractName(kite,OrderDetails)
+    ZerodhaInstrument_filtered = PrepareKiteInstrumentContractName(kite,OrderDetails)
 
-    UpdateRequestContractDetailsKite(OrderDetails, df_filtered)
+    UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered)
 
     return OrderDetails
 
@@ -41,9 +42,9 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
     """
     
     # Read the CSV file into a DataFrame
-    df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=',')
+    ZerodhaInstrumentDetails = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=',')
     # If there's an unnamed column (index) we rename it:
-    df.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
+    ZerodhaInstrumentDetails.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
 
     # Current datetime for reference
     today = datetime.now()
@@ -52,28 +53,28 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
     RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
 
     # Convert the 'expiry' column to a datetime. e.g., "28FEB2025" => datetime object
-    df['expiry'] = pd.to_datetime(
-        df['expiry'].str.title(), 
+    ZerodhaInstrumentDetails['expiry'] = pd.to_datetime(
+        ZerodhaInstrumentDetails['expiry'].str.title(), 
         format='%Y-%m-%d', #Important, the date format may be subject to change
         errors='coerce'
     )
     
-    df_filtered = pd.DataFrame()
+    ZerodhaInstrumentDetails_filtered = pd.DataFrame()
 
     if int(OrderDetails['Netposition']) == 0:
-        df_filtered = CheckIfExistingOldContractSqOffReq(kite,df,OrderDetails,today,RolloverDate)
+        ZerodhaInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReq(kite,ZerodhaInstrumentDetails,OrderDetails,today,RolloverDate)
     
-    if df_filtered.empty:
-        df_filtered = df[
-            (df['name'] == OrderDetails['Tradingsymbol']) &
-            (df['exch_seg'] == OrderDetails['Exchange']) &
-            (df['instrumenttype'] == OrderDetails['InstrumentType']) &
-            (df['expiry'] > RolloverDate)
+    if ZerodhaInstrumentDetails_filtered.empty:
+        ZerodhaInstrumentDetails_filtered = ZerodhaInstrumentDetails[
+            (ZerodhaInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &
+            (ZerodhaInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &
+            (ZerodhaInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &
+            (ZerodhaInstrumentDetails['expiry'] > RolloverDate)
         ].sort_values(by='expiry', ascending=True).head(1)
     
-    return df_filtered
+    return ZerodhaInstrumentDetails_filtered
 
-def CheckIfExistingOldContractSqOffReq(kite, df, OrderDetails, today, RolloverDate):
+def CheckIfExistingOldContractSqOffReq(kite, ZerodhaInstrumentDetails, OrderDetails, today, RolloverDate):
     """
     This function checks if an existing old futures or options contract requires squaring off before rollover.
     It filters the available contracts based on the provided criteria (such as expiry date and symbol)
@@ -81,7 +82,7 @@ def CheckIfExistingOldContractSqOffReq(kite, df, OrderDetails, today, RolloverDa
 
     Args:
         kite: The Kite API instance used for accessing market data and managing positions.
-        df: DataFrame containing details of all available contracts.
+        ZerodhaInstrumentDetails: DataFrame containing details of all available contracts.
         OrderDetails: Dictionary containing details of the order, such as symbol, exchange, and instrument type.
         today: The current date (used to filter contracts that are not expired).
         RolloverDate: The cutoff date (used to identify contracts that need to be squared off before this date).
@@ -92,23 +93,23 @@ def CheckIfExistingOldContractSqOffReq(kite, df, OrderDetails, today, RolloverDa
     """
     # Step 1: Filter the contracts based on the given criteria
     # Match the symbol, exchange, and instrument type, and filter by expiry date range.
-    df_filtered = df[
-        (df['name'] == OrderDetails['Tradingsymbol']) &  # Match the trading symbol
-        (df['exch_seg'] == OrderDetails['Exchange']) &  # Match the exchange segment
-        (df['instrumenttype'] == OrderDetails['InstrumentType']) &  # Match the instrument type
-        (df['expiry'] >= today) &  # Ensure the contract has not expired
-        (df['expiry'] <= RolloverDate)  # Ensure the contract is within the rollover period
+    ZerodhaInstrumentDetails_filtered = ZerodhaInstrumentDetails[
+        (ZerodhaInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &  # Match the trading symbol
+        (ZerodhaInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &  # Match the exchange segment
+        (ZerodhaInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &  # Match the instrument type
+        (ZerodhaInstrumentDetails['expiry'] >= today) &  # Ensure the contract has not expired
+        (ZerodhaInstrumentDetails['expiry'] <= RolloverDate)  # Ensure the contract is within the rollover period
     ].sort_values(by='expiry', ascending=True).head(1)  # Sort by expiry and pick the earliest
 
     # Step 2: Check if any matching contract exists
-    if not df_filtered.empty:
+    if not ZerodhaInstrumentDetails_filtered.empty:
         # Fetch existing positions from Kite for the given order details
         KitePositions = FetchExistingNetKitePositions(kite, OrderDetails)
 
         # Further filter the Kite positions to match the selected contract's symbol and token
         KitePositionsFiltered = KitePositions[
-            (KitePositions['tradingsymbol'] == df_filtered['symbol'].iloc[0]) &  # Match the trading symbol
-            (KitePositions['instrument_token'] == df_filtered['token'].iloc[0])  # Match the instrument token
+            (KitePositions['tradingsymbol'] == ZerodhaInstrumentDetails_filtered['symbol'].iloc[0]) &  # Match the trading symbol
+            (KitePositions['instrument_token'] == ZerodhaInstrumentDetails_filtered['token'].iloc[0])  # Match the instrument token
         ].copy()
 
         # Rename columns in the copied DataFrame
@@ -135,19 +136,19 @@ def FetchExistingNetKitePositions(kite,OrderDetails):
         
         # Extract net positions
         net_positions = positions['net']
-        df_positions = pd.DataFrame(net_positions)
+        ZerodhaInstrument_positions = pd.DataFrame(net_positions)
 
-        return df_positions
+        return ZerodhaInstrument_positions
     
-def UpdateRequestContractDetailsKite(OrderDetails, df_filtered):
+def UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered):
     """
     Updates the OrderDetails dictionary with the new contract
     (symbol and token) from the filtered DataFrame.
     """
 
     # Retrieve the first row's symbol and token values
-    OrderDetails['Tradingsymbol'] = df_filtered['symbol'].iloc[0]
-    OrderDetails['Symboltoken']   = df_filtered['token'].iloc[0]
+    OrderDetails['Tradingsymbol'] = ZerodhaInstrument_filtered['symbol'].iloc[0]
+    OrderDetails['Symboltoken']   = ZerodhaInstrument_filtered['token'].iloc[0]
 
     return OrderDetails
 
@@ -280,9 +281,21 @@ def ControlOrderFlowKite(OrderDetails):
     if OrderDetails['Ordertype'].upper() == 'MARKET':
         return order_id
     else:
-        print('Limit order placed.')
-        # If needed, you can sleep and check the order status to confirm fill.
-        # SleepForRequiredTime(OrderDetails['SleepDuration'])
-        # Then, if not filled, call ConvertToMarketOrder(kite, OrderDetails)
+        order_list = []
+        order_list.append(order_id)
+        print(order_list)
+        if OrderDetails['ConvertToMarketOrder'] == 'True':
+            if int(OrderDetails['Netposition']) != 0:
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                #Sleep for the designated time
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+            else:
+                print(f'Waiting for {OrderDetails["ExitSleepDuration"]} seconds')
+                #Sleep for the designated time
+                SleepForRequiredTime(int(OrderDetails['ExitSleepDuration']))
+            OrderType = 'MARKET'
+            ReorderFlag = 1
+
+            get_order_status(kite, order_list, OrderType, ReorderFlag)    
 
         return order_id
