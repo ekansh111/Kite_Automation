@@ -78,8 +78,6 @@ from Directories import *
 from Push_File_To_Email import *
 from Email_Config import *
 
-# Set a smaller batch size to avoid overwhelming the API
-total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
 #Date for which script will run
@@ -118,7 +116,7 @@ def batch_iterator(iterable, batch_size):
             break
         yield batch
 
-def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch_size, pause=1):
+def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size, pause=1):
     """
     Fetches the Closing Price (Close), Open Price (Open), High Price (High), and Low Price (Low) for each stock symbol
     on specified dates using yfinance, computes SMA and Std Dev, calculates the difference
@@ -197,9 +195,9 @@ def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch
                 close_prices.append(empty_data)
             time.sleep(pause)
             continue
-
-        if len(batch) == 1:
-            # When only one ticker is fetched, the DataFrame does not have a multi-level column
+        
+        if len(batch) == 1 and data.columns.nlevels == 1:
+            # Only force a multi-level if it's truly single-level
             data.columns = pd.MultiIndex.from_product([[symbols_with_suffix[0]], data.columns])
 
         # Prepare arguments for multiprocessing
@@ -638,7 +636,7 @@ def main():
     print(f"Fetching Close prices from {trading_days[0]} to {trading_days[-1]}")
 
     # Fetch Close prices in batches and compute SMA, Std Dev, Open_PrevLow_Diff Percent, Open_Today_Close_Diff
-    df_close = fetch_ltp(symbols, trading_days, sma_window, std_dev_window, batch_size=total_batch_size, pause=1)
+    df_close = fetch_ltp(symbols, trading_days, sma_window, std_dev_window, batch_size=len(symbols), pause=1)
 
     # Prepare the output
     output_directory = IntraDayDirectory
