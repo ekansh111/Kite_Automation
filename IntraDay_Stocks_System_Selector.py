@@ -86,13 +86,16 @@ selected_date_input = str(datetime.today().date())
 #Should data be sent by email
 SendFileDataByEmail = True
 print('Does the input time need to modified, Y/N')
-proceed = inputimeout(timeout=5)
-if proceed == 'Y':
-    OrderTriggerTime = input("Enter the order trigger time in 'HH:MM:SS' format (e.g., 09:15:00): ")
-    print("You entered:", OrderTriggerTime)
-else:    
-    #Time at which the order needs to be sent
-    OrderTriggerTime = '09:15:00'
+try:
+    proceed = inputimeout(timeout=5)
+    if proceed == 'Y':
+        OrderTriggerTime = input("Enter the order trigger time in 'HH:MM:SS' format (e.g., 09:15:00): ")
+        print("You entered:", OrderTriggerTime)
+    else:    
+        #Time at which the order needs to be sent
+        OrderTriggerTime = '09:15:00'
+except TimeoutOccurred:
+    OrderTriggerTime = '09:15:00'    
 
 def read_csv_file(file_path, delimiter=','):
     """
