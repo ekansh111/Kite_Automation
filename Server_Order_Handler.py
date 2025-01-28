@@ -56,11 +56,11 @@ def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
     """
 
     # Read the CSV file into a DataFrame
-    AngelInstrumentDetals = pd.read_csv(AngelInstrumentDirectory, delimiter=',')
+    AngelInstrumentDetails = pd.read_csv(AngelInstrumentDirectory, delimiter=',')
     # The CSV might have an unnamed first column which we rename below
 
     # Rename only the unnamed column to 'serialnumber' if it exists
-    AngelInstrumentDetals.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
+    AngelInstrumentDetails.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
     
     # Current datetime for reference
     today = datetime.now()
@@ -71,40 +71,68 @@ def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
 
     # Convert the 'expiry' column to a proper datetime format.
     # Example expiry string: "28FEB2025" => datetime object
-    AngelInstrumentDetals['expiry'] = pd.to_datetime(AngelInstrumentDetals['expiry'].str.title(), format='%d%b%Y', errors='coerce')
+    AngelInstrumentDetails['expiry'] = pd.to_datetime(AngelInstrumentDetails['expiry'].str.title(), format='%d%b%Y', errors='coerce')
 
-    AngelInstrumentDetals_filtered = pd.DataFrame()
+    AngelInstrumentDetails_filtered = pd.DataFrame()
 
     # If Netposition == '0', filter by expiry > today and pick the nearest expiry 
-    if int(OrderDetails['Netposition']) != int(OrderDetails['Quantity']):
+    if ((int(OrderDetails['Netposition']) != int(OrderDetails['Quantity'])) or (OrderDetails.get('ReEnterOrderLoop') == 'True')):
 
         if int(OrderDetails['Netposition']) == 0:
-            AngelInstrumentDetals_filtered = CheckIfExistingOldContractSqOffReqAngel(smartAPI,AngelInstrumentDetals,OrderDetails,today,RolloverDate)
+            AngelInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReqAngel(smartAPI,AngelInstrumentDetails,OrderDetails,today,RolloverDate)
 
         else:
-            AngelInstrumentDetals_filtered = CheckIfExistingOldContractSqOffReqAngel(smartAPI,AngelInstrumentDetals,OrderDetails,today,RolloverDate)
+            if OrderDetails.get('ReEnterOrderLoop') == 'True':
+                OrderDetails['Quantity'] = OrderDetails['QuantityToBePlacedInNextRound']
+                OrderDetails['ReEnterOrderLoop'] == 'False'
+                OrderDetails['Tradingsymbol'] = OrderDetails['InitialTradingsymbol']
+                
+            
+            else:
+                OrderDetails['InitialTradingsymbol'] = OrderDetails['Tradingsymbol']
+
+                AngelInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReqAngel(smartAPI,AngelInstrumentDetails,OrderDetails,today,RolloverDate)
+                if not AngelInstrumentDetails_filtered.empty:
+                    OrderDetails['ReEnterOrderLoop'] = 'True'
+
+                    NoOfContractsInOldMonthFormat = int(AngelInstrumentDetails_filtered['netqty'].iloc[0])
+                    NoOfContractsInNewMonthFormatToPlaceOrders = int(OrderDetails['Quantity']) 
+
+                    if NoOfContractsInNewMonthFormatToPlaceOrders > NoOfContractsInOldMonthFormat:
+                        InitialOrderQuantity = NoOfContractsInOldMonthFormat#NoOfContractsInNewMonthFormatToPlaceOrders
+                        NetQuantityOrdersToBePlaced = NoOfContractsInNewMonthFormatToPlaceOrders - abs(NoOfContractsInOldMonthFormat)
+
+                    else:
+                        InitialOrderQuantity = NoOfContractsInNewMonthFormatToPlaceOrders
+                        NetQuantityOrdersToBePlaced = NoOfContractsInOldMonthFormat - abs(NoOfContractsInNewMonthFormatToPlaceOrders)
+
+                    if InitialOrderQuantity < 0:
+                        InitialOrderQuantity = InitialOrderQuantity * -1
+                        
+                    OrderDetails['Quantity'] = InitialOrderQuantity
+                    OrderDetails['QuantityToBePlacedInNextRound'] = NetQuantityOrdersToBePlaced
 
 
 
-    if AngelInstrumentDetals_filtered.empty:
-        AngelInstrumentDetals_filtered = AngelInstrumentDetals[
-            (AngelInstrumentDetals['name'] == OrderDetails['Tradingsymbol']) &
-            (AngelInstrumentDetals['exch_seg'] == OrderDetails['Exchange']) &
-            (AngelInstrumentDetals['instrumenttype'] == OrderDetails['InstrumentType']) &
-            (AngelInstrumentDetals['expiry'] > RolloverDate)
+
+    if AngelInstrumentDetails_filtered.empty:
+        AngelInstrumentDetails_filtered = AngelInstrumentDetails[
+            (AngelInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &
+            (AngelInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &
+            (AngelInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &
+            (AngelInstrumentDetails['expiry'] > RolloverDate)
         ].sort_values(by='expiry', ascending=True).head(1)
     
+    return AngelInstrumentDetails_filtered
 
-    return AngelInstrumentDetals_filtered
-
-def CheckIfExistingOldContractSqOffReqAngel(smartAPI, AngelInstrumentDetals, OrderDetails, today, RolloverDate):
+def CheckIfExistingOldContractSqOffReqAngel(smartAPI, AngelInstrumentDetails, OrderDetails, today, RolloverDate):
     """
     Checks if there's an old contract that requires square-off in the specified date range.
     Filters the instrument details based on the OrderDetails, then compares it against
     existing Angel positions to see if there's a matching position to square off.
     
     :param smartAPI:      The authenticated Angel One (SmartAPI) session object.
-    :param AngelInstrumentDetals: A DataFrame containing instrument details (symbol, token, expiry, etc.).
+    :param AngelInstrumentDetails: A DataFrame containing instrument details (symbol, token, expiry, etc.).
     :param OrderDetails:  A dictionary with order-related details (Tradingsymbol, Exchange, InstrumentType, etc.).
     :param today:         The current date/time (datetime object).
     :param RolloverDate:  The rollover deadline date/time (datetime object).
@@ -114,16 +142,16 @@ def CheckIfExistingOldContractSqOffReqAngel(smartAPI, AngelInstrumentDetals, Ord
     
     # Step 1: Filter the contracts based on the given criteria
     # Match the symbol, exchange, and instrument type, and filter by expiry date range.
-    AngelInstrumentDetals_filtered = AngelInstrumentDetals[
-        (AngelInstrumentDetals['name'] == OrderDetails['Tradingsymbol']) &  # Match the trading symbol
-        (AngelInstrumentDetals['exch_seg'] == OrderDetails['Exchange']) &  # Match the exchange segment
-        (AngelInstrumentDetals['instrumenttype'] == OrderDetails['InstrumentType']) &  # Match the instrument type
-        (AngelInstrumentDetals['expiry'] >= today) &  # Ensure the contract has not expired
-        (AngelInstrumentDetals['expiry'] <= RolloverDate)  # Ensure the contract is within the rollover period
+    AngelInstrumentDetails_filtered = AngelInstrumentDetails[
+        (AngelInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &  # Match the trading symbol
+        (AngelInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &  # Match the exchange segment
+        (AngelInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &  # Match the instrument type
+        (AngelInstrumentDetails['expiry'] >= today) &  # Ensure the contract has not expired
+        (AngelInstrumentDetails['expiry'] <= RolloverDate)  # Ensure the contract is within the rollover period
     ].sort_values(by='expiry', ascending=True).head(1)  # Sort by expiry and pick the earliest
 
     # Step 2: Check if any matching contract exists
-    if not AngelInstrumentDetals_filtered.empty:
+    if not AngelInstrumentDetails_filtered.empty:
         # Fetch existing positions from Angel for the given order details
         AngelPositionsDetails = FetchExistingAngelPositions(smartAPI, OrderDetails)
         AngelPositions = pd.DataFrame(AngelPositionsDetails)
@@ -132,18 +160,24 @@ def CheckIfExistingOldContractSqOffReqAngel(smartAPI, AngelInstrumentDetals, Ord
 
         AngelPositionsData['netqty'] = pd.to_numeric(AngelPositionsData['netqty'], errors='coerce')
 
-        # Further filter the Angel positions to match the selected contract's symbol and token
+        # 1. Determine the comparison condition based on Tradetype
+        if str(OrderDetails['Tradetype']).upper() == 'BUY':
+            comparison_condition = (AngelPositionsData['netqty'] < OrderDetails['NetDirection'])
+        else:
+            comparison_condition = (AngelPositionsData['netqty'] > OrderDetails['NetDirection'])
+
+        # 2. Apply the condition in the DataFrame filter
         AngelPositionsFiltered = AngelPositionsData[
-            (AngelPositionsData['symboltoken'] == AngelInstrumentDetals_filtered['token'].iloc[0]) &
+            (AngelPositionsData['symboltoken'] == AngelInstrumentDetails_filtered['token'].iloc[0]) &
             (AngelPositionsData['netqty'] != 0) &
-            (AngelPositionsData['netqty'] < OrderDetails['NetDirection'])        # Match the instrument token
+            comparison_condition
         ].copy()
-        
+
+
         # Step 3: If there are matching positions, return the filtered positions
         if not AngelPositionsFiltered.empty:
             # Rename columns to standardize naming for further processing
-            AngelPositionsFiltered.rename(columns={'symbol': 'instrument_name', 'tradingsymbol': 'symbol', 'instrument_token': 'token'}, inplace=True)
-
+            AngelPositionsFiltered.rename(columns={'symbol': 'instrument_name', 'tradingsymbol': 'symbol', 'instrument_token': 'token', 'symboltoken': 'token'}, inplace=True)
             # Return the filtered positions DataFrame
             return AngelPositionsFiltered
         else:
@@ -227,14 +261,17 @@ def Validate_Quantity(OrderDetails):
     #If there is any disreparency between the total quantity and lotsize then correct it
     if len(Quantitysplit)>1:
         UpdatedQuantity = int(Quantitysplit[0]) * int(Quantitysplit[1])
+        UpdatedNetQuantity = int(OrderDetails['Netposition']) * int(Quantitysplit[1])
+        
         OrderDetails['Quantity'] = UpdatedQuantity 
-        print(UpdatedQuantity)
+        OrderDetails['Netposition'] = UpdatedNetQuantity 
+        
     
     return OrderDetails
 
 #Function to place order on Angel Broking account
 def PlaceOrderAngelAPI(smartApi,OrderDetails):
-    print('Orer details in place order')
+    print('Order details in place order')
     print(OrderDetails)
     #place order
     try:
@@ -256,7 +293,7 @@ def PlaceOrderAngelAPI(smartApi,OrderDetails):
         
         OrderIdDetails = smartApi.placeOrder(orderparams)
     except Exception as e:
-        print("Order placement failed: {}".format(e.message))
+        print("Order placement failed: {}".format(str(e)))
 
     return OrderIdDetails
 
@@ -360,6 +397,13 @@ def ControlOrderFlowAngel(OrderDetails):
     #IF few orders remain to be placed due to difference in contract name, then reenter the loop with updated quantity
 
     if OrderDetails['Ordertype'] == 'MARKET':
+        if OrderDetails.get('ReEnterOrderLoop') == 'True':
+            PrepareInstrumentContractName(smartAPI,OrderDetails)
+            
+            OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
+            OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
+            OrderDetails['OrderId'] = OrderIdDetails
+            return OrderDetails  
         return OrderIdDetails
     else:
         if OrderDetails['ConvertToMarketOrder'] == 'True':
@@ -374,10 +418,20 @@ def ControlOrderFlowAngel(OrderDetails):
             
             OrderDetails['Ordertype'] = 'MARKET'
             OrderDetails['Price'] = '0'
-            OrderDetails['Ordertype'] = 'MARKET'
             ModifyAngeOrder(smartAPI,OrderDetails)
+
+            if OrderDetails.get('ReEnterOrderLoop') == 'True':
+                OrderDetails['Ordertype'] = 'LIMIT'
+                PrepareInstrumentContractName(smartAPI, OrderDetails)                
+                OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
+                OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
+                OrderDetails['OrderId'] = OrderIdDetails
+                
+                OrderDetails['Ordertype'] = 'MARKET'
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+                ModifyAngeOrder(smartAPI,OrderDetails)
+                
+                return OrderDetails  
         return OrderIdDetails
 
-    #CheckOrderStatus()
-
-    ConvertToMarketOrder(OrderDetails)
