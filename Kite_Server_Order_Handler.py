@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import pytz
 from Directories import *
+from Fetch_Positions_Data import get_order_status
 from Server_Order_Place import *
 
 # For Kite Connect
@@ -23,27 +24,44 @@ from kiteconnect import KiteConnect
 LimitOrder = 'LIMIT'
 MarketOrder = 'MARKET'
 
+
+def ConfigureNetDirectionOfTrade(OrderDetails):
+    """
+    Sets the 'NetDirection' key in OrderDetails based on the 'Tradetype'.
+    If Tradetype is BUY (case-insensitive), NetDirection is set to 1.
+    If Tradetype is SELL (case-insensitive), NetDirection is set to -1.
+    """
+    if OrderDetails['Tradetype'].strip().upper() == 'BUY':
+        OrderDetails['NetDirection'] = 1
+    elif OrderDetails['Tradetype'].strip().upper() == 'SELL':
+        OrderDetails['NetDirection'] = -1
+    return OrderDetails
+
+
 def PrepareInstrumentContractNameKite(kite,OrderDetails):
     """
-    This function calls the respective instrument contract preparation function.
+    Calls the function that filters instrument contracts based on certain criteria
+    (like expiry date, symbol, etc.), then updates OrderDetails with the selected contract info.
     """
 
-    df_filtered = PrepareKiteInstrumentContractName(kite,OrderDetails)
-
-    UpdateRequestContractDetailsKite(OrderDetails, df_filtered)
+    ZerodhaInstrument_filtered = PrepareKiteInstrumentContractName(kite,OrderDetails)
+    print('Zerodha instrument filtered')
+    print(ZerodhaInstrument_filtered)
+    UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered)
 
     return OrderDetails
 
+
 def PrepareKiteInstrumentContractName(kite,OrderDetails):
     """
-    Reads the instrument details from a CSV (ZerodhaInstrumentDirectory),
+    Reads the instrument details from a CSV file (ZerodhaInstrumentDirectory),
     applies filtering logic based on OrderDetails, and returns the filtered DataFrame.
     """
-    
+
     # Read the CSV file into a DataFrame
-    df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=',')
-    # If there's an unnamed column (index) we rename it:
-    df.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
+    ZerodhaInstrumentDetails = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=',')
+    # Rename the unnamed column to 'serialnumber' if it exists
+    ZerodhaInstrumentDetails.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
 
     # Current datetime for reference
     today = datetime.now()
@@ -51,118 +69,158 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
     # Compute the rollover date by adding 'DaysPostWhichSelectNextContract' to today's date
     RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
 
-    # Convert the 'expiry' column to a datetime. e.g., "28FEB2025" => datetime object
-    df['expiry'] = pd.to_datetime(
-        df['expiry'].str.title(), 
-        format='%Y-%m-%d', #Important, the date format may be subject to change
+    # Convert the 'expiry' column to a datetime. Example format: '2025-02-28' => datetime object
+    ZerodhaInstrumentDetails['expiry'] = pd.to_datetime(
+        ZerodhaInstrumentDetails['expiry'].str.title(), 
+        format='%Y-%m-%d', # The date format might differ; adjust as needed
         errors='coerce'
     )
-    
-    df_filtered = pd.DataFrame()
+    print(ZerodhaInstrumentDetails)
 
-    if int(OrderDetails['Netposition']) == 0:
-        df_filtered = CheckIfExistingOldContractSqOffReq(kite,df,OrderDetails,today,RolloverDate)
-    
-    if df_filtered.empty:
-        df_filtered = df[
-            (df['name'] == OrderDetails['Tradingsymbol']) &
-            (df['exch_seg'] == OrderDetails['Exchange']) &
-            (df['instrumenttype'] == OrderDetails['InstrumentType']) &
-            (df['expiry'] > RolloverDate)
+    ZerodhaInstrumentDetails_filtered = pd.DataFrame()
+
+    # If the net position does not match the quantity or if we're re-entering the order loop,
+    # we check for existing old contracts to square off.
+    if ((int(OrderDetails['Netposition']) != int(OrderDetails['Quantity'])) or (OrderDetails.get('ReEnterOrderLoop') == 'True')):
+        
+        # If there is no net position, check if there's an old contract to square off.
+        if int(OrderDetails['Netposition']) == 0:
+            ZerodhaInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReq(
+                kite,ZerodhaInstrumentDetails,OrderDetails,today,RolloverDate
+            )
+
+        else:
+            # If ReEnterOrderLoop is True, update the quantity info accordingly.
+            if OrderDetails.get('ReEnterOrderLoop') == 'True':
+                OrderDetails['Quantity'] = OrderDetails['QuantityToBePlacedInNextRound']
+                OrderDetails['ReEnterOrderLoop'] == 'False'
+                OrderDetails['Tradingsymbol'] = OrderDetails['InitialTradingsymbol']
+
+            else:
+                OrderDetails['InitialTradingsymbol'] = OrderDetails['Tradingsymbol']
+
+                ZerodhaInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReq(
+                    kite,ZerodhaInstrumentDetails,OrderDetails,today,RolloverDate
+                )
+                print(ZerodhaInstrumentDetails_filtered)
+                if not ZerodhaInstrumentDetails_filtered.empty:
+                    OrderDetails['ReEnterOrderLoop'] = 'True'
+
+                    # Calculate how many contracts are in the old month vs new month
+                    NoOfContractsInOldMonthFormat = int(ZerodhaInstrumentDetails_filtered['quantity'].iloc[0])
+                    NoOfContractsInNewMonthFormatToPlaceOrders = int(OrderDetails['Quantity']) 
+
+                    # If new month quantity > old month quantity, figure out how many are needed in each step
+                    if NoOfContractsInNewMonthFormatToPlaceOrders > NoOfContractsInOldMonthFormat:
+                        InitialOrderQuantity = NoOfContractsInOldMonthFormat
+                        NetQuantityOrdersToBePlaced = NoOfContractsInNewMonthFormatToPlaceOrders - abs(NoOfContractsInOldMonthFormat)
+
+                    else:
+                        InitialOrderQuantity = NoOfContractsInNewMonthFormatToPlaceOrders
+                        NetQuantityOrdersToBePlaced = NoOfContractsInOldMonthFormat - abs(NoOfContractsInNewMonthFormatToPlaceOrders)
+
+                    # Make sure initial order quantity is non-negative
+                    if InitialOrderQuantity < 0:
+                        InitialOrderQuantity = -InitialOrderQuantity
+
+                    OrderDetails['Quantity'] = InitialOrderQuantity
+                    OrderDetails['QuantityToBePlacedInNextRound'] = NetQuantityOrdersToBePlaced  
+
+    # If no old contract was found or the filtered DataFrame is empty,
+    # pick the new contract with expiry > RolloverDate.
+    if ZerodhaInstrumentDetails_filtered.empty:
+        ZerodhaInstrumentDetails_filtered = ZerodhaInstrumentDetails[
+            (ZerodhaInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &
+            (ZerodhaInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &
+            (ZerodhaInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &
+            (ZerodhaInstrumentDetails['expiry'] > RolloverDate)
         ].sort_values(by='expiry', ascending=True).head(1)
-    
-    return df_filtered
 
-def CheckIfExistingOldContractSqOffReq(kite, df, OrderDetails, today, RolloverDate):
+    return ZerodhaInstrumentDetails_filtered
+
+
+def CheckIfExistingOldContractSqOffReq(kite, ZerodhaInstrumentDetails, OrderDetails, today, RolloverDate):
     """
-    This function checks if an existing old futures or options contract requires squaring off before rollover.
-    It filters the available contracts based on the provided criteria (such as expiry date and symbol)
-    and manages the order flow if a matching position exists.
-
-    Args:
-        kite: The Kite API instance used for accessing market data and managing positions.
-        df: DataFrame containing details of all available contracts.
-        OrderDetails: Dictionary containing details of the order, such as symbol, exchange, and instrument type.
-        today: The current date (used to filter contracts that are not expired).
-        RolloverDate: The cutoff date (used to identify contracts that need to be squared off before this date).
-
-    Returns:
-        - A filtered DataFrame (`KitePositionsFiltered`) with matching positions if an old contract needs squaring off.
-        - An empty DataFrame if no matching old contract exists.
+    Checks if an existing old contract needs to be squared off before the rollover date.
+    Filters available contracts based on the symbol, exchange, instrument type, and expiry range.
+    Then checks the user's Kite positions to see if there's a matching contract that requires closure.
     """
     # Step 1: Filter the contracts based on the given criteria
-    # Match the symbol, exchange, and instrument type, and filter by expiry date range.
-    df_filtered = df[
-        (df['name'] == OrderDetails['Tradingsymbol']) &  # Match the trading symbol
-        (df['exch_seg'] == OrderDetails['Exchange']) &  # Match the exchange segment
-        (df['instrumenttype'] == OrderDetails['InstrumentType']) &  # Match the instrument type
-        (df['expiry'] >= today) &  # Ensure the contract has not expired
-        (df['expiry'] <= RolloverDate)  # Ensure the contract is within the rollover period
-    ].sort_values(by='expiry', ascending=True).head(1)  # Sort by expiry and pick the earliest
+    ZerodhaInstrumentDetails_filtered = ZerodhaInstrumentDetails[
+        (ZerodhaInstrumentDetails['name'] == OrderDetails['Tradingsymbol']) &
+        (ZerodhaInstrumentDetails['exch_seg'] == OrderDetails['Exchange']) &
+        (ZerodhaInstrumentDetails['instrumenttype'] == OrderDetails['InstrumentType']) &
+        (ZerodhaInstrumentDetails['expiry'] >= today) &
+        (ZerodhaInstrumentDetails['expiry'] <= RolloverDate)
+    ].sort_values(by='expiry', ascending=True).head(1)
 
     # Step 2: Check if any matching contract exists
-    if not df_filtered.empty:
+    if not ZerodhaInstrumentDetails_filtered.empty:
         # Fetch existing positions from Kite for the given order details
         KitePositions = FetchExistingNetKitePositions(kite, OrderDetails)
+        print('kite positions')
+        print(KitePositions)
+
+        # Determine the comparison condition based on Tradetype
+        if str(OrderDetails['Tradetype']).upper() == 'BUY':
+            comparison_condition = (KitePositions['quantity'] < OrderDetails['NetDirection'])
+        else:
+            comparison_condition = (KitePositions['quantity'] > OrderDetails['NetDirection'])
 
         # Further filter the Kite positions to match the selected contract's symbol and token
         KitePositionsFiltered = KitePositions[
-            (KitePositions['tradingsymbol'] == df_filtered['symbol'].iloc[0]) &  # Match the trading symbol
-            (KitePositions['instrument_token'] == df_filtered['token'].iloc[0])  # Match the instrument token
+            (KitePositions['tradingsymbol'] == ZerodhaInstrumentDetails_filtered['symbol'].iloc[0]) &
+            (KitePositions['instrument_token'] == ZerodhaInstrumentDetails_filtered['token'].iloc[0]) &
+            (KitePositions['quantity'] != 0) &
+            comparison_condition
         ].copy()
 
         # Rename columns in the copied DataFrame
         KitePositionsFiltered.rename(columns={'tradingsymbol': 'symbol', 'instrument_token': 'token'}, inplace=True)
-
 
         # Step 3: If there are matching positions, return the filtered positions
         if not KitePositions.empty:
             # Rename columns to standardize naming for further processing
             KitePositionsFiltered.rename(columns={'tradingsymbol': 'symbol', 'instrument_token': 'token'}, inplace=True)
 
-            # Return the filtered positions DataFrame
             return KitePositionsFiltered
+        # If the user has positions but none match the old contract criteria, return empty
+        return pd.DataFrame()
     else:
-        # If no matching contract is found, return an empty DataFrame
-        return pd.DataFrame()  # Ensure an empty DataFrame is returned for consistency
-
+        # No matching old contract found
+        return pd.DataFrame()
 
 
 def FetchExistingNetKitePositions(kite,OrderDetails):
-        
-        #Fetch positions from kite account
-        positions = kite.positions()
-        
-        # Extract net positions
-        net_positions = positions['net']
-        df_positions = pd.DataFrame(net_positions)
-
-        return df_positions
+    """
+    Fetches the net positions from Kite and returns them as a DataFrame.
+    """
+    # Positions is a dict with keys: 'net' and 'day'
+    positions = kite.positions()
     
-def UpdateRequestContractDetailsKite(OrderDetails, df_filtered):
+    # Extract net positions list
+    net_positions = positions['net']
+    ZerodhaInstrument_positions = pd.DataFrame(net_positions)
+
+    return ZerodhaInstrument_positions
+
+
+def UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered):
     """
-    Updates the OrderDetails dictionary with the new contract
-    (symbol and token) from the filtered DataFrame.
+    Updates OrderDetails with the symbol and token from the filtered DataFrame.
     """
 
-    # Retrieve the first row's symbol and token values
-    OrderDetails['Tradingsymbol'] = df_filtered['symbol'].iloc[0]
-    OrderDetails['Symboltoken']   = df_filtered['token'].iloc[0]
+    OrderDetails['Tradingsymbol'] = ZerodhaInstrument_filtered['symbol'].iloc[0]
+    OrderDetails['Symboltoken']   = ZerodhaInstrument_filtered['token'].iloc[0]
 
     return OrderDetails
 
 
 def EstablishConnectionKiteAPI(OrderDetails):
     """
-    Reads credentials from a specified file and creates a Kite Connect session.
-    Typically:
-      Line 1: api_key
-      Line 2: request_token
-      Line 3: api_secret
-    We then exchange the request_token for an access_token.
-    Once the access_token is acquired, we set it on the KiteConnect instance.
+    Reads credentials from a file (e.g., line 1: api_key, line 2: request_token, line 3: api_secret),
+    then sets up the KiteConnect object with the access_token.
     """
-    
     if str(OrderDetails.get('User')) == 'IK6635':
         APIKeyDirectory = KiteEkanshLogin
         AccessTokenDirectory = KiteEkanshLoginAccessToken
@@ -170,7 +228,7 @@ def EstablishConnectionKiteAPI(OrderDetails):
     elif str(OrderDetails.get('User')) == 'YD6016':  
         APIKeyDirectory = KiteRashmiLogin
         AccessTokenDirectory = KiteRashmiLoginAccessToken
-    
+
     with open(APIKeyDirectory,'r') as InputsFile:
         content = InputsFile.readlines()
         api_key   = content[2].strip('\n')
@@ -188,23 +246,24 @@ def EstablishConnectionKiteAPI(OrderDetails):
 
 def Validate_Quantity(OrderDetails):
     """
-    If quantity is given in a multiplier format like "2*50", 
-    parse and multiply to get the final integer quantity.
+    If the quantity is specified in the format "2*50", parse the multiplier
+    and adjust both Quantity and Netposition accordingly.
     """
     Quantitysplit = str(OrderDetails['Quantity']).split('*')
 
     if len(Quantitysplit) > 1:
         UpdatedQuantity = int(Quantitysplit[0]) * int(Quantitysplit[1])
+        UpdatedNetQuantity = int(OrderDetails['Netposition']) * int(Quantitysplit[1])
+
         OrderDetails['Quantity'] = UpdatedQuantity 
-        print("Updated quantity:", UpdatedQuantity)
-    
+        OrderDetails['Netposition'] = UpdatedNetQuantity
+
     return OrderDetails
 
 
 def PlaceOrderKiteAPI(kite, OrderDetails):
     """
-    Places the order using the Kite Connect API. 
-    Adjust parameters (variety, product, etc.) as needed.
+    Places the order using the Kite Connect API. Modify parameters as needed.
     """
     print('Order details in PlaceOrderKiteAPI:')
     print(OrderDetails)
@@ -213,10 +272,11 @@ def PlaceOrderKiteAPI(kite, OrderDetails):
 
     return order_id
 
+
 def ConvertToMarketOrder(kite, OrderDetails):
     """
-    Convert the existing order details to a market order 
-    and place it again if the limit order didn't fill.
+    Converts an existing order's details to a MARKET order
+    and places the order again if the limit order didn't fill.
     """
     OrderDetails['Price']     = 0.0
     OrderDetails['Ordertype'] = MarketOrder
@@ -225,7 +285,7 @@ def ConvertToMarketOrder(kite, OrderDetails):
 
 def SleepForRequiredTime(SleepTime):
     """
-    Pause execution for a specified time in seconds.
+    Pauses execution for the specified number of seconds.
     """
     time.sleep(SleepTime)
     return True
@@ -233,16 +293,11 @@ def SleepForRequiredTime(SleepTime):
 
 def PrepareOrderKite(kite, OrderDetails):
     """
-    Retrieves the LTP data for the instrument to set the Limit price
-    if the Ordertype is not MARKET.
+    Fetches LTP data and sets the limit price if the order type is not MARKET.
     """
-    # Note: Zerodha’s LTP endpoint is typically `kite.ltp()` which takes a list of instrument tokens.
-    # The key used is "NSE:RELIANCE" or "NFO:BANKNIFTY23OCTFUT" etc. 
-    # You must build the exchange-tradingsymbol string for the LTP call.
-
     exchange_symbol = f"{OrderDetails['Exchange']}:{OrderDetails['Tradingsymbol']}"
     try:
-        ltp_data = kite.ltp([exchange_symbol])  # Returns a dict
+        ltp_data = kite.ltp([exchange_symbol])
         instrument_ltp = ltp_data[exchange_symbol]['last_price']
         print("LTP Info:", instrument_ltp)
 
@@ -256,33 +311,80 @@ def PrepareOrderKite(kite, OrderDetails):
 
 def ControlOrderFlowKite(OrderDetails):
     """
-    Orchestrates the entire order flow for Kite, from
-    contract selection to final order placement (Limit, fallback to Market).
+    Orchestrates the entire order flow for Kite, from contract selection
+    to final order placement. It handles limit orders, optionally converts
+    unfilled limit orders to market, and checks for re-entry logic.
     """
 
-    # Create a Kite Connect session
+    # 1. Create a Kite Connect session
     kite = EstablishConnectionKiteAPI(OrderDetails)
 
-    # If the contract name is not directly provided, figure it out
+    # 2. Configure net trade direction (for partial contract logic)
+    ConfigureNetDirectionOfTrade(OrderDetails)
+
+    # 3. If the contract name is not directly provided, figure it out.
     if OrderDetails['ContractNameProvided'] == 'False':
         PrepareInstrumentContractNameKite(kite,OrderDetails)
 
-    # Validate and fix quantity if needed
+    # 4. Validate and fix quantity if needed
     Validate_Quantity(OrderDetails)
 
-    # Optionally fetch LTP and set the limit price if not a market order
+    # 5. Optionally fetch LTP and set the limit price if not a market order
     OrderDetails = PrepareOrderKite(kite, OrderDetails)
 
-    # Place the (possibly) limit order
+    # 6. Place the (possibly) limit order
     order_id = PlaceOrderKiteAPI(kite, OrderDetails)
 
-    # If it’s a MARKET order, we’re done
+    # 7. If it’s a MARKET order, we may be done or handle re-entry logic
     if OrderDetails['Ordertype'].upper() == 'MARKET':
+        if OrderDetails.get('ReEnterOrderLoop') == 'True':
+
+            if OrderDetails['ContractNameProvided'] == 'False':
+                PrepareInstrumentContractNameKite(kite,OrderDetails)
+            
+            # Fetch LTP if not market
+            OrderDetails = PrepareOrderKite(kite, OrderDetails)
+
+            # Place the new order
+            order_id = PlaceOrderKiteAPI(kite, OrderDetails)
+            
+            return order_id
         return order_id
     else:
-        print('Limit order placed.')
-        # If needed, you can sleep and check the order status to confirm fill.
-        # SleepForRequiredTime(OrderDetails['SleepDuration'])
-        # Then, if not filled, call ConvertToMarketOrder(kite, OrderDetails)
+        # 8. If this is a LIMIT order and ConvertToMarketOrder is True,
+        #    we wait some time and then possibly convert to market.
+        order_list = []
+        order_list.append(order_id)
+        print(order_list)
+
+        if OrderDetails['ConvertToMarketOrder'] == 'True':
+            if int(OrderDetails['Netposition']) != 0:
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+            else:
+                print(f'Waiting for {OrderDetails["ExitSleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['ExitSleepDuration']))
+            
+            OrderType = 'MARKET'
+            ReorderFlag = 1
+            get_order_status(kite, order_list, OrderType, ReorderFlag)
+
+            if OrderDetails.get('ReEnterOrderLoop') == 'True':
+                OrderDetails['Ordertype'] = 'LIMIT'
+                if OrderDetails['ContractNameProvided'] == 'False':
+                    PrepareInstrumentContractNameKite(kite,OrderDetails)
+                
+                # Possibly fetch LTP again
+                OrderDetails = PrepareOrderKite(kite, OrderDetails)
+
+                # Place the new limit order
+                order_id = PlaceOrderKiteAPI(kite, OrderDetails)
+                order_list = []
+                order_list.append(order_id)
+
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+                get_order_status(kite, order_list, OrderType, ReorderFlag)
+                return order_id
 
         return order_id
