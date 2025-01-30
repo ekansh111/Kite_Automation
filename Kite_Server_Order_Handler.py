@@ -321,13 +321,14 @@ def ControlOrderFlowKite(OrderDetails):
 
     # 2. Configure net trade direction (for partial contract logic)
     ConfigureNetDirectionOfTrade(OrderDetails)
-
-    # 3. If the contract name is not directly provided, figure it out.
+    
+    # 3. Validate and fix quantity if needed
+    Validate_Quantity(OrderDetails)
+    
+    # 4. If the contract name is not directly provided, figure it out.
     if OrderDetails['ContractNameProvided'] == 'False':
         PrepareInstrumentContractNameKite(kite,OrderDetails)
 
-    # 4. Validate and fix quantity if needed
-    Validate_Quantity(OrderDetails)
 
     # 5. Optionally fetch LTP and set the limit price if not a market order
     OrderDetails = PrepareOrderKite(kite, OrderDetails)

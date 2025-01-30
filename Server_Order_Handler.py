@@ -383,10 +383,11 @@ def ControlOrderFlowAngel(OrderDetails):
 
     ConfigureNetDirectionOfTrade(OrderDetails)
 
+    Validate_Quantity(OrderDetails)
+
     if OrderDetails['ContractNameProvided'] == 'False':
         PrepareInstrumentContractName(smartAPI,OrderDetails)
 
-    Validate_Quantity(OrderDetails)
 
     OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
 
