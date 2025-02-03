@@ -84,6 +84,7 @@ total_batch_size = 500
 PlaceOrderIK6635 = False
 
 CommissionPercent = 0.2
+StopLossAbsValue = 0.99
 
 def read_csv_file(file_path, delimiter=','):
     """
@@ -218,9 +219,6 @@ def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch
     return df_close
 
 def process_symbol_data(args):
-    """
-    Processes data for a single symbol, computes required metrics, and returns a DataFrame.
-    """
     symbol, data, desired_dates, date_objs, sma_window, std_dev_window = args
     symbol_with_suffix = symbol + ".NS"
     try:
@@ -236,30 +234,30 @@ def process_symbol_data(args):
                 if ticker_data.index.isnull().all():
                     raise ValueError("All dates could not be converted to datetime.")
 
-            # Sort the data by date just in case
+            # Sort by date
             ticker_data = ticker_data.sort_index()
             ticker_data = ticker_data.dropna()
-            # Compute SMA and Std Dev using rolling windows
+
+            # Compute SMA & Std Dev (shifted by 1)
             ticker_data['SMA'] = ticker_data['Close'].rolling(window=sma_window).mean().shift(1)
             ticker_data['Std Dev'] = ticker_data['Close'].rolling(window=std_dev_window).std().shift(1)
 
-            # Compute Previous Low and High for calculating the differences
+            # Previous day’s Low & High
             ticker_data['Prev_Low'] = ticker_data['Low'].shift(1)
             ticker_data['Prev_High'] = ticker_data['High'].shift(1)
 
-            # Compute Open_PrevLow_Diff and Open_PrevLow_Diff_Percent
+            # Differences (unchanged)
             ticker_data['Open_PrevLow_Diff'] = ticker_data['Open'] - ticker_data['Prev_Low']
             ticker_data['Open_PrevLow_Diff_Percent'] = (
                 ticker_data['Open_PrevLow_Diff'] / ticker_data['Prev_Low']
             ) * 100
 
-            # Compute Open_PrevHigh_Diff and Open_PrevHigh_Diff_Percent
             ticker_data['Open_PrevHigh_Diff'] = ticker_data['Open'] - ticker_data['Prev_High']
             ticker_data['Open_PrevHigh_Diff_Percent'] = (
                 ticker_data['Open_PrevHigh_Diff'] / ticker_data['Prev_High']
             ) * 100
 
-            # Handle division by zero or NaN in Prev_Low and Prev_High
+            # Replace ±∞ with NaN
             ticker_data['Open_PrevLow_Diff_Percent'] = ticker_data['Open_PrevLow_Diff_Percent'].replace(
                 [float('inf'), -float('inf')], pd.NA
             )
@@ -267,97 +265,128 @@ def process_symbol_data(args):
                 [float('inf'), -float('inf')], pd.NA
             )
 
-            # Compute Open_Today_Close_Diff
-            ticker_data['Open_Today_Close_Diff'] = (
-                (ticker_data['Close'] - ticker_data['Open']) / ticker_data['Open']
-            ) * 100
-
             # Convert index to date strings
             ticker_data['Date'] = ticker_data.index.strftime("%Y-%m-%d")
 
-            # Filter to desired dates
+            # Filter only the desired dates
             ticker_data = ticker_data[ticker_data['Date'].isin(desired_dates)]
 
-            if not ticker_data.empty:
-                # Add Symbol column
-                ticker_data['Symbol'] = symbol
+            # ---------------------------------------------
+            # 1) Create a helper function returning both Stop Price & Diff
+            # ---------------------------------------------
+            def compute_stop_and_diff(row, sl_percent):
+                if pd.isna(row['Open']) or pd.isna(row['SMA']):
+                    # Return a Series with both columns = None
+                    return pd.Series({'Stop Price': None, 'Open_Today_Close_Diff': None})
 
-                # Reset index
+                open_price = row['Open']
+                close_price = row['Close']
+                sma_value = row['SMA']
+                low_price = row['Low']
+                high_price = row['High']
+
+                stop_price = None
+                open_today_close_diff = None
+
+                # If open > SMA => potential long
+                if open_price > sma_value:
+                    stop_price = open_price - (open_price * (sl_percent))
+                    # If the day’s Low crosses below stop_price => trade is stopped out
+                    if low_price < stop_price:
+                        open_today_close_diff = (stop_price - open_price) / open_price * 100
+                    else:
+                        open_today_close_diff = (close_price - open_price) / open_price * 100
+
+                # Else if open < SMA => potential short
+                elif open_price < sma_value:
+                    stop_price =  (open_price * (sl_percent)) + (open_price)
+                    # If the day’s High crosses above stop_price => trade is stopped out
+
+                    if high_price > stop_price:
+                        open_today_close_diff = (stop_price - open_price) / open_price * 100
+                    else:
+                        open_today_close_diff = (close_price - open_price) / open_price * 100
+
+                #else:
+                    # open == sma
+                    #stop_price = None
+                    #open_today_close_diff = (close_price - open_price) / open_price * 100
+
+                return pd.Series({'Stop Price': stop_price, 'Open_Today_Close_Diff': open_today_close_diff})
+
+            # ---------------------------------------------
+            # 2) Apply the function to get two columns at once
+            # ---------------------------------------------
+            ticker_data[['Stop Price','Open_Today_Close_Diff']] = ticker_data.apply(
+                lambda r: compute_stop_and_diff(r, StopLossAbsValue), axis=1
+            )
+
+            # If not empty, finalize
+            if not ticker_data.empty:
+                # Add Symbol column & reset index
+                ticker_data['Symbol'] = symbol
                 ticker_data = ticker_data.reset_index(drop=True)
 
-                # Select the necessary columns
+                # Select columns
                 ticker_data = ticker_data[[
                     'Symbol', 'Date', 'Open', 'Low', 'High', 'Close', 'SMA', 'Std Dev',
                     'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent',
                     'Open_PrevHigh_Diff', 'Open_PrevHigh_Diff_Percent',
-                    'Open_Today_Close_Diff'
+                    'Stop Price','Open_Today_Close_Diff'
                 ]]
 
-                # Rename columns to match expected output
+                # Rename columns (consistent naming)
                 ticker_data.columns = [
                     'Symbol', 'Date', 'Open Price', 'Low Price', 'High Price', 'Close Price',
                     'SMA', 'Std Dev', 'Open_PrevLow_Diff', 'Open_PrevLow_Diff_Percent',
                     'Open_PrevHigh_Diff', 'Open_PrevHigh_Diff_Percent',
-                    'Open_Today_Close_Diff'
+                    'Stop Price','Open_Today_Close_Diff'
                 ]
-
                 return ticker_data
             else:
                 # No data for desired dates
-                empty_data = pd.DataFrame({
-                    'Symbol': [symbol] * len(desired_dates),
-                    'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
-                    'Open Price': [None] * len(desired_dates),
-                    'Low Price': [None] * len(desired_dates),
-                    'High Price': [None] * len(desired_dates),
-                    'Close Price': [None] * len(desired_dates),
-                    'SMA': [None] * len(desired_dates),
-                    'Std Dev': [None] * len(desired_dates),
-                    'Open_PrevLow_Diff': [None] * len(desired_dates),
-                    'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
-                    'Open_PrevHigh_Diff': [None] * len(desired_dates),
-                    'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
-                    'Open_Today_Close_Diff': [None] * len(desired_dates),
-                })
+                empty_data = make_empty_dataframe(symbol, desired_dates)
                 return empty_data
         else:
             # No data for the symbol
-            empty_data = pd.DataFrame({
-                'Symbol': [symbol] * len(desired_dates),
-                'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
-                'Open Price': [None] * len(desired_dates),
-                'Low Price': [None] * len(desired_dates),
-                'High Price': [None] * len(desired_dates),
-                'Close Price': [None] * len(desired_dates),
-                'SMA': [None] * len(desired_dates),
-                'Std Dev': [None] * len(desired_dates),
-                'Open_PrevLow_Diff': [None] * len(desired_dates),
-                'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
-                'Open_PrevHigh_Diff': [None] * len(desired_dates),
-                'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
-                'Open_Today_Close_Diff': [None] * len(desired_dates),
-            })
             logging.warning(f"No data found for symbol {symbol}.")
+            empty_data = make_empty_dataframe(symbol, desired_dates)
             return empty_data
     except Exception as e:
-        # Handle any other exceptions
-        empty_data = pd.DataFrame({
-            'Symbol': [symbol] * len(desired_dates),
-            'Date': [date.strftime("%Y-%m-%d") for date in date_objs],
-            'Open Price': [None] * len(desired_dates),
-            'Low Price': [None] * len(desired_dates),
-            'High Price': [None] * len(desired_dates),
-            'Close Price': [None] * len(desired_dates),
-            'SMA': [None] * len(desired_dates),
-            'Std Dev': [None] * len(desired_dates),
-            'Open_PrevLow_Diff': [None] * len(desired_dates),
-            'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
-            'Open_PrevHigh_Diff': [None] * len(desired_dates),
-            'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
-            'Open_Today_Close_Diff': [None] * len(desired_dates),
-        })
         logging.error(f"Error processing data for symbol {symbol}: {e}")
+        empty_data = make_empty_dataframe(symbol, desired_dates)
         return empty_data
+
+
+def make_empty_dataframe(symbol, desired_dates):
+    """
+    Helper to create an empty dataframe with the expected columns.
+    'desired_dates' should be an iterable of strings in "YYYY-MM-DD" format.
+    """
+    # If 'desired_dates' is a set of strings, convert it to a sorted list.
+    # If it's already a list of strings, you can skip sorting if you prefer.
+    if not isinstance(desired_dates, list):
+        desired_dates = sorted(list(desired_dates))
+
+    return pd.DataFrame({
+        'Symbol': [symbol] * len(desired_dates),
+        'Date': desired_dates,  # 'desired_dates' are already strings in "YYYY-MM-DD" format.
+        'Open Price': [None] * len(desired_dates),
+        'Low Price': [None] * len(desired_dates),
+        'High Price': [None] * len(desired_dates),
+        'Close Price': [None] * len(desired_dates),
+        'SMA': [None] * len(desired_dates),
+        'Std Dev': [None] * len(desired_dates),
+        'Open_PrevLow_Diff': [None] * len(desired_dates),
+        'Open_PrevLow_Diff_Percent': [None] * len(desired_dates),
+        'Open_PrevHigh_Diff': [None] * len(desired_dates),
+        'Open_PrevHigh_Diff_Percent': [None] * len(desired_dates),
+        'Stop Price': [None] * len(desired_dates),
+        'Open_Today_Close_Diff': [None] * len(desired_dates),
+    })
+
+
+
 
 def save_to_csv(df, output_file):
     """
@@ -612,11 +641,11 @@ def main():
     # Prompt the user to input the date range, lookback period, SMA window, and Std Dev window------------------------------------------
     print("\nEnter the start date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    start_date_input = '2025-01-17'  # Example start date
+    start_date_input = '2021-02-15'  # Example start date
 
     print("\nEnter the end date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-12-05):")
-    end_date_input = '2025-01-17'  # Example end date------------------------------------------------------------------------------------
+    end_date_input = '2025-02-10'  # Example end date------------------------------------------------------------------------------------
 
     # Validate the start and end dates
     try:
