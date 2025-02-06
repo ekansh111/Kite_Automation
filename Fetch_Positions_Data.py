@@ -221,7 +221,7 @@ if __name__ == "__main__":
     positions_df = fetch_positions_to_dataframe()
     
     # Specify the output directory
-    output_directory = r"C:\Users\ekans\OneDrive\Documents\Trading\PositionsData"
+    output_directory = PositionDataOpDirectory
     
     # Generate the filename with date and time
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # Format: YYYYMMDD_HHMMSS
