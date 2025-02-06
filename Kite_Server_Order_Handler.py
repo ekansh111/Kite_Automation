@@ -45,8 +45,8 @@ def PrepareInstrumentContractNameKite(kite,OrderDetails):
     """
 
     ZerodhaInstrument_filtered = PrepareKiteInstrumentContractName(kite,OrderDetails)
-    print('Zerodha instrument filtered')
-    print(ZerodhaInstrument_filtered)
+    #print('Zerodha instrument filtered')
+    #print(ZerodhaInstrument_filtered)
     UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered)
 
     return OrderDetails
@@ -75,7 +75,7 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
         format='%Y-%m-%d', # The date format might differ; adjust as needed
         errors='coerce'
     )
-    print(ZerodhaInstrumentDetails)
+    #print(ZerodhaInstrumentDetails)
 
     ZerodhaInstrumentDetails_filtered = pd.DataFrame()
 
@@ -102,7 +102,7 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
                 ZerodhaInstrumentDetails_filtered = CheckIfExistingOldContractSqOffReq(
                     kite,ZerodhaInstrumentDetails,OrderDetails,today,RolloverDate
                 )
-                print(ZerodhaInstrumentDetails_filtered)
+                #print(ZerodhaInstrumentDetails_filtered)
                 if not ZerodhaInstrumentDetails_filtered.empty:
                     OrderDetails['ReEnterOrderLoop'] = 'True'
 
@@ -158,8 +158,8 @@ def CheckIfExistingOldContractSqOffReq(kite, ZerodhaInstrumentDetails, OrderDeta
     if not ZerodhaInstrumentDetails_filtered.empty:
         # Fetch existing positions from Kite for the given order details
         KitePositions = FetchExistingNetKitePositions(kite, OrderDetails)
-        print('kite positions')
-        print(KitePositions)
+        #print('kite positions')
+        #print(KitePositions)
 
         # Determine the comparison condition based on Tradetype
         if str(OrderDetails['Tradetype']).upper() == 'BUY':
@@ -265,8 +265,8 @@ def PlaceOrderKiteAPI(kite, OrderDetails):
     """
     Places the order using the Kite Connect API. Modify parameters as needed.
     """
-    print('Order details in PlaceOrderKiteAPI:')
-    print(OrderDetails)
+    #print('Order details in PlaceOrderKiteAPI:')
+    #print(OrderDetails)
     
     order_id = order(OrderDetails)
 
@@ -356,7 +356,7 @@ def ControlOrderFlowKite(OrderDetails):
         #    we wait some time and then possibly convert to market.
         order_list = []
         order_list.append(order_id)
-        print(order_list)
+        #print(order_list)
 
         if OrderDetails['ConvertToMarketOrder'] == 'True':
             if int(OrderDetails['Netposition']) != 0:
