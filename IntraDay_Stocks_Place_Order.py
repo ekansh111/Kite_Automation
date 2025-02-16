@@ -69,8 +69,8 @@ NumberOfStocksToSelectHighestOpenPrice = 10
 CapitalRiskedPerLongTrade = 84561
 CapitalRiskedPerShortTrade = 120588
 
-TargetVolatilityPerLongTrade = 3200
-TargetVolatilityPerShortTrade = 4798
+TargetVolatilityPerLongTrade = 0
+TargetVolatilityPerShortTrade = 6398
 
 DurationForSleep = 10
 #Factor by which the limit price has to be rounded up/down resp
@@ -409,10 +409,10 @@ def PlaceIntradayOrders(
     shared_order_ids = manager.list()  # A list visible to all processes
 
     # 1) Create Processes for Parallel Execution
-    process_lowest = multiprocessing.Process(
+    '''process_lowest = multiprocessing.Process(
         target=ProcessSelectedStocks,
         args=(LowestOpenPriceStocks, trade_type1, TargetVolatilityPerLongTrade, shared_order_ids, "Lowest Open Price Stocks")
-    )
+    )'''
 
     process_highest = multiprocessing.Process(
         target=ProcessSelectedStocks,
@@ -420,11 +420,11 @@ def PlaceIntradayOrders(
     )
 
     # 2) Start the Processes
-    process_lowest.start()
+    '''process_lowest.start()'''
     process_highest.start()
 
     # 3) Wait for Both to Complete (join)
-    process_lowest.join()
+    '''process_lowest.join()'''
     process_highest.join()
 
     # Convert to a normal Python list (if desired)
