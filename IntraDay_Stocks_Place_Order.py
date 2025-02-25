@@ -82,170 +82,8 @@ import multiprocessing
 import logging
 import traceback
 
-# Define the target function at the top level
-def order_execution_target(queue, order_detail, queueOrderId):
-    try:
-        OrderId = execute_order(order_detail)
-        queue.put(None)  # Indicate successful execution
 
-        queueOrderId.put(OrderId)
-        return order_detail
-    except Exception as e:
-        # Pass exception to the parent process
-        queue.put(e)
-
-def execute_order_with_timeout(order_detail, timeout=10, OrderId=None):
-    """
-    Executes the order using the execute_order function with a timeout.
-    
-    Parameters:
-    - order_detail (dict): The order details.
-    - timeout (int): The maximum time (in seconds) to wait for the order execution.
-    
-    Returns:
-    - None
-    """
-    # Create a queue to communicate with the subprocess
-    queue = multiprocessing.Queue()
-
-    # Create a queue to communicate with the subprocess for the OrderId
-    queueOrderId = multiprocessing.Queue()
-
-    # Start the subprocess
-    process = multiprocessing.Process(target=order_execution_target, args=(queue, order_detail, queueOrderId))
-    process.start()
-    # Wait for the specified timeout
-    process.join(timeout)
-
-    if process.is_alive():
-        # Terminate the process if it's still running
-        process.terminate()
-        process.join()
-        logging.error(f"execute_order timed out for {order_detail['Tradingsymbol']}")
-        print(f"Error: execute_order timed out for {order_detail['Tradingsymbol']}")
-    else:
-        #Fetch the OrderId from the subprocess
-        if not queueOrderId.empty():
-            IndOrderId = queueOrderId.get()
-
-            if OrderId is not None:
-                OrderId.append(IndOrderId)
-
-        # Check for exceptions raised in the subprocess
-        if not queue.empty():
-            exception = queue.get()
-            if exception is not None:
-                logging.error(f"Exception in execute_order for {order_detail['Tradingsymbol']}: {exception}")
-                print(f"Error placing order for {order_detail['Tradingsymbol']}: {exception}")
-                # Optionally, you can log the traceback
-                traceback_str = ''.join(traceback.format_exception(None, exception, exception.__traceback__))
-                logging.error(f"Traceback for {order_detail['Tradingsymbol']}:\n{traceback_str}")
-                print(f"Traceback:\n{traceback_str}")
-        else:
-            # Order executed successfully
-            logging.info(f"Order placed successfully for {order_detail['Tradingsymbol']}.")
-            print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}")
-
-
-def configure_logging(log_file="intraday_orders.log"):
-    """
-    Configures the logging settings.
-
-    Parameters:
-    - log_file (str): The filename for the log file.
-
-    Returns:
-    - None
-    """
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-    logging.info("Logging is configured.")
-
-def validate_order_details(OrderDetails):
-    """
-    Validates the input OrderDetails DataFrame.
-
-    Parameters:
-    - OrderDetails (pandas DataFrame): DataFrame containing stock details.
-
-    Returns:
-    - bool: True if valid, False otherwise.
-    """
-    required_columns = ['Symbol', 'Open Price']
-    if not isinstance(OrderDetails, pd.DataFrame):
-        logging.error("OrderDetails is not a pandas DataFrame.")
-        print("Error: OrderDetails is not a pandas DataFrame.")
-        return False
-    
-    missing_columns = [col for col in required_columns if col not in OrderDetails.columns]
-    if missing_columns:
-        logging.error(f"Missing columns in OrderDetails: {missing_columns}")
-        print(f"Error: Missing columns in OrderDetails: {missing_columns}")
-        return False
-    
-    logging.info("OrderDetails validation passed.")
-    return True
-
-def get_top_n_stocks(OrderDetails, n=NumberOfStocksToSelectLowestOpenPrice):
-    """
-    Sorts the DataFrame by 'Open Price' in ascending order and selects the top n stocks.
-
-    Parameters:
-    - OrderDetails (pandas DataFrame): DataFrame containing stock details.
-    - n (int): Number of top stocks to select.
-
-    Returns:
-    - pandas DataFrame: DataFrame containing top n stocks.
-    """
-    LowestOpenPriceStocks = OrderDetails.head(n)
-    logging.info(f"Selected top {n} stocks based on the Lowest Open Price.")
-    return LowestOpenPriceStocks
-
-def get_bottom_n_stocks(OrderDetails, n=NumberOfStocksToSelectHighestOpenPrice):
-    """
-    Sorts the DataFrame by 'Open Price' in ascending order and selects the bottom n stocks.
-
-    Parameters:
-    - OrderDetails (pandas DataFrame): DataFrame containing stock details.
-    - n (int): Number of top stocks to select.
-
-    Returns:
-    - pandas DataFrame: DataFrame containing bottom n stocks.
-    """
-    HighestOpenPriceStocks = OrderDetails.tail(n)
-    logging.info(f"Selected bottom {n} stocks based on Highest Open Price.")
-    return HighestOpenPriceStocks
-
-
-def display_selected_stocks(LowestOpenPriceStocks, NumberOfStocks):
-    """
-    Displays and logs the selected stocks' details.
-
-    Parameters:
-    - LowestOpenPriceStocks (pandas DataFrame): DataFrame of selected stocks.
-
-    Returns:
-    - None
-    """
-    print('Top' + str(NumberOfStocks) + 'rows based on Open Price:')
-    logging.info(f"Top {NumberOfStocks} stocks:\n{LowestOpenPriceStocks}")
-    
-    if 'Open_PrevLow_Diff_Percent' in LowestOpenPriceStocks.columns:
-        print("\nSymbols, Open Prices, and Open_PrevLow_Diff_Percent:")
-        print(LowestOpenPriceStocks[['Symbol', 'Open Price', 'Open_PrevLow_Diff_Percent']])
-        logging.info("Displayed Symbols, Open Prices, and Open_PrevLow_Diff_Percent.")
-    else:
-        print("\nSymbols and Open Prices:")
-        print(LowestOpenPriceStocks[['Symbol', 'Open Price']])
-        logging.info("Displayed Symbols and Open Prices.")
-
-def calculate_quantity(price, risk_per_trade):
+def calculateQuantityKite(price, risk_per_trade):
     """
     Calculates the quantity of shares to purchase based on risk per trade.
 
@@ -268,7 +106,7 @@ def calculate_quantity(price, risk_per_trade):
     logging.info(f"Calculated quantity: {quantity} for open price/stddev: {price}")
     return quantity
 
-def fetch_ltp_instrument(symbol):
+def fetchLtpInstrumentKiteApi(symbol):
     nse_instrument = "NSE:" + str(symbol).upper()
     # Fetch LTP for the symbol
     ltp_data = kite.ltp([nse_instrument])
@@ -276,13 +114,13 @@ def fetch_ltp_instrument(symbol):
 
     if nse_instrument in ltp_data:
         last_price = ltp_data[nse_instrument]["last_price"]
-        print(f"LTP for {nse_instrument} is {last_price}")
     else:
+        last_price = 0
         print(f"No LTP data found for {nse_instrument}")
     
     return last_price
 
-def prepare_long_order(symbol, open_price, quantity):
+def prepareLongOrderKite(symbol, open_price, quantity):
     """
     Prepares the order details dictionary.
 
@@ -295,12 +133,15 @@ def prepare_long_order(symbol, open_price, quantity):
     - dict: Order details.
     """
     
-    ltp = fetch_ltp_instrument(symbol)
+    ltp = fetchLtpInstrumentKiteApi(symbol)
+
+    if ltp == 0:
+        ltp = open_price
 
     longprice = ltp + (ltp * RoundingFactor)/100
     rounded_longprice = math.floor(longprice * 20) / 20
 
-    order_detail = {
+    orderDetailKite = {
         'Tradetype': 'BUY',
         'Exchange': 'NSE',
         'Tradingsymbol': str(symbol),
@@ -322,12 +163,13 @@ def prepare_long_order(symbol, open_price, quantity):
         'StopLossOrderPlacePercent': '',
         'CallStrikeRequired': '',
         'PutStrikeRequired': '',
-        'Hedge': ''
+        'Hedge': '',
+        'TradeFailExitRequired':'False'
     }
     logging.info(f"Prepared order for {symbol}: Quantity={quantity}, Price={open_price}")
-    return order_detail
+    return orderDetailKite
 
-def prepare_short_order(symbol, open_price, quantity):
+def prepareShortOrderKite(symbol, open_price, quantity):
     """
     Prepares the order details dictionary.
 
@@ -340,12 +182,15 @@ def prepare_short_order(symbol, open_price, quantity):
     - dict: Order details.
     """
     
-    ltp = fetch_ltp_instrument(symbol)
+    ltp = fetchLtpInstrumentKiteApi(symbol)
+    
+    if ltp == 0:
+        ltp = open_price
 
     shortprice = ltp - (ltp * RoundingFactor)/100
     rounded_shortprice = math.floor(shortprice * 20) / 20
 
-    order_detail = {
+    orderDetailKite = {
         'Tradetype': 'SELL',
         'Exchange': 'NSE',
         'Tradingsymbol': str(symbol),
@@ -367,127 +212,59 @@ def prepare_short_order(symbol, open_price, quantity):
         'StopLossOrderPlacePercent': '',
         'CallStrikeRequired': '',
         'PutStrikeRequired': '',
-        'Hedge': ''
+        'Hedge': '',
+        'TradeFailExitRequired':'False'
     }
     logging.info(f"Prepared order for {symbol}: Quantity={quantity}, Price={open_price}")
-    return order_detail
+    return orderDetailKite
 
 
-def execute_order(order_detail):
+def executeOrderKite(orderDetailKite):
     """
     Executes the order using the order function.
 
     Parameters:
-    - order_detail (dict): The order details.
+    - orderDetailKite (dict): The order details.
 
     Returns:
     - None
     """
     try:
-        OrderId = order(order_detail)
-        logging.info(f"Order placed successfully for {order_detail['Tradingsymbol']}.")
-        print(f"Order placed for {order_detail['Tradingsymbol']}: Quantity={order_detail['Quantity']}, Price={order_detail['Price']}, OrderId={OrderId}, Time={datetime.now()}")
+        OrderId = order(orderDetailKite)
+        logging.info(f"Order placed successfully for {orderDetailKite['Tradingsymbol']}.")
+        print(f"Order placed for {orderDetailKite['Tradingsymbol']}: Quantity={orderDetailKite['Quantity']}, Price={orderDetailKite['Price']}, OrderId={OrderId}, Time={datetime.now()}")
         return OrderId
     except Exception as e:
-        logging.error(f"Failed to place order for {order_detail['Tradingsymbol']}: {e}")
-        print(f"Error placing order for {order_detail['Tradingsymbol']}: {e}")
+        logging.error(f"Failed to place order for {orderDetailKite['Tradingsymbol']}: {e}")
+        print(f"Error placing order for {orderDetailKite['Tradingsymbol']}: {e}")
+        return 0
 
-
-def PlaceIntradayOrders(
-    LowestOpenPriceStocks, 
-    HighestOpenPriceStocks, 
-    trade_type1, 
-    trade_type_2, 
-    risk_per_trade_long=CapitalRiskedPerLongTrade, 
-    risk_per_trade_short=CapitalRiskedPerShortTrade
-):
-    configure_logging()
-    logging.info("Starting PlaceIntradayOrders function.")
-
-    # Create a manager and shared list
-    manager = Manager()
-    shared_order_ids = manager.list()  # A list visible to all processes
-
-    # 1) Create Processes for Parallel Execution
-    '''process_lowest = multiprocessing.Process(
-        target=ProcessSelectedStocks,
-        args=(LowestOpenPriceStocks, trade_type1, TargetVolatilityPerLongTrade, shared_order_ids, "Lowest Open Price Stocks")
-    )'''
-
-    process_highest = multiprocessing.Process(
-        target=ProcessSelectedStocks,
-        args=(HighestOpenPriceStocks, trade_type_2, TargetVolatilityPerShortTrade, shared_order_ids, "Highest Open Price Stocks")
-    )
-
-    # 2) Start the Processes
-    '''process_lowest.start()'''
-    process_highest.start()
-
-    # 3) Wait for Both to Complete (join)
-    '''process_lowest.join()'''
-    process_highest.join()
-
-    # Convert to a normal Python list (if desired)
-    consolidated_order_ids = list(shared_order_ids)
-
-    print('Consolidated order IDs are:')
-    print(consolidated_order_ids)
-    
-    # Get the order status and wait for the desired time
-    time.sleep(DurationForSleep)
-    OrderType = 'MARKET'
-    get_order_status(kite, consolidated_order_ids, OrderType, ReorderFlag=1)
-    
-    logging.info("Completed PlaceIntradayOrders function.")
-    print("Finished placing intraday orders.")
-
-def ProcessSelectedStocks(
-    selected_stocks, 
-    trade_type,
-    target_volatility,
-    OrderId, 
-    description 
-):
+def getTopNStocks(OrderDetails, n=NumberOfStocksToSelectLowestOpenPrice):
     """
-    Places orders for each stock in the provided DataFrame.
+    Sorts the DataFrame by 'Open Price' in ascending order and selects the top n stocks.
 
-    Args:
-        selected_stocks (pandas.DataFrame): The filtered DataFrame (lowest or highest open price stocks).
-        trade_type (str): 'BUY' or 'SELL'.
-        target_volatility (float): Volatility-based factor for quantity calculation.
-        orderid: shared list
-        description (str): Descriptive text for logging (e.g., "Lowest Open Price Stocks").
+    Parameters:
+    - OrderDetails (pandas DataFrame): DataFrame containing stock details.
+    - n (int): Number of top stocks to select.
+
+    Returns:
+    - pandas DataFrame: DataFrame containing top n stocks.
     """
-
-    logging.info(f"Entering the order placement loop for {description}.")
-
-    # Create a list of rows
-    rows = [row for _, row in selected_stocks.iterrows()]
     
-    # Use a thread pool. Adjust max_workers as needed (e.g., 5 or 10).
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        # Map each row to the PlaceSingleOrder function
-        futures = [
-            executor.submit(PlaceSingleOrder, row, trade_type, target_volatility,OrderId)
-            for row in rows
-        ]
-        # Optionally wait for all tasks to complete
-        concurrent.futures.wait(futures)
+    LowestOpenPriceStocks = OrderDetails.head(n)
+    logging.info(f"Selected top {n} stocks based on the Lowest Open Price.")
+    return LowestOpenPriceStocks
 
-    logging.info(f"Completed processing stocks for {description}.")
-    print(f"Completed processing stocks for {description}.")
-
-
-def PlaceSingleOrder(row, trade_type, target_volatility, OrderId):
+def PlaceSingleOrderKite(row, trade_type, target_volatility, OrderId):
     """Helper function to place a single order."""
     symbol = row['Symbol']
     open_price = round(row['Open Price'])
     stddev = row['Std Dev']
     
     logging.info(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
-    print(f"Processing symbol: {symbol}, Open Price: {open_price}, stddev: {stddev}")
+    print(f"Processing symbol for Kite: {symbol}, Open Price: {open_price}, stddev: {stddev}")
 
-    quantity = int(calculate_quantity(stddev, target_volatility))
+    quantity = int(calculateQuantityKite(stddev, target_volatility))
     if quantity == 0:
         warning_msg = f"Open price for {symbol} is zero or negative. Skipping order."
         print(f"Warning: {warning_msg}")
@@ -496,17 +273,18 @@ def PlaceSingleOrder(row, trade_type, target_volatility, OrderId):
 
     # Prepare order based on trade type
     if trade_type == 'BUY':
-        order_detail = prepare_long_order(symbol, open_price, quantity)
+        orderDetailKite = prepareLongOrderKite(symbol, open_price, quantity)
     elif trade_type == 'SELL':
-        order_detail = prepare_short_order(symbol, open_price, quantity)
+        orderDetailKite = prepareShortOrderKite(symbol, open_price, quantity)
     else:
         warning_msg = f"Invalid trade_type: {trade_type}. Skipping order for {symbol}."
         print(f"Warning: {warning_msg}")
         logging.warning(warning_msg)
         return
 
-    # Execute order with a 10-second timeout (blocking I/O)
-    execute_order_with_timeout(order_detail, timeout=10, OrderId=OrderId)
+    OrderId = executeOrderKite(orderDetailKite)
+
+    return OrderId
 
 # Fetch input values from the file
 with open(KiteEkanshLogin,'r') as a:
@@ -539,5 +317,3 @@ if __name__ == '__main__':
     # Define the output directory (ensure this path exists)
     output_directory = IntraDayDirectory
     
-    # Place intraday orders
-    PlaceIntradayOrders(df, 'BUY','SELL')
