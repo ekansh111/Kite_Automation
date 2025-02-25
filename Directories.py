@@ -17,7 +17,7 @@ WriteAllContractDet = 'C:/Users/ekans/OneDrive/Documents/inputs/TEXT_INSTRUMENTS
 WorkDirectory = 'C:/Users/ekans/OneDrive/Documents/inputs/'
 
 IntraDayDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector"
-IntraDayDirectoryHistory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\History2"
+IntraDayDirectoryHistory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\History3"
 Nifty500ConstituentList = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\ind_nifty500list.csv"
 PositionDataOpDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\PositionsData"
 
@@ -33,3 +33,6 @@ RelativeMomentumDirectoryReturns = r'C:\Users\ekans\OneDrive\Documents\Trading\M
 Nifty500ConstituentFilePath = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\FEB2025\ind_nifty500list.csv'
 AbsoluteMomentumOutputDirectory = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\FEB2025\absolute momentum returns.csv'
 
+SystemLocalIp = '192.168.0.194'
+SystemPublicIp = '106.51.200.173'
+SystemMacAddress = '30:05:05:CC:3A:89'
