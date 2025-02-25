@@ -15,6 +15,7 @@ options.headless = True
 #options.add_argument('--headless')
 #options.add_argument("--kiosk")
 
+#Runs on python 3.8 in vs code
 
 #Fetch input values from the file
 with open(KiteEkanshLogin,'r') as a:
@@ -41,7 +42,7 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #Python version not at 3.8,chrome version higher than 119..124,port number not accessible,
         #or the VS code terminal default profile not set to command prompt
         #modified script patcher.py and updated download url with a new url link, line 285
-        driver = uc.Chrome(version_main=122,options=options)#,port=49187)
+        driver = uc.Chrome(version_main=131,options=options)#,port=49187)
         webpagelink = f'https://kite.trade/connect/login?api_key={api_key}&v=3'
         driver.get(webpagelink)
 

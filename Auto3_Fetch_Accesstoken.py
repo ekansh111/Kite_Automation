@@ -50,7 +50,7 @@ class ZerodhaLogin:
 
         # Prepare undetected Chrome options (headless by default)
         self.options = uc.ChromeOptions()
-        self.options.headless = False#True  # set to False if you want to see the browser
+        self.options.headless = True  # set to False if you want to see the browser
 
         self.driver = None
 
