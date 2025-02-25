@@ -66,12 +66,14 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
                                     price=(Price or 0),
                                     tag = OrderTag)
 
-        print('Order Placed for contract-->' + str(order_id))
+        #print('Order Placed for contract-->' + str(order_id))
         
         #logging.info("Order placed. ID is: {}".format(order_id))
     except Exception as e:
         logging.basicConfig(level=logging.DEBUG)
         logging.info("Order placement failed: {}".format(e))
+        if (order_details_fetch.get('TradeFailExitRequired')) == 'False':
+            return 0 
         exit(1)
     
     return order_id
