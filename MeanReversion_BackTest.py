@@ -1,3 +1,58 @@
+"""
+This script implements a pairs trading strategy based on mean reversion.
+
+**Main Functionalities:**
+
+1. **Data Preparation:**
+   - Downloads historical stock data for specified cointegrated pairs from Yahoo Finance using `yfinance`.
+   - Organizes the data by sectors.
+
+2. **Cointegration Analysis:**
+   - Performs OLS regression to determine hedge ratios for the pairs.
+   - Checks statistical criteria such as t-tests, F-tests, Durbin-Watson statistic, Jarque-Bera test, and stationarity of residuals using the Augmented Dickey-Fuller test.
+   - Plots spread and residuals for each pair.
+
+3. **Signal Generation:**
+   - Generates trading signals based on Z-scores of the price ratios.
+   - Defines entry and exit signals based on upper and lower Z-score thresholds.
+
+4. **Backtesting:**
+   - Simulates trades over a training and testing period.
+   - Implements risk management by calculating drawdowns and stopping trading if a maximum drawdown threshold is exceeded.
+   - Calculates portfolio values over time.
+
+5. **Performance Evaluation:**
+   - Calculates profits, returns, and maximum drawdowns for each pair and sector.
+   - Aggregates results and plots cumulative profits per sector.
+
+6. **Reporting:**
+   - Saves various data and plots to directories, including closing prices, spread and residuals, portfolio values, and Z-score data.
+   - Sends an email with ongoing positions data if any positions are still open at the end of the backtest.
+
+**Usage:**
+
+- Update the `cointegrated_pairs` dictionary with the desired pairs for each sector.
+- Adjust the date ranges for total data, training, and testing periods.
+- Run the script to perform the analysis and backtesting.
+- Ensure that the required directories specified in `Directories.py` exist or adjust paths accordingly.
+
+**Dependencies:**
+
+- Python 3.x
+- Libraries: `pandas`, `numpy`, `yfinance`, `statsmodels`, `matplotlib`, `seaborn`, `datetime`, `os`, `re`, `itertools`
+- Custom Modules:
+  - `Push_File_To_Email` (contains the `send_email` function)
+  - `Delete_Mean_Reverting_Data` (contains the `delete_contents_in_directories` function)
+  - `Directories` (contains directory paths)
+
+**Notes:**
+
+- The script uses the 'Agg' backend for matplotlib to allow non-interactive plotting (useful when running on a server without display).
+- The script assumes that the cointegrated pairs are already known.
+- The script includes risk management by stopping trading for a pair if the maximum drawdown threshold is exceeded during testing.
+- Ongoing positions at the end of the backtest are emailed using the `send_email` function.
+
+"""
 import matplotlib
 matplotlib.use('Agg')  # Use the 'Agg' backend for non-interactive plotting
 
@@ -56,7 +111,8 @@ total_end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')  # 
 # Training and testing dates
 training_start = '2015-01-02'
 training_end = '2021-12-31'
-testing_start = '2022-01-03'
+#testing_start = '2022-01-03'
+testing_start = '2024-10-01'
 testing_end = (datetime.today() ).strftime('%Y-%m-%d') # Updated to today's date
 
 windowsize = 252
