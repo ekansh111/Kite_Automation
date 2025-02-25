@@ -1,11 +1,23 @@
 
 
 def CheckForDateHoliday(HolidayDate):#HolidayDateDifference,entry):
-    #Holidays in yyyy-mm-dd format for the year 2023
-    ListOfHolidays = {'2024-01-26':'Republic Day','2024-03-08':'MahaShivRatri','2024-03-25':'Holi','2024-03-29':'Good Friday',
-                    '2024-04-11':'Eid','2024-04-17':'Shri Ram Navami','2024-05-01':'Maharastra Day','2024-06-17':'Bakri Eid'
-                    ,'2024-07-17':'Moharram','2024-08-15':'Independence Day','2024-08-02':'MG Jayanti','2024-11-01':'Diwali Pooja'
-                    ,'2024-11-15':'Guru Nanak Jayanti','2024-12-25':'Christmas'}
+    #Holidays in yyyy-mm-dd format for the year 2025
+    ListOfHolidays = {
+        '2025-02-26': 'MahaShivRatri',
+        '2025-03-14': 'Holi',
+        '2025-03-31': 'Eid',
+        '2025-04-10': 'MahaVir Jayanti',
+        '2025-04-14': 'Ambedkar Jayanti',
+        '2025-04-18': 'Good Friday',
+        '2025-05-01': 'Maharastra Day',
+        '2025-08-15': 'Independence Day',
+        '2025-08-27': 'Ganesh Chaturthi',
+        '2025-10-02': 'MG Jayanti',
+        '2025-10-21': 'Diwali Pooja',
+        '2025-10-22': 'Balipratipada',
+        '2025-11-05': 'Guru Nanak Jayanti',
+        '2025-12-25': 'Christmas'
+    }
     #Previousday = str(date.today() + timedelta(HolidayDateDifference))
     #print(Previousday)
     for dates in ListOfHolidays:
