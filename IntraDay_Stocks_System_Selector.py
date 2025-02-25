@@ -78,6 +78,8 @@ from multiprocessing import Pool, cpu_count
 from Directories import *
 from Push_File_To_Email import *
 from Email_Config import *
+from IntraDay_Stocks_Angel_Place_Order import placeIntradayAngelOrders
+from Server_Order_Handler import EstablishConnectionAngelAPI
 
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
@@ -85,6 +87,8 @@ PlaceOrderIK6635 = True
 selected_date_input = str(datetime.today().date())
 #Should data be sent by email
 SendFileDataByEmail = True
+
+OrderUserDetails = {"User": "E51339915"}
 print('Does the input time need to modified, Y/N')
 try:
     proceed = inputimeout(timeout=3)
@@ -487,55 +491,29 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
         SendConfigurableMail(PayloadDataFrames, EkanshMailDetails)
     
     # Select stocks with lowest open prices
-    LowestOpenPriceStocks = get_top_n_stocks(df_sorted, n=NumberOfStocksToSelectLowestOpenPrice)
+    LowestOpenPriceStocks = getTopNStocks(df_sorted, n=NumberOfStocksToSelectLowestOpenPrice)
     # Select stocks with highest open prices
-    HighestOpenPriceStocks = get_top_n_stocks(df_sorted_short, n=NumberOfStocksToSelectHighestOpenPrice)
+    HighestOpenPriceStocks = getTopNStocks(df_sorted_short, n=NumberOfStocksToSelectHighestOpenPrice)
 
     # Check if both sets are empty
     if LowestOpenPriceStocks.empty and HighestOpenPriceStocks.empty:
         logging.warning("No stocks available to place orders after selecting top N from both sets.")
         print("No stocks available to place orders.")
         return    
-    
-    # Call Function to place orders on Zerodha account IK6635 if flag is True
+
+
+# -------------------------------------------------------------------
+# Establish SmartAPI connection
+# -------------------------------------------------------------------
+
+    # Instead of a timeout function, we simply establish a connection and place the order directly.
+    smartApi = EstablishConnectionAngelAPI(OrderUserDetails)
+
+    # Call Function to place orders 
     if PlaceOrderIK6635:
-        while True:
-            now_str = datetime.now().strftime("%H:%M:%S")
-            if now_str == OrderTriggerTime:
-                trade_type_1, trade_type_2 = determine_trade_type()
-                PlaceIntradayOrders(LowestOpenPriceStocks, HighestOpenPriceStocks, trade_type_1, trade_type_2)
-                break
-            else:
-                # Sleep for a short interval to avoid busy-waiting
-                time.sleep(0.01)
+        trade_type_1, trade_type_2 = 'BUY','SELL'
+        placeIntradayAngelOrders(LowestOpenPriceStocks, HighestOpenPriceStocks, trade_type_1, trade_type_2, smartApi, OrderTriggerTime)
 
-def determine_trade_type():
-    """
-    Determines the trade type based on the current time.
-    - Before 11 AM: 'BUY' (long)
-    - After 11 AM: 'SELL' (short)
-
-    Returns:
-    - str: 'BUY' or 'SELL' for long positions
-    - str: 'SELL' or 'BUY' for short positions
-    """
-    current_time = datetime.now().time()
-    eleven_am = datetime.strptime("18:00:00", "%H:%M:%S").time()
-
-    if current_time < eleven_am:
-        trade_type_1 = 'BUY'
-        trade_type_2 = 'SELL'
-    else:
-        trade_type_1 = 'SELL'
-        trade_type_2 = 'BUY'
-
-    logging.info(f"Determined trade type for long positions: {trade_type_1} based on current time: {current_time}")
-    print(f"Determined trade type for long positions: {trade_type_1} based on current time: {current_time}")
-
-    logging.info(f"Determined trade type for short positions: {trade_type_2} based on current time: {current_time}")
-    print(f"Determined trade type for short positions: {trade_type_2} based on current time: {current_time}")
-
-    return trade_type_1, trade_type_2
 
 def main():
     # Define the path to the CSV file
