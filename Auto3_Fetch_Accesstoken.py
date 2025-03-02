@@ -30,7 +30,7 @@ class ZerodhaLogin:
     """
 
     def __init__(self, user_id, user_pwd, api_key, api_secret, totp_key,
-                 output_file, chrome_version=131):
+                 output_file, chrome_version):
         """
         :param user_id: Zerodha login user ID
         :param user_pwd: Zerodha login password
@@ -198,7 +198,7 @@ def runZerodhaLogin(login_file,OPAccessTokenFile):
         api_secret = api_secret,
         totp_key   = totp_key,
         output_file= OPAccessTokenFile,  # example output path
-        chrome_version=131
+        chrome_version=133
     )
 
     kite_instance = zlogin.loginAndGenerateAccessToken()
