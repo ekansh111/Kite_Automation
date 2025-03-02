@@ -78,6 +78,7 @@ def set_week_based_sl(OrderDetails):
     if today_date >= last_thursday:
         # Use the special SL for post-last-Thursday scenario
         sl_value = SL_CONFIG[order_tag]["POST_LAST_THUR"]
+        week_str = 4
     else:
         # Determine the week number of the month
         # Week calculation: 
