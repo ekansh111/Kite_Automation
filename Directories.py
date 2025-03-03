@@ -17,9 +17,10 @@ WriteAllContractDet = 'C:/Users/ekans/OneDrive/Documents/inputs/TEXT_INSTRUMENTS
 WorkDirectory = 'C:/Users/ekans/OneDrive/Documents/inputs/'
 
 IntraDayDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector"
-IntraDayDirectoryHistory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\History3"
+IntraDayDirectoryHistory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\History4"
 Nifty500ConstituentList = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\ind_nifty500list.csv"
 PositionDataOpDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\PositionsData"
+Nifty500MACDDailyData = r"Nifty500DailyMACDData.csv"
 
 MeanReversionCharts = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts"
 MeanReversionPortfolioValue = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Portfolio Value"
@@ -29,9 +30,9 @@ MeanReversionClosingPrice = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\
 MeanReversionCointigrationHeatMap = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Cointegration Heatmaps"
 
 
-RelativeMomentumDirectoryReturns = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\FEB2025\relative momentum returns.csv'
-Nifty500ConstituentFilePath = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\FEB2025\ind_nifty500list.csv'
-AbsoluteMomentumOutputDirectory = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\FEB2025\absolute momentum returns.csv'
+RelativeMomentumDirectoryReturns = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\relative momentum returns.csv'
+Nifty500ConstituentFilePath = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\ind_nifty500list.csv'
+AbsoluteMomentumOutputDirectory = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\absolute momentum returns.csv'
 
 SystemLocalIp = '192.168.0.194'
 SystemPublicIp = '106.51.200.173'
