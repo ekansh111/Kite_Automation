@@ -80,6 +80,7 @@ from Push_File_To_Email import *
 from Email_Config import *
 from IntraDay_Stocks_Angel_Place_Order import placeIntradayAngelOrders
 from Server_Order_Handler import EstablishConnectionAngelAPI
+import datetime as dt
 
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = True
@@ -482,13 +483,21 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
             print(f"Error saving sorted data to CSV: {e}")
             logging.error(f"Error saving sorted data to CSV {sorted_output_file_short}: {e}")
 
+    isNifty500InBearishPhase = checkNifty500MacdBelowSignalYesterday()
+
     # Call Function to place orders on Zerodha account IK6635 if flag is True
     if SendFileDataByEmail:
         
         PayloadDataFrames = {f'IntradayLong{selected_date_input}.csv':df_sorted, f'IntradayShort{selected_date_input}.csv':df_sorted_short}
-        SendConfigurableMail(PayloadDataFrames, VMailDetails)
-        SendConfigurableMail(PayloadDataFrames, DadMailDetails)
-        SendConfigurableMail(PayloadDataFrames, EkanshMailDetails)
+        if isNifty500InBearishPhase:
+            SendConfigurableMail(PayloadDataFrames, VMailDetails)
+            SendConfigurableMail(PayloadDataFrames, DadMailDetails)
+            SendConfigurableMail(PayloadDataFrames, EkanshMailDetails)
+        else:
+            SendConfigurableMail(PayloadDataFrames, VMailDetailsAboveMACDSignal)
+            SendConfigurableMail(PayloadDataFrames, DadMailDetailsAboveMACDSignal)
+            SendConfigurableMail(PayloadDataFrames, EkanshMailDetailsAboveMACDSignal)
+
     
     # Select stocks with lowest open prices
     LowestOpenPriceStocks = getTopNStocks(df_sorted, n=NumberOfStocksToSelectLowestOpenPrice)
@@ -509,11 +518,66 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
     # Instead of a timeout function, we simply establish a connection and place the order directly.
     smartApi = EstablishConnectionAngelAPI(OrderUserDetails)
 
-    # Call Function to place orders 
-    if PlaceOrderIK6635:
+    # Call Function to place orders only if specified and the index is bullish
+    if PlaceOrderIK6635 and isNifty500InBearishPhase:
         trade_type_1, trade_type_2 = 'BUY','SELL'
         placeIntradayAngelOrders(LowestOpenPriceStocks, HighestOpenPriceStocks, trade_type_1, trade_type_2, smartApi, OrderTriggerTime)
 
+def checkNifty500MacdBelowSignalYesterday():
+    # Calculate 'end_date' as one day before today
+    today = dt.date.today()
+    end_date = today - dt.timedelta(days=1)
+
+    # For a 1-year lookback, compute 'start_date'
+    start_date = end_date - dt.timedelta(days=365)
+
+    # Convert to string format 'YYYY-MM-DD'
+    end_str = end_date.strftime("%Y-%m-%d")
+    start_str = start_date.strftime("%Y-%m-%d")
+
+    print(f"Downloading data from {start_str} to {end_str} (one day before today)")
+
+    # 1. Download the data
+    df = yf.download("^CRSLDX", start=start_str, end=end_str, period="1y", interval="1d")
+
+    # If df is empty or shape is zero, handle it
+    if df.empty:
+        print("No data returned from Yahoo for ^CRSLDX.")
+        return False
+
+    # 2. Drop the top level from the columns (the 'Price' or 'Ticker' level)
+    df.columns = df.columns.droplevel(0)
+
+    # 3. Rename the columns to standard names
+    df.columns = ["Close", "High", "Low", "Open", "Volume"]
+
+    # Round the "Close" column to 2 decimal places
+    df["Close"] = df["Close"].round(3)
+
+    # 4. Compute MACD
+    df["ema12"] = df["Close"].ewm(span=12, adjust=False).mean()
+    df["ema26"] = df["Close"].ewm(span=26, adjust=False).mean()
+    df["macd"]  = df["ema12"] - df["ema26"]
+    df["signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+
+    # Save Date + Close to a CSV
+    # First, move the date index into a regular column:
+    df_reset = df.reset_index()
+
+    # df_reset now has columns: ['Date', 'Close', 'High', 'Low', 'Open', 'Volume']
+    # We'll save only Date and Close columns to CSV.
+    df_reset[["Date", "Close", "macd", "signal", "ema12", "ema26"]].to_csv(Nifty500MACDDailyData, index=False)
+
+    # 5. Get the last row
+    lastRow = df.iloc[-1]
+    macdVal = lastRow["macd"]
+    signalVal = lastRow["signal"]
+
+    print("macd Val:", macdVal)
+    print("signalVal:", signalVal)
+
+    # 6. Compare MACD vs Signal
+    return macdVal < signalVal
 
 def main():
     # Define the path to the CSV file
