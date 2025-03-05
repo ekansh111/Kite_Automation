@@ -77,8 +77,6 @@ from multiprocessing import Pool, cpu_count
 from Directories import *
 from IntraDay_Stocks_Place_Order import *
 
-# Set a smaller batch size to avoid overwhelming the API
-total_batch_size = 500
 # Flag to decide if to place order on Zerodha acc
 PlaceOrderIK6635 = False
 
@@ -86,6 +84,8 @@ CommissionPercent = 0.3
 FixedCommissionCost = 1100
 
 StopLossAbsValue = 0.99
+
+TargetVolatilityPerLongTrade = 2700
 
 def read_csv_file(file_path, delimiter=','):
     """
@@ -116,7 +116,7 @@ def batch_iterator(iterable, batch_size):
             break
         yield batch
 
-def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size=total_batch_size, pause=1):
+def fetch_ltp(symbols, dates, sma_window, std_dev_window, batch_size, pause=1):
     """
     Fetches the Closing Price (Close), Open Price (Open), High Price (High), and Low Price (Low) for each stock symbol
     on specified dates using yfinance, computes SMA and Std Dev, calculates the difference
@@ -673,11 +673,11 @@ def main():
     # Prompt the user to input the date range, lookback period, SMA window, and Std Dev window------------------------------------------
     print("\nEnter the start date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-10-21):")
-    startDateInput = '2025-02-24'  # Example start date
+    startDateInput = '2025-03-03'  # Example start date
 
     print("\nEnter the end date for which you want to fetch the Close prices.")
     print("Enter the date in 'YYYY-MM-DD' format (e.g., 2024-12-05):")
-    endDateInput = '2025-02-24'  # Example end date------------------------------------------------------------------------------------
+    endDateInput = '2025-03-03'  # Example end date------------------------------------------------------------------------------------
 
 
     # Validate the start and end dates
@@ -814,10 +814,10 @@ def main():
     print(f"\nFetching data from {trading_days[0]} to {trading_days[-1]}")
 
     print("fetch ltp details")
-    print(symbols, trading_days, sma_window, std_dev_window, total_batch_size)
+    print(symbols, trading_days, sma_window, std_dev_window, len(symbols))
 
     # Fetch Close prices in batches and compute SMA, Std Dev, Open_PrevLow_Diff Percent, Open_Today_Close_Diff
-    df_close = fetch_ltp(symbols, trading_days, sma_window, std_dev_window, batch_size=total_batch_size, pause=1)
+    df_close = fetch_ltp(symbols, trading_days, sma_window, std_dev_window, batch_size=len(symbols), pause=1)
 
     # Prepare the output
     output_directory = IntraDayDirectoryHistory
