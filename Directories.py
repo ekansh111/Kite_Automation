@@ -1,3 +1,4 @@
+import datetime
 
 KiteEkanshLogin = 'C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt'
 KiteEkanshLoginAPIKey = 'C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt'
@@ -29,10 +30,19 @@ MeanReversionSpreadResiduals = r"C:\Users\ekans\OneDrive\Documents\Trading\Scrip
 MeanReversionClosingPrice = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Closing Prices"
 MeanReversionCointigrationHeatMap = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Cointegration Heatmaps"
 
+# Get the current date
+today = datetime.date.today()
+# Format the month as a three-letter abbreviation in uppercase (e.g. 'APR')
+month_str = today.strftime("%b").upper()
+# Format the year in YYYY format
+year_str = today.strftime("%Y")
+# Combine them (e.g. 'APR2025')
+month_year_dir = f"{month_str}{year_str}"
 
-RelativeMomentumDirectoryReturns = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\relative momentum returns.csv'
-Nifty500ConstituentFilePath = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\ind_nifty500list.csv'
-AbsoluteMomentumOutputDirectory = r'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\MAR2025\absolute momentum returns.csv'
+RelativeMomentumDirectoryReturns = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\relative momentum returns.csv'
+AbsoluteMomentumOutputDirectory = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\absolute momentum returns.csv'
+MomentumFilesOutputDirectory = rf"C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}"
+Nifty500ConstituentFilePath = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\ind_nifty500list.csv'
 
 SystemLocalIp = '192.168.0.194'
 SystemPublicIp = '106.51.200.173'
