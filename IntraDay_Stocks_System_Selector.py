@@ -526,7 +526,7 @@ def save_sorted_to_csv(df, selected_date, output_directory, PlaceOrderIK6635=Tru
 def checkNifty500MacdBelowSignalYesterday():
     # Calculate 'end_date' as one day before today
     today = dt.date.today()
-    end_date = today - dt.timedelta(days=1)
+    end_date = today #Yfinance is last date exclusive, so will not pick the last day, but go for prior day
 
     # For a 1-year lookback, compute 'start_date'
     start_date = end_date - dt.timedelta(days=365)
