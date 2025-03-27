@@ -10,7 +10,7 @@ from FetchOptionContractName import FetchOptionName
 from kiteconnect import KiteConnect
 from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 from dateutil.relativedelta import relativedelta
 from Holidays import CheckForDateHoliday
 from Login_Auto3_Angel import *
@@ -19,6 +19,7 @@ from Directories import *
 import calendar
 import csv
 from Fetch_GTT import *
+import datetime
 
 def set_week_based_sl(OrderDetails):
     """
@@ -59,7 +60,7 @@ def set_week_based_sl(OrderDetails):
         return
 
     # Determine the current date and find the last Thursday of the month
-    now = datetime.now()
+    now = datetime.datetime.now()
     year = now.year
     month = now.month
 
@@ -152,7 +153,7 @@ def Fetch_Historical_GTTId(OrderDetails, DateOfTrade, csv_file_path):
                 continue
 
             # Extract values
-            timestamp_str = str(datetime.strptime(str(value_line[timestamp_index]), "%Y-%m-%d %H:%M:%S"))                           
+            timestamp_str = str(datetime.datetime.strptime(str(value_line[timestamp_index]), "%Y-%m-%d %H:%M:%S"))                           
             ordertag_value = value_line[ordertag_index]
             gttid_value = value_line[gttid_index]
 
@@ -173,7 +174,7 @@ def FetchHistoricalDateOrderPlaced(OrderDetails):
         continue
 
     OrderTag = OrderDetails[OrderInfo]['OrderTag']
-    today = datetime.now().date()
+    today = datetime.datetime.now().date()
     
     # Calculate Monday of the current week (Monday=0)
     monday_of_current_week = today - timedelta(days=today.weekday())
@@ -226,8 +227,11 @@ def process_exit_orders(OrderDetails, kite, WriteOptionDetailsFile):
                 if str(OrderDetails[orderinfo]['Tradingsymbol'])[-2:] == 'PE':
                     OrderDetails[orderinfo]['PutStrikeRequired'] = 'True'
 
-            # Cancel the GTT order
-            cancel_gtt(kite, GTTId_To_Compare)
+            # Attempt to Cancel the GTT order safely
+            try:
+                cancel_gtt(kite, int(GTTId_To_Compare))
+            except Exception as e:
+                print(f"Skipping cancellation for GTT ID {GTTId_To_Compare}: {e}")
 
             # Place order for Zerodha kite terminal
             PlaceOrders(OrderDetails[orderinfo])
@@ -253,10 +257,10 @@ if __name__ == '__main__':
 
     print('Waiting to hit the entry time')
     while one_shot_flag == True:
-        PrevWkDy = datetime.now().weekday() - 1
-        CurrWkDy = datetime.now().weekday()
+        PrevWkDy = datetime.datetime.now().weekday() - 1
+        CurrWkDy = datetime.datetime.now().weekday()
 
-        now = datetime.now()
+        now = datetime.datetime.now()
 
         BankNiftyStraddle_Fri_945Am_Monthly =  str(now.strftime("%H:%M:%S")) == '09:45:00' and ((CurrWkDy == FRIDAY)   or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
         BankNiftyStraddle_Fri_945Am_Monthly_Exit =  str(now.strftime("%H:%M:%S")) == '15:15:00' and ((CurrWkDy == THURSDAY)   or (PrevWkDy == THURSDAY and CheckForDateHoliday(PREVIOUSDATE)))
