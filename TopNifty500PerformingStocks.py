@@ -291,10 +291,11 @@ def compareMomentumStocksHoldings(numPortfolioStocks, investmentPerShare=80000):
     startDatePrevious = endDatePrevious - timedelta(days=365)
 
     print(f"\n--- PREVIOUS iteration: {startDatePrevious} to {endDatePrevious} ---")
-    top10PercentPreviousMonthDf = processNifty500Momentum(
+    '''top10PercentPreviousMonthDf = processNifty500Momentum(
         startDatePrevious,
         endDatePrevious + timedelta(days=1)
-    )
+    )'''
+    top10PercentPreviousMonthDf = fetchPreviousMonthMomentumDf()
 
     # 3) Sort each DF by 'fip' ascending, pick top N
     top10PercentCurrentMonthDf.sort_values(by='fip', ascending=True, inplace=True)
@@ -393,6 +394,39 @@ def compareMomentumStocksHoldings(numPortfolioStocks, investmentPerShare=80000):
     print(f"Final Portfolio saved to: {portfolioFilePath}")
 
     return changesDf, finalPortfolioDf
+
+def fetchPreviousMonthMomentumDf():
+    """
+    Fetches the top 10% relative momentum DataFrame from the previous month's directory.
+
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame containing relative momentum data from the previous month.
+    """
+
+    today = date.today()
+    firstDayCurrentMonth = today.replace(day=1)
+    lastDayPrevMonth = firstDayCurrentMonth - pd.Timedelta(days=1)
+
+    monthStr = lastDayPrevMonth.strftime("%b").upper()
+    yearStr = lastDayPrevMonth.strftime("%Y")
+
+    prevMonthDir = f"{monthStr}{yearStr}"
+
+    # Corrected file path with fixed '01' date
+    relativeMomentumFileName = f"RelativeMomentum_{lastDayPrevMonth.strftime('%Y-%m')}-01.csv"
+    relativeMomentumFilePath = rf"C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{prevMonthDir}\{relativeMomentumFileName}"
+
+    if not os.path.exists(relativeMomentumFilePath):
+        raise FileNotFoundError(f"File not found: {relativeMomentumFilePath}")
+
+    # Read the CSV file
+    top10PercentPreviousMonthDf = pd.read_csv(relativeMomentumFilePath)
+
+    print(f"Loaded previous month's data from {relativeMomentumFilePath}")
+
+    return top10PercentPreviousMonthDf
 
 
 if __name__ == "__main__":
