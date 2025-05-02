@@ -431,8 +431,8 @@ def fetchPreviousMonthMomentumDf():
 
 if __name__ == "__main__":
 
-    #if(checkNifty500MonthlySmaAbove()):
+    if(checkNifty500MonthlySmaAbove()):
         compareMomentumStocksHoldings(numPortfolioStocks=20)
-    #else:
-    #    print("Nifty 500 is below its 9 Month SMA vslue, No trades to be taken, Exit ALL positions")
+    else:
+        print("Nifty 500 is below its 9 Month SMA vslue, No trades to be taken, Exit ALL positions")
 
