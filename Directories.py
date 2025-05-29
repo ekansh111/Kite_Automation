@@ -47,3 +47,7 @@ Nifty500ConstituentFilePath = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momen
 SystemLocalIp = '192.168.0.194'
 SystemPublicIp = '106.51.200.173'
 SystemMacAddress = '30:05:05:CC:3A:89'
+
+# Default locations
+DEFAULT_SYMBOLS_FILE_INT50 = r"C:\Users\ekans\OneDrive\Documents\Trading\ConstituentDetails\ind_nifty200list.csv"
+DEFAULT_OUTPUT_DIR_INT50   = r"C:\Users\ekans\OneDrive\Documents\Trading\IntradayNifty50"
