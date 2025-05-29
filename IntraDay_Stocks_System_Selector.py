@@ -93,7 +93,7 @@ OrderUserDetails = {"User": "E51339915"}
 print('Does the input time need to modified, Y/N')
 try:
     proceed = inputimeout(timeout=3)
-    if proceed == 'Y':
+    if proceed == 'Y' or proceed == 'y':
         OrderTriggerTime = input("Enter the order trigger time in 'HH:MM:SS' format (e.g., 09:15:00): ")
         print("You entered:", OrderTriggerTime)
     else:    
