@@ -125,6 +125,7 @@ def SendConfigurableMail(PayloadDataframe,MailDetails):
       msg.attach(part)
 
     # Send the email
+    server = None
     try:
         server = smtplib.SMTP_SSL(MailDetails['SMTPMail'], MailDetails['PortNo'])
         server.login(MailDetails['From'], MailDetails['SenderPassword'])
