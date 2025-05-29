@@ -97,6 +97,29 @@ def removeEqFromSymbolName(symbol: str) -> str:
     """
     return symbol[:-3] if symbol.endswith("-EQ") else symbol
 
+def roundClosingPrice(raw_price: float) -> float:
+    """
+    Round *down* an input price to the exchange-allowed tick size
+    
+    Parameters
+    ----------
+    raw_price : float
+        The un-rounded price.
+
+    Returns
+    -------
+    float
+        Price rounded **down** to the nearest valid tick.
+    """
+    if raw_price < 1_000:
+        multiplier = 2          # 1 / 0.5
+    elif raw_price <= 10_000:
+        multiplier = 10         # 1 / 0.1
+    else:
+        multiplier = 1          # 1 / 1.0 (â‚¹1 tick)
+
+    return math.floor(raw_price * multiplier) / multiplier
+
 
 def prepareLongOrderAngel(symbol, openPrice, quantity, symbolToken):
     """
@@ -111,7 +134,8 @@ def prepareLongOrderAngel(symbol, openPrice, quantity, symbolToken):
     
     longPrice = ltp + (ltp * RoundingFactor) / 100
     longPriceFloat = float(longPrice.iloc[0]) if hasattr(longPrice, 'iloc') else float(longPrice)
-    roundedLongPrice = math.floor(longPriceFloat * 20) / 20
+    roundedLongPrice = roundClosingPrice(longPriceFloat)
+
     orderDetail = {
         "variety": "NORMAL",
         "tradingsymbol": str(symbol),
@@ -145,7 +169,7 @@ def prepareShortOrderAngel(symbol, openPrice, quantity, symbolToken):
     
     shortPrice = ltp - (ltp * RoundingFactor) / 100
     shortPriceFloat = float(shortPrice.iloc[0]) if hasattr(shortPrice, 'iloc') else float(shortPrice)
-    roundedShortPrice = math.floor(shortPriceFloat * 20) / 20
+    roundedShortPrice = roundClosingPrice(shortPriceFloat)
     
     orderDetail = {
         "variety": "NORMAL",
@@ -220,25 +244,30 @@ def processSelectedStocks(selectedStocks, tradeType, targetVolatility, descripti
     """
     logging.info(f"Entering the order placement loop for {description}.")
     orderIds = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futureToRow = {
-            executor.submit(placeSingleOrderAngel, row, tradeType, targetVolatility, smartApi, OrderTriggerTime): row
-            for _, row in selectedStocks.iterrows()
-        }
-        for future in as_completed(futureToRow):
-            try:
-                result = future.result(timeout=10)
-                if result is not None:
-                    orderIds.append(result)
-            except TimeoutError:
-                print("timeouterror")
-                logging.error("Order processing timed out")
-            except Exception as e:
-                print('Exception caught', e)
-                logging.error(f"Error processing row: {e}")
-    executor.shutdown(wait=True)  # Ensure threads exit
-    print(f"Completed processing stocks for {description}.")
-    return orderIds
+    while True:
+        if 1==1:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futureToRow = {
+                    executor.submit(placeSingleOrderAngel, row, tradeType, targetVolatility, smartApi, OrderTriggerTime): row
+                    for _, row in selectedStocks.iterrows()
+                }
+                for future in as_completed(futureToRow):
+                    try:
+                        result = future.result(timeout=10)
+                        if result is not None:
+                            orderIds.append(result)
+                    except TimeoutError:
+                        print("timeouterror")
+                        logging.error("Order processing timed out")
+                    except Exception as e:
+                        print('Exception caught', e)
+                        logging.error(f"Error processing row: {e}")
+            executor.shutdown(wait=True)  # Ensure threads exit
+            print(f"Completed processing stocks for {description}.")
+            return orderIds
+
+        else:
+            time.sleep(0.01)
 
 
 def placeSingleOrderAngel(row, tradeType, targetVolatility, smartApi, OrderTriggerTime):
