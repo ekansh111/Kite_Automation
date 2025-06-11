@@ -111,14 +111,21 @@ def roundClosingPrice(raw_price: float) -> float:
     float
         Price rounded **down** to the nearest valid tick.
     """
-    if raw_price < 1_000:
-        multiplier = 2          # 1 / 0.5
-    elif raw_price <= 10_000:
-        multiplier = 10         # 1 / 0.1
-    else:
-        multiplier = 1          # 1 / 1.0 (â‚¹1 tick)
 
+    if raw_price < 1000:
+        multiplier = 20          # 1 / 0.05
+        print("raw price < 1000" , math.floor(raw_price * multiplier) / multiplier,'111')
+    elif raw_price <= 10000:
+        multiplier = 10         # 1 / 0.1
+        print("raw price < 10,000" , math.floor(raw_price * multiplier) / multiplier,'111')
+    else:
+        multiplier = 1          # 1 / 1.0 
+        RoundedPrice = int(math.ceil(raw_price))
+        print('greater than 10,000' , RoundedPrice,'111')
+        return RoundedPrice
+    
     return math.floor(raw_price * multiplier) / multiplier
+    
 
 
 def prepareLongOrderAngel(symbol, openPrice, quantity, symbolToken):
