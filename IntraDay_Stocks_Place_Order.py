@@ -120,6 +120,38 @@ def fetchLtpInstrumentKiteApi(symbol):
     
     return last_price
 
+def roundClosingPrice(raw_price: float) -> float:
+    """
+    Round *down* an input price to the exchange-allowed tick size
+    
+    Parameters
+    ----------
+    raw_price : float
+        The un-rounded price.
+
+    Returns
+    -------
+    float
+        Price rounded **down** to the nearest valid tick.
+    """
+
+    if raw_price < 1000:
+        multiplier = 20          # 1 / 0.05
+        print("raw price < 1000 kite" , math.floor(raw_price * multiplier) / multiplier,'111')
+    elif raw_price <= 10000:
+        multiplier = 10         # 1 / 0.1
+        print("raw price < 1000 kite" , math.floor(raw_price * multiplier) / multiplier,'111')
+    else:
+        multiplier = 1          # 1 / 1.0 
+        RoundedPrice = int(math.ceil(raw_price))
+
+        print('greater than 10,000 kite' , RoundedPrice,'111')
+        exit(0)
+        return RoundedPrice
+
+    exit(0)
+    return math.floor(raw_price * multiplier) / multiplier
+
 def prepareLongOrderKite(symbol, open_price, quantity):
     """
     Prepares the order details dictionary.
@@ -140,6 +172,7 @@ def prepareLongOrderKite(symbol, open_price, quantity):
 
     longprice = ltp + (ltp * RoundingFactor)/100
     rounded_longprice = math.floor(longprice * 20) / 20
+    roundedLongPrice = roundClosingPrice(rounded_longprice)
 
     orderDetailKite = {
         'Tradetype': 'BUY',
@@ -150,7 +183,7 @@ def prepareLongOrderKite(symbol, open_price, quantity):
         'Ordertype': 'LIMIT',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': str(rounded_longprice),
+        'Price': str(roundedLongPrice),
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
@@ -189,6 +222,7 @@ def prepareShortOrderKite(symbol, open_price, quantity):
 
     shortprice = ltp - (ltp * RoundingFactor)/100
     rounded_shortprice = math.floor(shortprice * 20) / 20
+    roundedShortPrice = roundClosingPrice(rounded_shortprice)
 
     orderDetailKite = {
         'Tradetype': 'SELL',
@@ -199,7 +233,7 @@ def prepareShortOrderKite(symbol, open_price, quantity):
         'Ordertype': 'LIMIT', #'MARKET',
         'Product': 'MIS',  # Changed from 'CNC' to 'MIS' as per your latest code
         'Validity': 'DAY',
-        'Price': str(rounded_shortprice),#'0',
+        'Price': str(roundedShortPrice),#'0',
         'Symboltoken': '',  # Populate as needed
         'Squareoff': '',
         'Stoploss': '',
