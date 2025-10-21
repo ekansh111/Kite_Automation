@@ -146,10 +146,7 @@ def roundClosingPrice(raw_price: float) -> float:
         RoundedPrice = int(math.ceil(raw_price))
 
         print('greater than 10,000 kite' , RoundedPrice,'111')
-        exit(0)
-        return RoundedPrice
 
-    exit(0)
     return math.floor(raw_price * multiplier) / multiplier
 
 def prepareLongOrderKite(symbol, open_price, quantity):
