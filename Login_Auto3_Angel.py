@@ -181,7 +181,9 @@ def Login_Angel_Api(order_details_fetch):
     #print(order_details_fetch)
     Directory = AngelEkanshLoginCred
     if str(order_details_fetch.get('User')) == 'nararush':
-        Directory = AngelNararushLoginCred      
+        Directory = AngelNararushLoginCred
+    elif str(order_details_fetch.get('User')) == 'AABM826021':
+        Directory = AngelEshitaLoginCred      
     with open(Directory,'r') as a:
         content = a.readlines()
         a.close()
