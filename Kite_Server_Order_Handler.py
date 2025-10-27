@@ -10,7 +10,8 @@ It includes functionality for:
 
 # package import statement
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
+import datetime as dt
 import pandas as pd
 import pytz
 from Directories import *
@@ -64,7 +65,7 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
     ZerodhaInstrumentDetails.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
 
     # Current datetime for reference
-    today = datetime.now()
+    today = dt.datetime.now()
 
     # Compute the rollover date by adding 'DaysPostWhichSelectNextContract' to today's date
     RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
@@ -191,18 +192,36 @@ def CheckIfExistingOldContractSqOffReq(kite, ZerodhaInstrumentDetails, OrderDeta
         return pd.DataFrame()
 
 
-def FetchExistingNetKitePositions(kite,OrderDetails):
+def FetchExistingNetKitePositions(kite, OrderDetails):
     """
-    Fetches the net positions from Kite and returns them as a DataFrame.
+    Return a normalized DataFrame of net positions.
+    Always returns a DataFrame (possibly empty) with
+    columns: tradingsymbol, instrument_token, quantity.
     """
-    # Positions is a dict with keys: 'net' and 'day'
-    positions = kite.positions()
-    
-    # Extract net positions list
-    net_positions = positions['net']
-    ZerodhaInstrument_positions = pd.DataFrame(net_positions)
+    try:
+        positions = kite.positions() or {}
+        net = positions.get("net") or []
+        df = pd.DataFrame(net)
 
-    return ZerodhaInstrument_positions
+        # If nothing returned, provide an empty frame with expected columns
+        if df.empty:
+            return pd.DataFrame(columns=["tradingsymbol", "instrument_token", "quantity"])
+
+        # Ensure the columns you use later exist; if not, add them
+        for col in ["tradingsymbol", "instrument_token", "quantity"]:
+            if col not in df.columns:
+                df[col] = pd.Series(dtype="object" if col != "quantity" else "int64")
+
+        # Make quantity numeric for safe comparisons
+        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+
+        return df
+
+    except Exception as e:
+        # On any API/parse issue, behave like "no positions" with expected schema
+        print(f"WARN: kite.positions() failed: {e}")
+        return pd.DataFrame(columns=["tradingsymbol", "instrument_token", "quantity"])
+
 
 
 def UpdateRequestContractDetailsKite(OrderDetails, ZerodhaInstrument_filtered):
@@ -228,6 +247,10 @@ def EstablishConnectionKiteAPI(OrderDetails):
     elif str(OrderDetails.get('User')) == 'YD6016':  
         APIKeyDirectory = KiteRashmiLogin
         AccessTokenDirectory = KiteRashmiLoginAccessToken
+    
+    elif str(OrderDetails.get('User')) == 'OFS653':  
+        APIKeyDirectory = KiteEshitaLogin
+        AccessTokenDirectory = KiteEshitaLoginAccessToken
 
     with open(APIKeyDirectory,'r') as InputsFile:
         content = InputsFile.readlines()
@@ -378,7 +401,7 @@ def ControlOrderFlowKite(OrderDetails):
                 # Possibly fetch LTP again
                 OrderDetails = PrepareOrderKite(kite, OrderDetails)
 
-                # Place the new limit order
+                # Place the new market order
                 order_id = PlaceOrderKiteAPI(kite, OrderDetails)
                 order_list = []
                 order_list.append(order_id)
