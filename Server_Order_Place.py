@@ -19,29 +19,26 @@ def order(order_details_fetch):#Tradetype,Exchange,Tradingsymbol,Quantity,Variet
     OrderTag = str(order_details_fetch.get("OrderTag"))
     #print(order_details_fetch)  
 
-    if str(order_details_fetch.get('User')) == 'YD6016': 
-        with open(KiteRashmiLogin,'r') as a:
-            content = a.readlines()
-            a.close()
-        api_key = content[2].strip('\n')
-        kite = KiteConnect(api_key=api_key)
+    userLoginMap = {
+        'YD6016': (KiteRashmiLogin, KiteRashmiLoginAccessToken),
+        'IK6635': (KiteEkanshLogin, KiteEkanshLoginAccessToken),  
+        'OFS653': (KiteEshitaLogin, KiteEshitaLoginAccessToken)  
+    }
 
-        with open(KiteRashmiLoginAccessToken,'r') as f:
-            access_tok = f.read()
-            f.close()
-    else:
-        with open(KiteEkanshLogin,'r') as a:
-            content = a.readlines()
-            a.close()
-        api_key = content[2].strip('\n')
-        kite = KiteConnect(api_key=api_key)
+    user = str(order_details_fetch.get('User'))
+    loginFile, accessTokenFile = userLoginMap.get(user, (KiteEshitaLogin, KiteEshitaLoginAccessToken))
 
-        with open(KiteEkanshLoginAccessToken,'r') as f:
-            access_tok = f.read()
-            f.close()
+    with open(loginFile, 'r') as file:
+        content = file.readlines()
+    apiKey = content[2].strip('\n')
+    kite = KiteConnect(api_key=apiKey)
+
+    with open(accessTokenFile, 'r') as tokenFile:
+        accessToken = tokenFile.read()
 
 
-    kite.set_access_token(access_tok)
+
+    kite.set_access_token(accessToken)
 
     # Place an order
     
