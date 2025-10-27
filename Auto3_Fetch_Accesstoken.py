@@ -14,13 +14,24 @@ You can adapt this pattern to handle multiple user files or expand to multiple
 accounts with minimal changes.
 """
 
+# compat shim for Python >=3.12 where 'distutils' is removed
+import sys
+try:
+    import setuptools
+    sys.modules["distutils"] = setuptools._distutils
+except Exception:
+    pass
+
+
 import time
 import pyotp
-import undetected_chromedriver as uc
+#mport undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from kiteconnect import KiteConnect
-from Directories import KiteEkanshLogin,KiteRashmiLogin, KiteEkanshLoginAccessToken, KiteRashmiLoginAccessToken  # Example paths in "Directories.py"
+from Directories import KiteEkanshLogin,KiteRashmiLogin, KiteEkanshLoginAccessToken, KiteRashmiLoginAccessToken, KiteEshitaLoginAccessToken, KiteEshitaLogin# Example paths in "Directories.py"
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 
 
 class ZerodhaLogin:
@@ -49,22 +60,31 @@ class ZerodhaLogin:
         self.chrome_version = chrome_version
 
         # Prepare undetected Chrome options (headless by default)
-        self.options = uc.ChromeOptions()
-        self.options.headless = True  # set to False if you want to see the browser
+        #self.options = uc.ChromeOptions()
+        #self.options.headless = True  # set to False if you want to see the browser
 
         self.driver = None
 
+
     def _launchBrowser(self):
-        """
-        Internal method to create and return a Chrome driver instance 
-        using undetected_chromedriver.
-        """
         try:
-            driver = uc.Chrome(version_main=self.chrome_version, options=self.options)
+            chromeOptions=ChromeOptions()
+            #chromeOptions.add_argument("--headless=new")
+            chromeOptions.add_argument("--disable-blink-features=AutomationControlled")
+            chromeOptions.add_experimental_option("useAutomationExtension", False)
+            chromeOptions.add_experimental_option("excludeSwitches", ["enable-automation"])
+            driver=webdriver.Chrome(options=chromeOptions)  # uses Selenium Manager
+            # light stealth: hide webdriver flag
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                """
+            })
             return driver
         except Exception as e:
-            print("Error initializing undetected_chromedriver:", e)
+            print("error initializing selenium:", e)
             raise e
+
 
     def _fetchRequestToken(self):
         """
@@ -150,7 +170,7 @@ class ZerodhaLogin:
         # 6. Generate the access token using the request token and api_secret
         print("Generating session using request_token and api_secret...")
         kite = KiteConnect(api_key=self.api_key)
-        try:
+        try:                                                                                                            
             data = kite.generate_session(request_token, self.api_secret)
             access_token = data['access_token']
             print("Access token -->", access_token)
@@ -198,7 +218,7 @@ def runZerodhaLogin(login_file,OPAccessTokenFile):
         api_secret = api_secret,
         totp_key   = totp_key,
         output_file= OPAccessTokenFile,  # example output path
-        chrome_version=133
+        chrome_version=136
     )
 
     kite_instance = zlogin.loginAndGenerateAccessToken()
@@ -212,3 +232,4 @@ if __name__ == '__main__':
     # Pass KiteEkanshLogin as the file containing the user's credentials
     runZerodhaLogin(KiteEkanshLogin,KiteEkanshLoginAccessToken)
     runZerodhaLogin(KiteRashmiLogin,KiteRashmiLoginAccessToken)
+    runZerodhaLogin(KiteEshitaLogin,KiteEshitaLoginAccessToken)
