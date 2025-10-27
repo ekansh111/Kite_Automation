@@ -222,7 +222,9 @@ def EstablishConnectionAngelAPI(OrderDetails):
     if str(OrderDetails.get('User')) == 'R71302':
         Directory = AngelNararushLoginCred 
     elif str(OrderDetails.get('User')) == 'E51339915':  
-        Directory = AngelEkanshLoginCred           
+        Directory = AngelEkanshLoginCred
+    elif str(OrderDetails.get('User')) == 'AABM826021':  
+        Directory = AngelEshitaLoginCred         
     
     # Open the credentials file and read all lines
     with open(Directory,'r') as a:
