@@ -1,20 +1,17 @@
 
 from kiteconnect import KiteConnect
-from datetime import datetime,timedelta
-from datetime import date
+#from datetime import datetime,timedelta
+#from datetime import date
+from datetime import datetime as dt, timedelta, date
 from Login_Auto3_Angel import Login_Angel_Api
 import pandas as pd
 from Directories import *
 import csv
 option_sl = 0
 
-#with open(KiteEkanshLoginAPIKey,'r') as a:
-#        api_key = a.read()
-#        a.close()
-
 
 #Fetch input values from the file
-with open(KiteEkanshLogin,'r') as a:
+with open(KiteEshitaLogin,'r') as a:
         content = a.readlines()
         a.close()
 
@@ -26,7 +23,7 @@ totp_key= content[4].strip('\n')
 
 kite = KiteConnect(api_key=api_key)
 
-with open(KiteEkanshLoginAccessToken,'r') as f:
+with open(KiteEshitaLoginAccessToken,'r') as f:
     access_tok = f.read()
     f.close()
     #print(access_tok)
@@ -140,7 +137,7 @@ def write_order_details_to_csv(OrderDetails, csv_file_path):
     values = list(OrderDetails.values())
 
     # Get the current time
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_time = dt.now().strftime('%Y-%m-%d %H:%M:%S')
 
     # Check if the CSV file exists, create it if not
     with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
