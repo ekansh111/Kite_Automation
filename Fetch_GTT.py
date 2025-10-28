@@ -75,7 +75,7 @@ def cancel_gtt(kite: KiteConnect, gtt_id: int) -> dict:
 # if __name__ == '__main__':
 
 # Fetch input values from the file
-with open(KiteEkanshLogin,'r') as a:
+with open(KiteEshitaLogin,'r') as a:
     content = a.readlines()
 
 user_id= content[0].strip('\n')
@@ -86,7 +86,7 @@ totp_key= content[4].strip('\n')
 
 kite = KiteConnect(api_key=api_key)
 
-with open(KiteEkanshLoginAccessToken,'r') as f:
+with open(KiteEshitaLoginAccessToken,'r') as f:
     access_tok = f.read()
 
 kite.set_access_token(access_tok)
