@@ -135,17 +135,20 @@ def roundClosingPrice(raw_price: float) -> float:
         Price rounded **down** to the nearest valid tick.
     """
 
-    if raw_price < 1000:
-        multiplier = 20          # 1 / 0.05
-        print("raw price < 1000 kite" , math.floor(raw_price * multiplier) / multiplier,'111')
-    elif raw_price <= 10000:
-        multiplier = 10         # 1 / 0.1
-        print("raw price < 1000 kite" , math.floor(raw_price * multiplier) / multiplier,'111')
-    else:
-        multiplier = 1          # 1 / 1.0 
-        RoundedPrice = int(math.ceil(raw_price))
+    if raw_price < 250:
+        multiplier = 100      # 1 / 0.01
 
-        print('greater than 10,000 kite' , RoundedPrice,'111')
+    elif raw_price < 1000:
+        multiplier = 20       # 1 / 0.05
+    elif raw_price < 5000:
+        multiplier = 10       # 1 / 0.10
+    elif raw_price < 10000:
+        multiplier = 2        # 1 / 0.50
+    elif raw_price < 20000:
+        multiplier = 1        # 1 / 1.00
+
+    else:
+        multiplier = 0.2      # 1 / 5.00  (price > 20000)
 
     return math.floor(raw_price * multiplier) / multiplier
 
