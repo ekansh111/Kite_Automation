@@ -84,7 +84,7 @@ def convertOpenOrdersToMarket(smartApi):
 def main():
     logging.basicConfig(level=logging.INFO)
     
-    OrderUserDetails = {"User": "E51339915"}
+    OrderUserDetails = {"User": "AABM826021"}
     # 1. Connect to Angel One
     smartApi = EstablishConnectionAngelAPI(OrderUserDetails)
     

@@ -105,7 +105,7 @@ def main():
     Main function to connect to the Kite API, fetch open orders, and convert limit orders to market orders.
     """
     # Connect to the Kite API using credentials defined in your Directories module.
-    kite = connectToUserKiteApi('IK6635', KiteEkanshLogin, KiteEkanshLoginAccessToken)
+    kite = connectToUserKiteApi('OFS653', KiteEshitaLogin, KiteEshitaLoginAccessToken)
     
     # Fetch open orders. Pass a specific symbol as symbolFilter if needed (e.g., 'INFY').
     ordersData = processOpenOrders(kite, symbolFilter=None)
