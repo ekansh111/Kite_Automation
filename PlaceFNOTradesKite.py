@@ -39,7 +39,7 @@ Note: This script relies on external modules and files (e.g., FetchOptionContrac
 Holidays, Login_Auto3_Angel) and on having appropriate API credentials and permissions from 
 brokers. It also requires careful handling of API keys and security credentials.
 """
-from FetchOptionContractName import FetchOptionName
+from FetchOptionContractName import FetchOptionName, FetchContractName
 from kiteconnect import KiteConnect
 from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
@@ -77,7 +77,7 @@ def LoopHashOrderRequest(OrderDetails):
         #Fetch the contract name to place orders in , store as tuple for ease of looping /Multilple indexes as the dict has a child dict
         #ContractName = [FetchOptionName(OrderDetails[OrderType]['Tradingsymbol'],int(OrderDetails[OrderType]['OptionExpiryDay']),int(OrderDetails[OrderType]['OptionContractStrikeFromATMPercent']),Hedge=OrderDetails[OrderType]['Hedge'],CE_Return=OrderDetails[OrderType]['CallStrikeRequired'],PE_Return=OrderDetails[OrderType]['PutStrikeRequired'])]
         
-        ContractName = [FetchOptionName(OrderDetails[OrderType])]
+        ContractName = [FetchContractName(OrderDetails[OrderType])]
         print(ContractName)
         #Multiple contracts can be returned by the function , but if only one contract name is returned than ensure that the variable is a tuple, to avoid the next for loop from only fetching a single char in the contract name
 

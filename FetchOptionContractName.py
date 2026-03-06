@@ -391,14 +391,6 @@ def GetAvailableExpiryDates(instrumentsOpt, indexName, optSegment):
             expirySet.add(expiryVal)
     return sorted(list(expirySet))
 
-def GetInstrumentsCached(kite, exchange):
-    todayDate = date.today()
-    if instrumentsCacheByExchange.get(exchange) is None or instrumentsCacheDateByExchange.get(exchange) != todayDate:
-        instrumentsCacheByExchange[exchange] = kite.instruments(exchange)
-        instrumentsCacheDateByExchange[exchange] = todayDate
-    return instrumentsCacheByExchange[exchange]
-
-
 def SelectExpiryDateFromInstruments(instrumentsOpt, indexName, optionType, expiryWeekdayInt, optSegment):
     todayDate = date.today()
     expiryDates = GetAvailableExpiryDates(instrumentsOpt, indexName, optSegment)
