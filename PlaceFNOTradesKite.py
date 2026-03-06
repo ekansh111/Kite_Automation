@@ -105,9 +105,10 @@ if __name__ == '__main__':
         if proceed in {"G","g"}:    #{} is a set
             Override = False    
         if proceed in {"M","m"}:
-            print("1A--NiftyStraddle_Mon_12Pm_100Sl \n 2--NiftyStraddle_Tue_11Am_110Sl  \n  7--NiftySellCall_Thu_1520Pm_50Sl \n 18--SensexStraddle_Mon_930Am_150Sl \n 19--SensexStraddle_Tue_1020Am_90Sl \n 20--SensexSellCall_Fri_1520Pm_25Sl ")
-            print("12--AngelNararushNiftySellPut_Mon_1000Am_100Sl  \n 14--AngelNararushNiftySellCall_Wed_1000Am_100Sl")
-            print("Testing-->|99|FINNIFTY_RG_K, ->|98|FINNIFTY_AMO_K, ->|97|BANKNIFTY_AMO_ANGEL_NARAYANA, ->|96|BANKNIFTY_AMO_ANGEL_EK, ->|NCDEX|ANGEL_EKANSH_TV_ALERT, ->|95|NIFTY_AMO_KITE_EK ")
+            print("1A--NiftyStraddle_Thu_12Pm_100Sl \n 2--NiftyStraddle_Fri_11Am_110Sl \n 60--NiftyStraddle_Thu_12Pm_40Sl \n 65--NiftyStraddle_Fri_11Am_70Sl \n 7--NiftySellCall_Tue_1520Pm_50Sl")
+            print("18--SensexStraddle_Fri_930Am_150Sl \n 19--SensexStraddle_Mon_1020Am_90Sl \n 63--SensexStraddle_Fri_930Am_50Sl \n 64--SensexStraddle_Mon_1020Am_50Sl \n 20--SensexSellCall_Thu_1520Pm_25Sl")
+            print("12--AngelNararushNiftySellPut_Mon_1000Am_100Sl \n 14--AngelNararushNiftySellCall_Wed_1000Am_100Sl \n 66--AngelNararushSensexSellCall_Wed_1000Am_25Sl \n 62--AngelNararushSensexSellPut_Tue_1000Am_75Sl")
+            print("Testing-->|99|FINNIFTY_RG_K, ->|98|FINNIFTY_AMO_K, ->|97|BANKNIFTY_AMO_ANGEL_NARAYANA, ->|96|BANKNIFTY_AMO_ANGEL_EK, ->|NCDEX|ANGEL_EKANSH_TV_ALERT, ->|95|NIFTY_AMO_KITE_EK")
             Override = input("Enter the Override value \n") or False
         if proceed in {"N","n"}:
             abort()
