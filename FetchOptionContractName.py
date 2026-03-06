@@ -72,7 +72,7 @@ def FetchOptionName(OrderDetails):
 
     #print(IndexName,ExpiryDayInt,ContractStrikeFromATMPercent,Hedge,CE_Return,PE_Return)
     #Configure the API for fetching the ltp value
-    with open(KiteEkanshLogin,'r') as a:
+    with open(KiteEshitaLogin,'r') as a:
         content = a.readlines()
         a.close()
     api_key = content[2].strip('\n')
@@ -80,7 +80,7 @@ def FetchOptionName(OrderDetails):
 
 
 
-    with open(KiteEkanshLoginAccessToken,'r') as f:
+    with open(KiteEshitaLoginAccessToken,'r') as f:
         access_tok = f.read()
         f.close()
         #print(access_tok)
@@ -240,24 +240,17 @@ def FetchOptionName(OrderDetails):
             time.sleep(0.1)
             price = kite.ltp('BSE:' + NIFTY_index[val])#this will send ohlc price in dictionary format
             #print(price)
-            ltp = price['BSE:'+NIFTY_index[val]]['last_price']#to get ltp of whichever stick is declared in token
+            ltp = price['BSE:'+NIFTY_index[val]]['last_price']
             print("SENSEX LTP:"+str(ltp))
-                
-
         ##################################################################################################################################      
 
     #Override the ltp value If the contract name needs to be Named according to ltp(when the contract position was entered) provided in the request
     if ContractStrikeOverride == 'True':
         ltp = float(ContractStrikeOverridePrice)
-    #print('ltp--->' + str(ltp))
-    #This will round to the nearest hundrend place so that we can select the nearst ATM contract
+
     ATM_ltp = int(round(ltp,-2))
-    #print(ATM_ltp)
-    #-2 to round it to the nearest hundreds place(since that is the steps in which options are priced)
-    #ATM_CE_Strike = round(int(ATM_ltp*((100+int(ContractStrikeFromATMPercent))/100)),-2)
-    #ATM_PE_Strike = round(int(ATM_ltp*((100-int(ContractStrikeFromATMPercent))/100)),-2)
     ATM_CE_Strike,ATM_PE_Strike = ContractStrikeValue(ContractStrikeFromATMPercent,ATM_ltp,IndexName)
-    #Date Format for Kite API 
+
     DateFormat = str(year)+ str(month) +str(day)
 
     if Broker == 'ANGEL':
@@ -268,32 +261,27 @@ def FetchOptionName(OrderDetails):
             DateFormat = str(year) +str(month) + str(day)
 
     if IndexName == 'BANKNIFTY':
-        #Append the dates and the script name to create the complete contract names to be Traded
         ATM_CALL = 'BANKNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'BANKNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
     elif IndexName == 'NIFTY':
-        #Append the dates and the script name to create the complete contract names to be Traded
         ATM_CALL = 'NIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'NIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
     
     elif IndexName == 'FINNIFTY':
-        #Append the dates and the script name to create the complete contract names to be Traded
         ATM_CALL = 'FINNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'FINNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE' 
 
     elif IndexName == 'MIDCPNIFTY':
-        #Append the dates and the script name to create the complete contract names to be Traded
         ATM_CALL = 'MIDCPNIFTY'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'MIDCPNIFTY'+ DateFormat +str(ATM_PE_Strike)+'PE'
 
     elif IndexName == 'SENSEX':
-        #Append the dates and the script name to create the complete contract names to be Traded
         ATM_CALL = 'SENSEX'+ DateFormat +str(ATM_CE_Strike)+'CE'
         ATM_PUT = 'SENSEX'+ DateFormat +str(ATM_PE_Strike)+'PE'
+
     print(year,month,day,ATM_ltp,ATM_CALL,ATM_PUT,CE_Return,PE_Return)
 
-    #Return Only the required contracts
     if CE_Return == 'True' and PE_Return=='False':
         print(ATM_CALL)
         return ATM_CALL
@@ -305,26 +293,300 @@ def FetchOptionName(OrderDetails):
         return ATM_CALL,ATM_PUT
 
 
+####################################################################################################
+# NEW CODE BELOW (EXISTING CODE ABOVE IS UNCHANGED)
+####################################################################################################
+
+instrumentsNfoCache = None
+instrumentsNfoCacheDate = None
+
+
+def GetKiteClient():
+    with open(KiteEshitaLogin, "r") as a:
+        content = a.readlines()
+    apiKey = content[2].strip("\n")
+    kite = KiteConnect(api_key=apiKey)
+
+    with open(KiteEshitaLoginAccessToken, "r") as f:
+        accessTok = f.read()
+    kite.set_access_token(accessTok)
+    return kite
+
+def GetInstrumentsNfoCached(kite):
+    global instrumentsNfoCache, instrumentsNfoCacheDate
+    todayDate = date.today()
+    if instrumentsNfoCache is None or instrumentsNfoCacheDate != todayDate:
+        instrumentsNfoCache = kite.instruments("NFO")
+        instrumentsNfoCacheDate = todayDate
+    return instrumentsNfoCache
+
+def ChunkList(items, chunkSize):
+    for i in range(0, len(items), chunkSize):
+        yield items[i:i + chunkSize]
+
+def GetBestMarketPremium(quoteData, tradeType):
+    depth = quoteData.get("depth") or {}
+    buys = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    lastPrice = float(quoteData.get("last_price") or 0.0)
+
+    if tradeType == "SELL":
+        if len(buys) > 0 and float(buys[0].get("price") or 0) > 0:
+            return float(buys[0]["price"])
+        return lastPrice
+
+    if tradeType == "BUY":
+        if len(sells) > 0 and float(sells[0].get("price") or 0) > 0:
+            return float(sells[0]["price"])
+        return lastPrice
+
+    return lastPrice
+
+
+def InferStrikeStep(instrumentsOpt, indexName, expiryDate, optSegment):
+    strikes = sorted({
+        float(ins.get("strike") or 0.0)
+        for ins in instrumentsOpt
+        if ins.get("segment") == optSegment
+        and ins.get("name") == indexName
+        and ins.get("expiry") == expiryDate
+        and float(ins.get("strike") or 0.0) > 0
+    })
+    if len(strikes) < 3:
+        return None
+    diffs = [round(strikes[i+1] - strikes[i], 10) for i in range(len(strikes)-1)]
+    diffs = [d for d in diffs if d > 0]
+    if not diffs:
+        return None
+    return min(diffs)
+
+
+instrumentsCacheByExchange = {}
+instrumentsCacheDateByExchange = {}
+
+def GetDerivativesExchange(indexName):
+    if indexName == "SENSEX":
+        return "BFO"
+    return "NFO"
+
+def GetOptSegmentForExchange(exchange):
+    return f"{exchange}-OPT"
+
+def GetInstrumentsCached(kite, exchange):
+    todayDate = date.today()
+    if instrumentsCacheByExchange.get(exchange) is None or instrumentsCacheDateByExchange.get(exchange) != todayDate:
+        instrumentsCacheByExchange[exchange] = kite.instruments(exchange)
+        instrumentsCacheDateByExchange[exchange] = todayDate
+    return instrumentsCacheByExchange[exchange]
+
+def GetAvailableExpiryDates(instrumentsOpt, indexName, optSegment):
+    expirySet = set()
+    for ins in instrumentsOpt:
+        if ins.get("segment") != optSegment:
+            continue
+        if ins.get("name") != indexName:
+            continue
+        expiryVal = ins.get("expiry")
+        if expiryVal is not None:
+            expirySet.add(expiryVal)
+    return sorted(list(expirySet))
+
+def GetInstrumentsCached(kite, exchange):
+    todayDate = date.today()
+    if instrumentsCacheByExchange.get(exchange) is None or instrumentsCacheDateByExchange.get(exchange) != todayDate:
+        instrumentsCacheByExchange[exchange] = kite.instruments(exchange)
+        instrumentsCacheDateByExchange[exchange] = todayDate
+    return instrumentsCacheByExchange[exchange]
+
+
+def SelectExpiryDateFromInstruments(instrumentsOpt, indexName, optionType, expiryWeekdayInt, optSegment):
+    todayDate = date.today()
+    expiryDates = GetAvailableExpiryDates(instrumentsOpt, indexName, optSegment)
+
+    futureExpiries = [e for e in expiryDates if e >= todayDate]
+    if len(futureExpiries) == 0:
+        raise Exception(f"No future expiries found in instruments for {indexName} ({optSegment})")
+
+    if str(optionType) == "MonthlyOption":
+        thisMonth = todayDate.month
+        thisYear = todayDate.year
+
+        thisMonthExpiries = [e for e in futureExpiries if e.month == thisMonth and e.year == thisYear]
+        if len(thisMonthExpiries) > 0:
+            return max(thisMonthExpiries)
+
+        nextMonthDate = todayDate + relativedelta(months=1)
+        nextMonthExpiries = [e for e in futureExpiries if e.month == nextMonthDate.month and e.year == nextMonthDate.year]
+        if len(nextMonthExpiries) > 0:
+            return max(nextMonthExpiries)
+
+        return max(futureExpiries)
+
+    # WeeklyOption (recommended): nearest expiry from instruments (most robust)
+    if str(optionType) == "WeeklyOption" or str(optionType) == "" or optionType is None:
+        return min(futureExpiries)
+
+    # Optional: weekday filter (fallback)
+    targetWeekday = int(expiryWeekdayInt)
+    weekdayMatches = [e for e in futureExpiries if e.weekday() == targetWeekday]
+    if len(weekdayMatches) > 0:
+        return min(weekdayMatches)
+
+    return min(futureExpiries)
+
+def FetchOptionNameByPremium(kite, instrumentsOpt, exchange, orderDetails, targetPremium, strikeWindow=20):
+    indexName = orderDetails["Tradingsymbol"]
+    tradeType = orderDetails.get("Tradetype", "SELL")
+    useAllStrikes = str(orderDetails.get("UseAllStrikes", "False")) == "True"
+
+    optSegment = GetOptSegmentForExchange(exchange)
+
+    expiryDate = SelectExpiryDateFromInstruments(
+        instrumentsOpt=instrumentsOpt,
+        indexName=indexName,
+        optionType=orderDetails.get("OptionType"),
+        expiryWeekdayInt=int(orderDetails.get("OptionExpiryDay", 0)),
+        optSegment=optSegment
+    )
+
+    underlyingMap = {
+        "NIFTY": "NSE:NIFTY 50",
+        "BANKNIFTY": "NSE:NIFTY BANK",
+        "FINNIFTY": "NSE:NIFTY FIN SERVICE",
+        "MIDCPNIFTY": "NSE:NIFTY MID SELECT",
+        "SENSEX": "BSE:SENSEX"
+    }
+
+    strikeStepMap = {
+        "NIFTY": 50,
+        "BANKNIFTY": 100,
+        "FINNIFTY": 50,
+        "MIDCPNIFTY": 25,
+        "SENSEX": 100
+    }
+
+    underlyingKey = underlyingMap[indexName]
+    spot = float(kite.ltp(underlyingKey)[underlyingKey]["last_price"])
+
+    inferred = InferStrikeStep(instrumentsOpt, indexName, expiryDate, optSegment)
+    strikeStep = int(inferred) if inferred else int(strikeStepMap.get(indexName, 50))
+
+    atmStrike = int(round(spot / strikeStep) * strikeStep)
+
+    minStrike = atmStrike - (int(strikeWindow) * strikeStep)
+    maxStrike = atmStrike + (int(strikeWindow) * strikeStep)
+
+    optionSide = "CE" if str(orderDetails.get("CallStrikeRequired")) == "True" else "PE"
+
+    candidates = []
+    for ins in instrumentsOpt:
+        if ins.get("segment") != optSegment:
+            continue
+        if ins.get("name") != indexName:
+            continue
+        if ins.get("expiry") != expiryDate:
+            continue
+        if ins.get("instrument_type") != optionSide:
+            continue
+
+        strike = float(ins.get("strike") or 0.0)
+        if not useAllStrikes:
+            if strike < minStrike or strike > maxStrike:
+                continue
+
+        candidates.append(ins)
+
+    if len(candidates) == 0:
+        raise Exception(f"No candidates found for {indexName} {expiryDate} {optionSide} ({exchange})")
+
+    bestSymbol = None
+    bestDiff = float("inf")
+
+    quoteKeys = [f"{exchange}:{c['tradingsymbol']}" for c in candidates]
+
+    for chunk in ChunkList(quoteKeys, 150):
+        quotes = kite.quote(chunk)
+        time.sleep(0.2)
+
+        for qk in chunk:
+            q = quotes.get(qk)
+            if not q:
+                continue
+
+            premium = GetBestMarketPremium(q, tradeType)
+            if premium <= 0:
+                continue
+
+            diff = abs(premium - float(targetPremium))
+            if diff < bestDiff:
+                bestDiff = diff
+                bestSymbol = qk.split(":", 1)[1]
+
+    if not bestSymbol:
+        raise Exception("Could not select a premium-based contract (illiquid / empty quotes).")
+
+    return bestSymbol
+
+def FetchContractName(orderDetails):
+    fetchByPremium = str(orderDetails.get("FetchByPremium", "")).strip()
+    if fetchByPremium != "" and fetchByPremium.lower() not in {"false", "none"}:
+        kite = GetKiteClient()
+
+        indexName = orderDetails["Tradingsymbol"]
+        exchange = GetDerivativesExchange(indexName)
+        instrumentsOpt = GetInstrumentsCached(kite, exchange)
+
+        targetPremium = float(fetchByPremium)
+        strikeWindow = int(orderDetails.get("StrikeWindow", 20))
+
+        ceReq = str(orderDetails.get("CallStrikeRequired")) == "True"
+        peReq = str(orderDetails.get("PutStrikeRequired")) == "True"
+
+        if ceReq and peReq:
+            ceDetails = dict(orderDetails)
+            peDetails = dict(orderDetails)
+
+            ceDetails["CallStrikeRequired"] = "True"
+            ceDetails["PutStrikeRequired"] = "False"
+
+            peDetails["CallStrikeRequired"] = "False"
+            peDetails["PutStrikeRequired"] = "True"
+
+            ceSymbol = FetchOptionNameByPremium(kite, instrumentsOpt, exchange, ceDetails, targetPremium, strikeWindow=strikeWindow)
+            peSymbol = FetchOptionNameByPremium(kite, instrumentsOpt, exchange, peDetails, targetPremium, strikeWindow=strikeWindow)
+            return ceSymbol, peSymbol
+
+        return FetchOptionNameByPremium(kite, instrumentsOpt, exchange, orderDetails, targetPremium, strikeWindow=strikeWindow)
+
+    return FetchOptionName(orderDetails)
 
 if __name__ == '__main__':
 
-    #FetchOptionName('BANKNIFTY',2,0,False,False)
-    #FetchOptionName('NIFTY',3,0,False,False)
-    #FetchOptionName('FINNIFTY',1,0,False,False)
-    '''   IndexName                    = OrderDetails['Tradingsymbol']
-    ExpiryDayInt                 = int(OrderDetails['OptionExpiryDay'])
-    ContractStrikeFromATMPercent = int(OrderDetails['OptionContractStrikeFromATMPercent'])
-    Hedge                        = OrderDetails['Hedge']
-    CE_Return                    = OrderDetails['CallStrikeRequired']
-    PE_Return                    = OrderDetails['PutStrikeRequired']'''
-    OrderDetails = {'Tradingsymbol':'MIDCPNIFTY','OptionExpiryDay':0,'OptionContractStrikeFromATMPercent':0,'Hedge':'False',
-                    'CallStrikeRequired':'True','PutStrikeRequired':'False'} 
-    '''OrderDetails['Tradingsymbol'] = 'MIDCPNIFTY'
-    OrderDetails['OptionExpiryDay'] = 0
-    OrderDetails['OptionContractStrikeFromATMPercent'] = 0
-    OrderDetails['Hedge'] = 'False'
-    OrderDetails['CallStrikeRequired'] = 'True'
-    OrderDetails['PutStrikeRequired']  = 'False' '''
+    niftyOrderDetails = {
+        "Tradingsymbol": "NIFTY",
+        "OptionContractStrikeFromATMPercent": 0,
+        "Hedge": "False",
+        "CallStrikeRequired": "True",
+        "PutStrikeRequired": "False",
+        "OptionType": "WeeklyOption",
+        "OptionExpiryDay": "1",      # keep if you want; with WeeklyOption we pick nearest expiry anyway
+        "FetchByPremium": "250",
+        "StrikeWindow": "25",
+        "Tradetype": "SELL"
+    }
 
-    k = FetchOptionName(OrderDetails)
-    #print(k[0])
+    sensexOrderDetails = {
+        "Tradingsymbol": "SENSEX",
+        "OptionContractStrikeFromATMPercent": 0,
+        "Hedge": "False",
+        "CallStrikeRequired": "True",
+        "PutStrikeRequired": "False",
+        "OptionType": "WeeklyOption",
+        "OptionExpiryDay": "3",
+        "FetchByPremium": "250",
+        "StrikeWindow": "25",
+        "Tradetype": "SELL"
+    }
+
+    k = FetchContractName(niftyOrderDetails)
+    print("SelectedContract:", k)
