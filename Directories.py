@@ -1,53 +1,59 @@
 import datetime
+from pathlib import Path
+import datetime
 
-KiteEkanshLogin = 'C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials.txt'
-KiteEkanshLoginAPIKey = 'C:/Users/ekans/OneDrive/Documents/inputs/api_key_IK.txt'
-KiteEkanshLoginAccessToken = 'C:/Users/ekans/OneDrive/Documents/inputs/access_token_IK.txt'
-ZerodhaInstrumentDirectory = "ZerodhaInstruments.csv" 
 
-KiteRashmiLogin = 'C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials_YD6016.txt'
-KiteRashmiLoginAccessToken = 'C:/Users/ekans/OneDrive/Documents/inputs/access_token_YD.txt'
+icloudRoot= Path.home()
+workInputRoot=icloudRoot/"Documents"/"Work"/"inputs"
 
-AngelEkanshLoginCred = 'C:/Users/ekans/OneDrive/Documents/inputs/Login_Credentials_Angel.txt'
-AngelNararushLoginCred = 'Login_Credentials_Angel_Dad.txt' 
+KiteEkanshLogin = workInputRoot/'Login_Credentials.txt'
+KiteEkanshLoginAPIKey = workInputRoot/'api_key_IK.txt'
+KiteEkanshLoginAccessToken = workInputRoot/'access_token_IK.txt'
+ZerodhaInstrumentDirectory = "ZerodhaInstruments.csv"
+
+KiteRashmiLogin = workInputRoot/'Login_Credentials_YD6016.txt'
+KiteRashmiLoginAccessToken = workInputRoot/'access_token_YD.txt'
+
+KiteEshitaLogin = workInputRoot/'Login_Credentials_OFS653.txt'
+KiteEshitaLoginAccessToken = workInputRoot/'access_token_OF.txt'
+
+AngelEkanshLoginCred = workInputRoot/'Login_Credentials_Angel.txt'
+AngelNararushLoginCred = workInputRoot/'Login_Credentials_Angel_Dad.txt'
+AngelEshitaLoginCred = workInputRoot/'Login_Credentials_Angel_Eshita.txt'
 AngelInstrumentDirectory = 'AngelInstrumentDetails.csv'
 
-WriteOptionDetailsFile = 'C:/Users/ekans/OneDrive/Documents/inputs/option_details.csv'
-WriteAllContractDet = 'C:/Users/ekans/OneDrive/Documents/inputs/TEXT_INSTRUMENTS.csv'
+WriteOptionDetailsFile = workInputRoot/'option_details.csv'
+WriteAllContractDet = workInputRoot/'TEXT_INSTRUMENTS.csv'
 
-WorkDirectory = 'C:/Users/ekans/OneDrive/Documents/inputs/'
+WorkDirectory = workInputRoot
 
-IntraDayDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector"
-IntraDayDirectoryHistory = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\History4"
-Nifty500ConstituentList = r"C:\Users\ekans\OneDrive\Documents\Trading\IntraDay_Stocks_Selector\ind_nifty500list.csv"
-PositionDataOpDirectory = r"C:\Users\ekans\OneDrive\Documents\Trading\PositionsData"
-Nifty500MACDDailyData = r"Nifty500DailyMACDData.csv"
+workTradingRoot=icloudRoot/"Documents"/"Work"/"Trading"
 
-MeanReversionCharts = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts"
-MeanReversionPortfolioValue = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Portfolio Value"
-MeanReversionZScore = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\z score"
-MeanReversionSpreadResiduals = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Spread and Residuals"
-MeanReversionClosingPrice = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Closing Prices"
-MeanReversionCointigrationHeatMap = r"C:\Users\ekans\OneDrive\Documents\Trading\Scripts\Charts\Cointegration Heatmaps"
+
+IntraDayDirectory=str(workTradingRoot/"IntraDay_Stocks_Selector")
+IntraDayDirectoryHistory=str(workTradingRoot/"IntraDay_Stocks_Selector"/"History4")
+Nifty500ConstituentList=str(workTradingRoot/"IntraDay_Stocks_Selector"/"ind_nifty500list.csv")
+PositionDataOpDirectory=str(workTradingRoot/"PositionsData")
+Nifty500MACDDailyData="Nifty500DailyMACDData.csv"
+
+MeanReversionCharts=str(workTradingRoot/"Scripts"/"Charts")
+MeanReversionPortfolioValue=str(workTradingRoot/"Scripts"/"Charts"/"Portfolio Value")
+MeanReversionZScore=str(workTradingRoot/"Scripts"/"Charts"/"z score")
+MeanReversionSpreadResiduals=str(workTradingRoot/"Scripts"/"Charts"/"Spread and Residuals")
+MeanReversionClosingPrice=str(workTradingRoot/"Scripts"/"Charts"/"Closing Prices")
+MeanReversionCointigrationHeatMap=str(workTradingRoot/"Scripts"/"Charts"/"Cointegration Heatmaps")
 
 # Get the current date
-today = datetime.date.today()
-# Format the month as a three-letter abbreviation in uppercase (e.g. 'APR')
-month_str = today.strftime("%b").upper()
-# Format the year in YYYY format
-year_str = today.strftime("%Y")
-# Combine them (e.g. 'APR2025')
-month_year_dir = f"{month_str}{year_str}"
+today=datetime.date.today()
+month_str=today.strftime("%b").upper()
+year_str=today.strftime("%Y")
+month_year_dir=f"{month_str}{year_str}"
 
-RelativeMomentumDirectoryReturns = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\relative momentum returns.csv'
-AbsoluteMomentumOutputDirectory = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\absolute momentum returns.csv'
-MomentumFilesOutputDirectory = rf"C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}"
-Nifty500ConstituentFilePath = rf'C:\Users\ekans\OneDrive\Documents\Trading\Momentum Stock Investing Data\{month_year_dir}\ind_nifty500list.csv'
+momentumRoot=workTradingRoot/"Momentum Stock Investing Data"/month_year_dir
+RelativeMomentumDirectoryReturns=str(momentumRoot/"relative momentum returns.csv")
+AbsoluteMomentumOutputDirectory=str(momentumRoot/"absolute momentum returns.csv")
+MomentumFilesOutputDirectory=str(momentumRoot)
+Nifty500ConstituentFilePath=str(momentumRoot/"ind_nifty500list.csv")
 
-SystemLocalIp = '192.168.0.194'
-SystemPublicIp = '106.51.200.173'
-SystemMacAddress = '30:05:05:CC:3A:89'
-
-# Default locations
-DEFAULT_SYMBOLS_FILE_INT50 = r"C:\Users\ekans\OneDrive\Documents\Trading\ConstituentDetails\ind_nifty200list.csv"
-DEFAULT_OUTPUT_DIR_INT50   = r"C:\Users\ekans\OneDrive\Documents\Trading\IntradayNifty50"
+DEFAULT_SYMBOLS_FILE_INT50=str(workTradingRoot/"ConstituentDetails"/"ind_nifty200list.csv")
+DEFAULT_OUTPUT_DIR_INT50=str(workTradingRoot/"IntradayNifty50")
