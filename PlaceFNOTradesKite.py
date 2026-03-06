@@ -39,14 +39,10 @@ Note: This script relies on external modules and files (e.g., FetchOptionContrac
 Holidays, Login_Auto3_Angel) and on having appropriate API credentials and permissions from 
 brokers. It also requires careful handling of API keys and security credentials.
 """
-from FetchOptionContractName import FetchOptionName, FetchContractName
-from kiteconnect import KiteConnect
+from FetchOptionContractName import FetchContractName
 from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
-#from datetime import timedelta
 from inputimeout import inputimeout,TimeoutOccurred
-from dateutil.relativedelta import TH,WE, relativedelta
-#from datetime import date
 from datetime import datetime as dt, timedelta, date
 from os import abort
 from Holidays import CheckForDateHoliday
@@ -60,37 +56,25 @@ WEDNESDAY = 2
 THURSDAY = 3
 FRIDAY = 4
 SUNDAY = 6
-#PreviousDate in yyyy-mm-dd format
 PREVIOUSDATE = date.today() + timedelta(-1)
-#print(PREVIOUSDATE)
-#If previous day is Sunday then last working day (friday) will be 3 days prior
+#If previous day is Sunday then last working day (Friday) will be 3 days prior
 if PREVIOUSDATE.weekday() == SUNDAY:
     PREVIOUSDATE = date.today() + timedelta(-3)
 
 def PlaceOrders(OrderDetails):
-    order(OrderDetails)#OrderDetails['Tradetype'],OrderDetails['Exchange'],OrderDetails['Tradingsymbol'] ,OrderDetails['Quantity'],OrderDetails['Variety'],OrderDetails['Ordertype'],OrderDetails['Product'],OrderDetails['Validity'],OrderDetails['Price'])
+    order(OrderDetails)
 
-#Function to iterate through the hash and place orders
 def LoopHashOrderRequest(OrderDetails):
-    #Iterate through the order details
     for OrderType in OrderDetails:
-        #Fetch the contract name to place orders in , store as tuple for ease of looping /Multilple indexes as the dict has a child dict
-        #ContractName = [FetchOptionName(OrderDetails[OrderType]['Tradingsymbol'],int(OrderDetails[OrderType]['OptionExpiryDay']),int(OrderDetails[OrderType]['OptionContractStrikeFromATMPercent']),Hedge=OrderDetails[OrderType]['Hedge'],CE_Return=OrderDetails[OrderType]['CallStrikeRequired'],PE_Return=OrderDetails[OrderType]['PutStrikeRequired'])]
-        
         ContractName = [FetchContractName(OrderDetails[OrderType])]
         print(ContractName)
-        #Multiple contracts can be returned by the function , but if only one contract name is returned than ensure that the variable is a tuple, to avoid the next for loop from only fetching a single char in the contract name
 
-        #If there is only one value in the tuple then the name of the contract will in ideal circumstances have a minimum of one character and will have greater
-        #than 4 characters, if there are multiple names fetched in the tuple, then for case of 2 values it will go inside loop and be extracted from the tuple
-        #Can provision the max value of 3 to even more depending on the contract name
-        if len(ContractName[0]) > 1 and len(ContractName[0]) < 3 :
-            #print('Inside Multiple contract check'+str(ContractName[0]))
+        #If multiple contracts returned (e.g. straddle tuple), unwrap the tuple
+        if len(ContractName[0]) > 1 and len(ContractName[0]) < 3:
             ContractName = ContractName[0]
 
-        #Place trades for all the contract names returned
-        for range in ContractName:
-            OrderDetails[OrderType]['Tradingsymbol'] = range
+        for contract in ContractName:
+            OrderDetails[OrderType]['Tradingsymbol'] = contract
 
             #Route through different function if order needs to be placed for Angel 
             if OrderDetails[OrderType].get("Broker") == 'ANGEL':
@@ -153,230 +137,194 @@ if __name__ == '__main__':
         SensexStraddle_Mon_1020Am_50Sl =    str(now.strftime("%H:%M:%S")) == '10:20:05' and ((CurrWkDy == MONDAY) or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
 
 
-        NiftySellCall_Tue_1520Pm_50Sl =      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))#((CurrWkDy == THURSDAY)  or CheckForDateHoliday(PREVIOUSDATE))
-        SensexSellCall_Thu_1520Pm_25Sl=      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == THURSDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))       
+        NiftySellCall_Tue_1520Pm_50Sl =      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
+        SensexSellCall_Thu_1520Pm_25Sl=      str(now.strftime("%H:%M:%S")) == '15:20:00' and ((CurrWkDy == THURSDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
 
-        #For testing
-        AngelBankNiftyLongCallMonthlyFirstDayMonExpiry = str(now.strftime("%H:%M:%S")) == '16:20:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
-
-
-        #AngelNararushBankNiftySellCall_Tue_1000Am_100Sl =        str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         AngelNararushNiftySellCall_Wed_1000Am_100Sl =            str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         AngelNararushNiftySellPut_Mon_1000Am_100Sl =             str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == MONDAY)or (PrevWkDy == MONDAY and CheckForDateHoliday(PREVIOUSDATE)))
-        #AngelNararushBankNiftySellPut_Fri_1000Am_100Sl =         str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == FRIDAY)or (PrevWkDy == FRIDAY and CheckForDateHoliday(PREVIOUSDATE)))
         AngelNararushSensexSellCall_Wed_1000Am_25Sl = str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == WEDNESDAY)or (PrevWkDy == WEDNESDAY and CheckForDateHoliday(PREVIOUSDATE)))
         AngelNararushSensexSellPut_Tue_1000Am_75Sl = str(now.strftime("%H:%M:%S")) == '10:00:00' and ((CurrWkDy == TUESDAY)or (PrevWkDy == TUESDAY and CheckForDateHoliday(PREVIOUSDATE)))
-       
 
-        #Sell Nifty Straddle every monday @ 12pm with 100sl
+        #Sell Nifty Straddle every Thursday @12pm with 100sl
         if NiftyStraddle_Thu_12Pm_100Sl or Override == '1A': 
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
                      'StopLossOrderPlacePercent':'150','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"1NF-STR-MO-12-100"}}#,
                      
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break   
+            break
 
-        #Sell N straddle every Tuesday @11am with 110sl
-        if NiftyStraddle_Fri_11Am_110Sl or Override == '2': 
+        #Sell Nifty straddle every Friday @11am with 110sl
+        if NiftyStraddle_Fri_11Am_110Sl or Override == '2':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'111',
                      'StopLossOrderPlacePercent':'155','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"3NF-STR-TU-11-110"}}#,
-                     
-            one_shot_flag == False
-            Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break  
 
-        if NiftyStraddle_Thu_12Pm_40Sl or Override == '60': 
+            one_shot_flag = False
+            Override = False
+            break
+
+        if NiftyStraddle_Thu_12Pm_40Sl or Override == '60':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'42',
                      'StopLossOrderPlacePercent':'75','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"1NF-STR-MO-12-100"}}#,
-                     
-            one_shot_flag == False
-            Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break   
 
-        #Sell N straddle every Tuesday @11am with 110sl
-        if NiftyStraddle_Fri_11Am_70Sl or Override == '61': 
+            one_shot_flag = False
+            Override = False
+            break
+
+        #Sell Nifty straddle every Friday @11am with 70sl
+        if NiftyStraddle_Fri_11Am_70Sl or Override == '65':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'73',
                      'StopLossOrderPlacePercent':'101','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"3NF-STR-TU-11-110"}}#,
-                     
-            one_shot_flag == False
+
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break         
 
-        #Sell N Call every Thursday @1520pm with 50sl
-        if NiftySellCall_Tue_1520Pm_50Sl or Override == '7': 
+        #Sell Nifty Call every Tuesday @1520pm with 50sl
+        if NiftySellCall_Tue_1520Pm_50Sl or Override == '7':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'52',
                      'StopLossOrderPlacePercent':'92','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"8NF-SC2-TH-1520-50"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break  
-        
+            break
 
-        #Sell Sensex straddle every Monday @930 with 100sl
-        if SensexStraddle_Fri_930Am_50Sl or Override == '63': 
+        #Sell Sensex straddle every Friday @930 with 50sl
+        if SensexStraddle_Fri_930Am_50Sl or Override == '63':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'51',
                      'StopLossOrderPlacePercent':'75','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-FR-930-50"}}#,
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell Sensex straddle every Tuesday @1020 with 90sl
-        if SensexStraddle_Mon_1020Am_50Sl or Override == '64': 
+        #Sell Sensex straddle every Monday @1020 with 50sl
+        if SensexStraddle_Mon_1020Am_50Sl or Override == '64':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'51',
                      'StopLossOrderPlacePercent':'75','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-MO-102-50"}}#,
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell Sensex straddle every Monday @930 with 100sl
-        if SensexStraddle_Fri_930Am_150Sl or Override == '18': 
+        #Sell Sensex straddle every Friday @930 with 150sl
+        if SensexStraddle_Fri_930Am_150Sl or Override == '18':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'151',
                      'StopLossOrderPlacePercent':'175','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-FR-930-150"}}#,
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell Sensex straddle every Tuesday @1020 with 90sl
-        if SensexStraddle_Mon_1020Am_90Sl or Override == '19': 
+        #Sell Sensex straddle every Monday @1020 with 90sl
+        if SensexStraddle_Mon_1020Am_90Sl or Override == '19':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'91',
                      'StopLossOrderPlacePercent':'105','CallStrikeRequired':'True','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"9SX-STR-MO-930-150"}}#,
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell Sensex Call every Friday @1520pm with 25sl
-        if SensexSellCall_Thu_1520Pm_25Sl or Override == '20': 
+        #Sell Sensex Call every Thursday @1520pm with 25sl
+        if SensexSellCall_Thu_1520Pm_25Sl or Override == '20':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'26',
                      'StopLossOrderPlacePercent':'50','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"10SX-SC2-FR-1520-25"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break  
+            break
 
-        #Sell N Put every Mon @1000 with 100sl
-        if AngelNararushNiftySellPut_Mon_1000Am_100Sl or Override == '12': 
+        #Sell Nifty Put every Mon @1000 with 100sl (Angel nararush)
+        if AngelNararushNiftySellPut_Mon_1000Am_100Sl or Override == '12':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
                      'StopLossOrderPlacePercent':'152','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"3"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell N Call every Wed @1000 with 100sl
-        if AngelNararushNiftySellCall_Wed_1000Am_100Sl or Override == '14': 
+        #Sell Nifty Call every Wed @1000 with 100sl (Angel nararush)
+        if AngelNararushNiftySellCall_Wed_1000Am_100Sl or Override == '14':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '65', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
                      'StopLossOrderPlacePercent':'152','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"1"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
-        
-        
-        #Sell Sensex Call every Wed @1000 with 100sl
-        if AngelNararushSensexSellCall_Wed_1000Am_25Sl or Override == '61': 
+
+        #Sell Sensex Call every Wed @1000 with 25sl (Angel nararush)
+        if AngelNararushSensexSellCall_Wed_1000Am_25Sl or Override == '66':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'27',
                      'StopLossOrderPlacePercent':'38','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"1"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Sell Sensex Put every Fri @1000 with 100sl
-        if AngelNararushSensexSellPut_Tue_1000Am_75Sl or Override == '62': 
+        #Sell Sensex Put every Tue @1000 with 75sl (Angel nararush)
+        if AngelNararushSensexSellPut_Tue_1000Am_75Sl or Override == '62':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'BFO', 'Tradingsymbol': 'SENSEX', 'Quantity': '20', 'Variety': 'NORMAL', 'Ordertype': 'MARKET', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'3','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'77',
                      'StopLossOrderPlacePercent':'102','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"3"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        ######################################################################################################################################################################################################################################################
-        #testing purpose
-        #Place Finifty order during active market hour for testing with GTT order set for Kite
-        if  Override == '99':
+        # --- Testing overrides ---
+        #Place Finnifty order during active market hour for testing (Kite)
+        if Override == '99':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '65', 'Variety': 'REGULAR', 'Ordertype': 'MARKET', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 0.0,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
-                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}    
-            one_shot_flag == False
+                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #testing purpose
-        #Place Finifty order post market hour for testing with GTT order set for Kite
-        if  Override == '98':
+        #Place Finnifty order post market hour for testing (Kite AMO)
+        if Override == '98':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'FINNIFTY', 'Quantity': '65', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 350,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
-                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}    
-            one_shot_flag == False
+                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"12FN-SC-MACD-WE-65"}}
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Place BankNifty order POST market hour for testing with GTT order set for Kite for narayana angel account
-        if Override == '97': 
+        #Place BankNifty AMO for narayana angel account
+        if Override == '97':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '30', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 200,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'102',
                      'StopLossOrderPlacePercent':'152','CallStrikeRequired':'False','PutStrikeRequired':'True','Hedge':'False',"OrderTag":"","User":"nararush","TimePeriod":"3"}}
-            one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Buy BankNifty Call post market hours for ekansh angel account
-        if  Override == '96': #variety,ORDERTYPE,PRICE
+        #Buy BankNifty Call AMO for ekansh angel account
+        if Override == '96':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'BANKNIFTY', 'Quantity': '30', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'CARRYFORWARD', 'Validity': 'DAY', 'Price': 297,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ANGEL','Netposition':'','OptionExpiryDay':'2','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'999',
                      'StopLossOrderPlacePercent':'152','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'MonthlyCall',"OrderTag":"7BN-LC1-FM-930-NOSL","TimePeriod":"6","User":"ekansh"}}
-            #one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
 
-        #Buy NCDEX order post market hours for ekansh using existing format
-        if  Override == 'NCDEX': 
+        #Buy NCDEX order AMO for ekansh angel account
+        if Override == 'NCDEX':
             OrderDetails = {'NCDEX':{"Tradetype": "BUY", "Exchange": "NCDEX", "Tradingsymbol": "CASTOR20DEC2023", "Quantity": "1*5", "Variety": "AMO", "Ordertype": "LIMIT", "Product": "CARRYFORWARD",
                              "Validity": "DAY", "Price": 5930, "Symboltoken":"CASTOR20DEC2023", "Squareoff":"", "Stoploss":"", "Broker":"ANGEL"}}
-            #one_shot_flag == False
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
-            break  
+            break
 
-        #testing purpose
-        #Place Nifty order post market hour for testing with GTT order set for Kite
-        if  Override == '95':
+        #Place Nifty AMO for testing (Kite)
+        if Override == '95':
             OrderDetails = {'Straddle':{'Tradetype': 'SELL', 'Exchange': 'NFO', 'Tradingsymbol': 'NIFTY', 'Quantity': '75', 'Variety': 'AMO', 'Ordertype': 'LIMIT', 'Product': 'NRML', 'Validity': 'DAY', 'Price': 300,
                      'Symboltoken':'', 'Squareoff':'', 'Stoploss':'','Broker':'ZERODHA_OPTION','Netposition':'','OptionExpiryDay':'1','OptionContractStrikeFromATMPercent':'0','Trigger':'1','StopLossTriggerPercent':'65',
-                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"21BN-STR-TH-CFG"}}    
-            one_shot_flag == False
+                     'StopLossOrderPlacePercent':'95','CallStrikeRequired':'True','PutStrikeRequired':'False','Hedge':'False',"OrderTag":"21BN-STR-TH-CFG"}}
+            one_shot_flag = False
             Override = False
-            #print(OrderDetails['Straddle']['Tradingsymbol'])
             break
     LoopHashOrderRequest(OrderDetails)
-
-
-
-            
