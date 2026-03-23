@@ -1252,7 +1252,6 @@ class TestQuoteHandling:
             "useDynamicK": True,
             "kTable": V2.K_TABLE_STRADDLE,
             "strategyType": "straddle",
-            "ivShockPercent": 0.0,
         }
 
     def _make_mock_kite(self, spot=24000, ceBid=99, ceAsk=101, peBid=98, peAsk=102,
@@ -1341,13 +1340,14 @@ class TestQuoteHandling:
         """Quote older than QUOTE_STALE_SECONDS during market hours → fallback."""
         kite = self._make_mock_kite()
         ceKey = "NFO:NIFTY26MAR24000CE"
-        stale_time = datetime.now() - timedelta(seconds=V2.QUOTE_STALE_SECONDS + 30)
-        kite.quote.return_value[ceKey]["last_trade_time"] = stale_time
 
         config = self._make_dynamic_config()
         # Patch datetime.now to be during market hours (11:00)
+        # Compute stale_time relative to mock_now so the difference is always correct
         with patch("PlaceOptionsSystemsV2.datetime") as mock_dt:
-            mock_now = datetime.now().replace(hour=11, minute=0)
+            mock_now = datetime.now().replace(hour=11, minute=0, second=0, microsecond=0)
+            stale_time = mock_now - timedelta(seconds=V2.QUOTE_STALE_SECONDS + 30)
+            kite.quote.return_value[ceKey]["last_trade_time"] = stale_time
             mock_dt.now.return_value = mock_now
             mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
             kValue, meta = V2.resolveK(
@@ -1411,34 +1411,36 @@ class TestComputeDynamicK:
         return (V2.bsPrice(spot, spot, T, iv, "CE")
                 + V2.bsPrice(spot, spot, T, iv, "PE"))
 
-    def test_returns_both_k_values(self):
-        """Output contains kPremiumRisk, kSpotSensitivity, expectedMove, avgIV,
-        stress fields, and pnl breakdown."""
+    def test_returns_all_scenario_k_values(self):
+        """Output contains kForSizing, kBase, kStressMove, kStressVol, kBindingScenario,
+        kSpotSensitivity, expectedMove, avgIV, and pnl breakdown."""
         ce, pe = self._atm_greeks()
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
         assert r is not None
-        for key in ("kPremiumRisk", "kSpotSensitivity", "expectedMove", "avgIV",
-                    "posGamma", "posTheta", "posVega", "stressK_1_5x", "stressK_2x",
-                    "pnlBreakdown"):
+        for key in ("kForSizing", "kBase", "kStressMove", "kStressVol", "kCrash", "kBindingScenario",
+                    "kSpotSensitivity", "expectedMove", "avgIV",
+                    "posGamma", "posTheta", "posVega", "pnlBreakdown"):
             assert key in r, f"missing key: {key}"
-        for pnl_key in ("pnlDelta", "pnlGamma", "pnlVega", "pnlTheta", "totalPnlPerUnit"):
+        for pnl_key in ("pnlDelta", "pnlGamma", "pnlVega", "pnlTheta",
+                         "basePnl", "stressMovePnl", "stressVolPnl", "crashPnl"):
             assert pnl_key in r["pnlBreakdown"], f"missing pnl key: {pnl_key}"
 
     def test_atm_straddle_sanity(self):
-        """Typical NIFTY (spot=24000, IV=14%, DTE≈3): k in broad [0.10, 1.20]."""
+        """Typical NIFTY (spot=24000, IV=14%, DTE≈3): kForSizing in broad [0.10, 1.50]."""
         ce, pe = self._atm_greeks(T=3/365)
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 200, 65, "straddle")
         assert r is not None
-        assert 0.10 <= r["kPremiumRisk"] <= 1.20
+        assert 0.10 <= r["kForSizing"] <= 1.50
         assert r["kSpotSensitivity"] > 0
 
     def test_clamp_floor(self):
-        """Tiny risk → k clamped to K_FLOOR."""
+        """Tiny risk → all k scenarios clamped to K_FLOOR."""
         ce = {"delta": 0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
         pe = {"delta": -0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 500, 65, "straddle")
         assert r is not None
-        assert r["kPremiumRisk"] == V2.K_FLOOR
+        assert r["kForSizing"] == V2.K_FLOOR
+        assert r["kBase"] == V2.K_FLOOR
 
     def test_clamp_ceiling(self):
         """Huge risk → k clamped to K_CEILING."""
@@ -1446,10 +1448,10 @@ class TestComputeDynamicK:
         pe = {"delta": -0.5, "gamma": 1.0, "theta": -100, "vega": 500}
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 50, 65, "straddle")
         assert r is not None
-        assert r["kPremiumRisk"] == V2.K_CEILING
+        assert r["kForSizing"] == V2.K_CEILING
 
     def test_near_expiry_higher_than_far_expiry(self):
-        """DTE=1 k > DTE=5 k (more gamma risk per premium unit near expiry)."""
+        """DTE=1 kForSizing > DTE=5 kForSizing (more gamma risk per premium unit near expiry)."""
         spot, iv = 24000, 0.14
         ce1, pe1 = self._atm_greeks(T=1/365, iv=iv, spot=spot)
         ce5, pe5 = self._atm_greeks(T=5/365, iv=iv, spot=spot)
@@ -1458,47 +1460,72 @@ class TestComputeDynamicK:
 
         r1 = V2.computeDynamicK(ce1, pe1, iv, iv, spot, cp1, 65, "straddle")
         r5 = V2.computeDynamicK(ce5, pe5, iv, iv, spot, cp5, 65, "straddle")
-        assert r1["kPremiumRisk"] > r5["kPremiumRisk"]
+        assert r1["kForSizing"] > r5["kForSizing"]
 
-    def test_stress_pnl_magnitude_grows(self):
-        """Stress P&L magnitude ≥ base P&L magnitude for typical ATM straddle."""
+    def test_kForSizing_is_max_of_scenarios(self):
+        """kForSizing = max(kBase, kStressMove, kStressVol, kCrash) always holds."""
+        ce, pe = self._atm_greeks(T=3/365)
+        cp = self._atm_premiums(T=3/365)
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, cp, 65,
+                                "straddle", ivShockAbsolute=0.10)
+        assert r is not None
+        assert r["kForSizing"] == max(r["kBase"], r["kStressMove"], r["kStressVol"], r["kCrash"])
+        assert r["kBindingScenario"] in ("kBase", "kStressMove", "kStressVol", "kCrash")
+
+    def test_kStressMove_gte_kBase(self):
+        """Stress move k ≥ base k for typical ATM short straddle (gamma dominates)."""
         ce, pe = self._atm_greeks(T=3/365)
         cp = self._atm_premiums(T=3/365)
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, cp, 65, "straddle")
         assert r is not None
-        base = abs(r["pnlBreakdown"]["totalPnlPerUnit"])
-        # Stress k values should be present and bounded
-        assert V2.K_FLOOR <= r["stressK_1_5x"] <= V2.K_CEILING
-        assert V2.K_FLOOR <= r["stressK_2x"] <= V2.K_CEILING
+        assert r["kStressMove"] >= r["kBase"]
 
-    def test_zero_iv_shock_zero_vega_contribution(self):
-        """ivShockPercent=0 → vega contribution is exactly zero."""
+    def test_zero_iv_shock_kStressVol_equals_kBase(self):
+        """ivShockAbsolute=0 → kStressVol equals kBase, kCrash equals kStressMove."""
         ce, pe = self._atm_greeks()
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
-                                "straddle", ivShockPercent=0.0)
+                                "straddle", ivShockAbsolute=0.0)
         assert r["pnlBreakdown"]["pnlVega"] == 0.0
+        assert r["kStressVol"] == r["kBase"]
+        assert r["kCrash"] == r["kStressMove"]
 
-    def test_positive_iv_shock_hurts_short_straddle(self):
-        """Positive IV shock → negative vega P&L for short straddle (short vega)."""
+    def test_positive_iv_shock_increases_kStressVol(self):
+        """Positive IV shock → kStressVol > kBase for short straddle (short vega)."""
         ce, pe = self._atm_greeks()
-        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
-                                "straddle", ivShockPercent=10.0)
-        # Short straddle has negative posVega → posVega * deltaSigma < 0
-        assert r["pnlBreakdown"]["pnlVega"] < 0
+        r0 = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
+                                 "straddle", ivShockAbsolute=0.0)
+        r10 = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
+                                  "straddle", ivShockAbsolute=0.10)
+        # Short straddle has negative posVega → IV shock makes stressVol worse
+        assert r10["pnlBreakdown"]["pnlVega"] < 0
+        assert r10["kStressVol"] >= r0["kBase"]
 
     def test_delta_neutral_straddle(self):
-        """ATM straddle: combined delta near zero, gamma/theta dominate."""
+        """ATM straddle: combined delta near zero, gamma dominates base P&L."""
         ce, pe = self._atm_greeks()
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
         # Position delta should be near zero (ATM CE delta ~+0.5 + PE delta ~-0.5)
         # pnlDelta should be small compared to pnlGamma
         assert abs(r["pnlBreakdown"]["pnlDelta"]) < abs(r["pnlBreakdown"]["pnlGamma"])
 
+    def test_kCrash_gte_kStressMove_and_kStressVol(self):
+        """kCrash (combined stress) ≥ both individual stress scenarios."""
+        ce, pe = self._atm_greeks(T=3/365)
+        cp = self._atm_premiums(T=3/365)
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, cp, 65,
+                                "straddle", ivShockAbsolute=0.10)
+        assert r is not None
+        assert r["kCrash"] >= r["kStressMove"]
+        assert r["kCrash"] >= r["kStressVol"]
+
     def test_uses_absolute_pnl_for_k(self):
-        """Returned k values are always positive (uses abs())."""
+        """All k scenario values are always positive (uses abs())."""
         ce, pe = self._atm_greeks()
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
-        assert r["kPremiumRisk"] > 0
+        assert r["kForSizing"] > 0
+        assert r["kBase"] > 0
+        assert r["kStressMove"] > 0
+        assert r["kCrash"] >= V2.K_FLOOR
         assert r["kSpotSensitivity"] > 0
 
     def test_expected_move_uses_avg_iv(self):
@@ -1549,7 +1576,6 @@ class TestResolveK:
             "useDynamicK": True,
             "kTable": V2.K_TABLE_STRADDLE,
             "strategyType": "straddle",
-            "ivShockPercent": 0.0,
         }
 
     def _make_clean_kite(self, spot=24000, cePremium=100, pePremium=100):
@@ -1606,10 +1632,14 @@ class TestResolveK:
         assert meta["source"] == "dynamic"
         assert isinstance(kValue, float)
         assert V2.K_FLOOR <= kValue <= V2.K_CEILING
+        # kValue should be max of scenarios
+        assert kValue == max(meta["kBase"], meta["kStressMove"], meta["kStressVol"], meta["kCrash"])
         # Metadata should be fully populated
-        for key in ("kPremiumRisk", "kSpotSensitivity", "staticK", "avgIV",
+        for key in ("kForSizing", "kBase", "kStressMove", "kStressVol", "kCrash", "kBindingScenario",
+                    "kSpotSensitivity", "staticK", "avgIV",
                     "expectedMove", "ceIV", "peIV", "cePremiumUsed", "pePremiumUsed",
-                    "cePremiumSource", "pePremiumSource", "timeToExpiryYears"):
+                    "cePremiumSource", "pePremiumSource", "timeToExpiryYears",
+                    "ivShockApplied", "ivShockBase", "vixAddon", "intradayAddon"):
             assert key in meta, f"missing metadata key: {key}"
 
     def test_fallback_when_spot_fetch_fails(self):
@@ -1678,12 +1708,23 @@ class TestResolveK:
         assert meta["source"] == "static_fallback"
         assert "bound" in meta["fallbackReason"].lower()
 
-    def test_passes_correct_iv_shock_to_compute(self):
-        """ivShockPercent from config flows through to computeDynamicK."""
+    def test_iv_shock_derived_from_sizing_dte(self):
+        """IV shock is looked up from IV_SHOCK_TABLE based on sizingDte, not config."""
         kite = self._make_clean_kite()
         config = self._make_dynamic_config()
-        config["ivShockPercent"] = 15.0
 
+        # sizingDte=1 → should use 15 vol points = 0.15 decimal
+        with patch.object(V2, "computeDynamicK", wraps=V2.computeDynamicK) as mock_cdk:
+            kValue, meta = V2.resolveK(
+                config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+                "NFO", "NIFTY", 1, 100, 100, 65, date.today() + timedelta(days=3),
+            )
+            if meta["source"] == "dynamic":
+                call_kwargs = mock_cdk.call_args
+                ivShock = call_kwargs[1].get("ivShockAbsolute", call_kwargs[0][8] if len(call_kwargs[0]) > 8 else None)
+                assert abs(ivShock - 0.15) < 1e-6, f"Expected 0.15 for DTE=1, got {ivShock}"
+
+        # sizingDte=2 → should use 12 vol points = 0.12 decimal
         with patch.object(V2, "computeDynamicK", wraps=V2.computeDynamicK) as mock_cdk:
             kValue, meta = V2.resolveK(
                 config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
@@ -1691,8 +1732,8 @@ class TestResolveK:
             )
             if meta["source"] == "dynamic":
                 call_kwargs = mock_cdk.call_args
-                assert call_kwargs[1].get("ivShockPercent") == 15.0 or \
-                       (call_kwargs[0] and len(call_kwargs[0]) > 8 and call_kwargs[0][8] == 15.0)
+                ivShock = call_kwargs[1].get("ivShockAbsolute", call_kwargs[0][8] if len(call_kwargs[0]) > 8 else None)
+                assert abs(ivShock - 0.12) < 1e-6, f"Expected 0.12 for DTE=2, got {ivShock}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1712,7 +1753,12 @@ class TestDynamicKLogging:
 
         kMetadata = {
             "source": "dynamic",
-            "kPremiumRisk": 0.55,
+            "kForSizing": 0.65,
+            "kBase": 0.42,
+            "kStressMove": 0.65,
+            "kStressVol": 0.55,
+            "kCrash": 0.72,
+            "kBindingScenario": "kCrash",
             "kSpotSensitivity": 0.42,
             "staticK": 0.70,
             "avgIV": 0.14,
@@ -1720,8 +1766,12 @@ class TestDynamicKLogging:
             "posGamma": -0.004,
             "posTheta": 12.5,
             "posVega": -850.0,
-            "stressK_1_5x": 0.65,
-            "stressK_2x": 0.78,
+            "ivShockApplied": 16.0,
+            "ivShockBase": 12.0,
+            "vixLevel": 22.5,
+            "vixAddon": 4.0,
+            "intradayMovePct": 0.3,
+            "intradayAddon": 0.0,
             "cePremiumUsed": 100.5,
             "pePremiumUsed": 99.5,
             "cePremiumSource": "mid",
@@ -1739,7 +1789,7 @@ class TestDynamicKLogging:
                       "finalLots": 5}
 
         try:
-            V2.logEntry("N_STD_4D_30SL_I", config, 3, 0.55, 100.5, 99.5,
+            V2.logEntry("N_STD_4D_30SL_I", config, 3, 0.65, 100.5, 99.5,
                         sizeResult, date.today(), "CE_SYM", "PE_SYM",
                         skipped=False, skipReason=None, kMetadata=kMetadata)
 
@@ -1748,7 +1798,12 @@ class TestDynamicKLogging:
                 row = next(reader)
 
             assert row["kSource"] == "dynamic"
-            assert row["kPremiumRisk"] == "0.55"
+            assert row["kForSizing"] == "0.65"
+            assert row["kBase"] == "0.42"
+            assert row["kStressMove"] == "0.65"
+            assert row["kStressVol"] == "0.55"
+            assert row["kCrash"] == "0.72"
+            assert row["kBindingScenario"] == "kCrash"
             assert row["kSpotSensitivity"] == "0.42"
             assert row["avgIV"] == "0.14"
             assert row["ceIV"] == "0.138"

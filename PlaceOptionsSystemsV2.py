@@ -94,7 +94,7 @@ K_TABLE_SINGLE = [
 
 # Dynamic K constants
 K_FLOOR = 0.20              # min k (most aggressive sizing allowed)
-K_CEILING = 1.50            # max k (most conservative sizing allowed)
+K_CEILING = 5.00            # data-quality guard (not a risk limit)
 RISK_FREE_RATE = 0.07       # ~7% annualised risk-free rate for Indian market
 IV_SOLVER_MIN = 0.01        # IV solver lower bound (1% annualised)
 IV_SOLVER_MAX = 5.0         # IV solver upper bound (500% annualised)
@@ -102,6 +102,44 @@ QUOTE_STALE_SECONDS = 60    # quote older than this during market hours → stal
 IV_SPREAD_GATE = 0.50       # reject if |ceIV - peIV| / avgIV > this (50%)
 BID_ASK_SPREAD_GATE = 0.30  # reject if spread > 30% of mid-price
 MIN_PREMIUM_INR = 0.50      # reject near-zero dust premiums
+
+# IV shock: scenario-based sizing uses max(kBase, kStressMove, kStressVol, kCrash).
+# The IV shock is a policy-driven vol stress assumption, not a prediction or forecast.
+# It feeds kStressVol (1σ move + shock) and kCrash (1.5× move + shock).
+# Formula: ivShock = baseShockByDte + vixAdd + realizedMoveAdd, capped.
+# Future: + termAdd + eventAdd (zero for now, framework accommodates them).
+
+# Base IV shock by DTE (vol points). Shorter DTE = more fragile to IV spikes.
+IV_SHOCK_TABLE = [
+    (3, 7, 10),    # 3-4-5-6-7 DTE → 10 vol points
+    (2, 2, 12),    # 2 DTE → 12 vol points
+    (1, 1, 15),    # 1 DTE → 15 vol points
+]
+
+# VIX add-on: extra vol points based on India VIX level (additive, not multiplicative).
+VIX_ADDON_TABLE = [
+    (0,    14, 0),     # calm   → no add-on
+    (14,   18, 2),     # normal → +2 vol points
+    (18,   24, 4),     # elevated → +4 vol points
+    (24,   30, 6),     # stressed → +6 vol points
+    (30, 9999, 8),     # panic → +8 vol points
+]
+VIX_LTP_KEY = "NSE:INDIA VIX"
+
+# Realized intraday move add-on: extra vol points based on how much spot
+# has already moved today. Catches "market is crashing right now" scenarios.
+INTRADAY_MOVE_ADDON_TABLE = [
+    (0.0,  0.5,  0),    # flat day → no add-on
+    (0.5,  1.0,  2),    # mild move → +2 vol points
+    (1.0,  1.5,  4),    # significant → +4 vol points
+    (1.5, 9999,  6),    # extreme → +6 vol points
+]
+
+# Cap on total IV shock to prevent runaway (vol points)
+IV_SHOCK_CAP_VP = 30    # max 30 vol points = 0.30 decimal
+
+# Stress move multiplier for kStressMove scenario
+STRESS_MOVE_MULTIPLIER = 1.5
 
 STATE_FILE_PATH = Path(WorkDirectory) / "v2_state.json"
 ENTRY_LOG_PATH = Path(WorkDirectory) / "v2_entry_log.csv"
@@ -114,6 +152,70 @@ def lookupK(dte, kTable):
         if minDte <= dte <= maxDte:
             return kValue
     raise ValueError(f"No k value found for DTE={dte}. Must be between 1 and 7.")
+
+
+def lookupIvShock(sizingDte):
+    """Return the IV shock in absolute vol points for a given sizing DTE.
+
+    Uses IV_SHOCK_TABLE. Returns the shock as a decimal (e.g. 0.10 for 10 vol points).
+    Falls back to the widest bucket if DTE is out of range.
+    """
+    for minDte, maxDte, shockPoints in IV_SHOCK_TABLE:
+        if minDte <= sizingDte <= maxDte:
+            return shockPoints / 100.0  # convert vol points to decimal
+    # Fallback: use the most conservative (highest) shock
+    return max(s for _, _, s in IV_SHOCK_TABLE) / 100.0
+
+
+def getVixAddon(kite):
+    """Fetch India VIX and return additive IV shock vol points.
+
+    Returns:
+        (addonDecimal, vixLevel) where addonDecimal is extra shock in decimal
+        (e.g. 0.06 for +6 vol points), and vixLevel is the raw VIX value.
+        Returns (0.0, None) on failure (fail-safe: no add-on).
+    """
+    try:
+        vixData = kite.ltp([VIX_LTP_KEY])
+        vix = float(vixData[VIX_LTP_KEY]["last_price"])
+    except Exception:
+        return (0.0, None)  # fail-safe: no add-on
+
+    for lo, hi, addon in VIX_ADDON_TABLE:
+        if lo <= vix < hi:
+            return (addon / 100.0, round(vix, 2))
+    return (max(a for _, _, a in VIX_ADDON_TABLE) / 100.0, round(vix, 2))
+
+
+def getIntradayMoveAddon(kite, underlying):
+    """Compute extra IV shock vol points based on how much spot has moved today.
+
+    Uses the OHLC data from kite.ohlc() to get today's open and current price.
+
+    Returns:
+        (addonDecimal, movePct) where addonDecimal is extra shock in decimal
+        (e.g. 0.04 for +4 vol points), and movePct is the realized move as %.
+        Returns (0.0, None) on failure.
+    """
+    try:
+        spotKey = UNDERLYING_LTP_KEY[underlying]
+        ohlcData = kite.ohlc([spotKey])
+        entry = ohlcData[spotKey]
+        openPrice = float(entry["ohlc"]["open"])
+        lastPrice = float(entry["last_price"])
+    except Exception:
+        return (0.0, None)  # fail-safe: no add-on
+
+    if openPrice <= 0:
+        return (0.0, None)
+
+    movePct = abs(lastPrice - openPrice) / openPrice * 100.0  # as percentage
+
+    for lo, hi, addon in INTRADAY_MOVE_ADDON_TABLE:
+        if lo <= movePct < hi:
+            return (addon / 100.0, round(movePct, 2))
+    # Above all thresholds
+    return (max(a for _, _, a in INTRADAY_MOVE_ADDON_TABLE) / 100.0, round(movePct, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -324,17 +426,25 @@ def lookupStrikeFromInstruments(tradingsymbol, exchange, kite):
 # ---------------------------------------------------------------------------
 
 def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
-                    lotSize, strategyType="straddle", ivShockPercent=0.0):
-    """Compute dynamic k from live Greeks using a one-day Taylor approximation.
+                    lotSize, strategyType="straddle", ivShockAbsolute=0.0):
+    """Compute dynamic k using scenario-based sizing: max(kBase, kStressMove, kStressVol, kCrash).
+
+    Four scenarios, sized off the worst one:
+        kBase:       1σ expected move, no IV shock  (base Greeks risk)
+        kStressMove: 1.5× expected move, no IV shock (fat-tail move risk)
+        kStressVol:  1σ expected move, with IV shock  (policy-driven vol stress)
+        kCrash:      1.5× expected move + IV shock   (combined crash scenario)
+
+    kForSizing = max(kBase, kStressMove, kStressVol, kCrash)
+
+    This is scenario-based, not forecast-based: each scenario asks "what if this
+    happens?" and sizing uses the worst answer. No scenario can hide behind
+    another's offsetting term (e.g. theta gains can't mask gamma losses).
 
     NOTE: This is a one-day Taylor approximation (delta + gamma + vega + theta),
     not a full repricing engine. Near expiry, large moves can make the quadratic
     gamma term less accurate. The approximation is structurally correct but has
     limitations for very short DTE + large moves.
-
-    Computes two k variants:
-        kPremiumRisk:     |pnlPerUnit| / combinedPremium   (used for sizing)
-        kSpotSensitivity: |pnlPerUnit| / expectedMove      (logged for insight)
 
     Convention notes (intentional mixed convention):
         - Expected move uses 252 trading days (actual trading vol, standard for options risk)
@@ -349,11 +459,13 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         lotSize: contract lot size. Not used in current k computation (per-unit P&L
             makes lot size cancel out), retained for API symmetry / future extensions.
         strategyType: "straddle" or "single"
-        ivShockPercent: IV increase as % of current IV (0 = no shock)
+        ivShockAbsolute: IV shock in absolute decimal (e.g. 0.10 = 10 vol points).
+            Built from additive components in resolveK.
 
     Returns dict or None if inputs invalid:
-        kPremiumRisk, kSpotSensitivity, expectedMove, avgIV,
-        posGamma, posTheta, posVega, stressK_1_5x, stressK_2x, pnlBreakdown
+        kForSizing (the max), kBase, kStressMove, kStressVol, kCrash, kBindingScenario,
+        kSpotSensitivity, expectedMove, avgIV, posGamma, posTheta, posVega,
+        pnlBreakdown (for base scenario)
     """
     if combinedPremium <= 0 or spot <= 0:
         return None
@@ -378,47 +490,65 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         posTheta = -greeks["theta"]
         posVega = -greeks["vega"]
 
-    deltaSigma = avgIV * (ivShockPercent / 100.0)  # absolute decimal
+    deltaSigma = ivShockAbsolute  # absolute decimal (e.g. 0.10 = 10 vol points)
 
-    def _computePnl(deltaS):
-        """Taylor expansion P&L per unit for a given spot move."""
-        pnl = (posDelta * deltaS
-               + 0.5 * posGamma * deltaS * deltaS
-               + posVega * deltaSigma
-               + posTheta * 1.0)  # theta already per calendar day
-        return pnl
+    def _pnl(deltaS, volShock):
+        """Taylor expansion P&L per unit for a given spot move and vol shock."""
+        return (posDelta * deltaS
+                + 0.5 * posGamma * deltaS * deltaS
+                + posVega * volShock
+                + posTheta * 1.0)  # theta already per calendar day
 
-    # Base scenario
-    basePnl = _computePnl(expectedMove)
-    absPnlBase = abs(basePnl)
+    def _toK(pnl):
+        """Convert absolute P&L to k, clamped to [K_FLOOR, K_CEILING]."""
+        return max(K_FLOOR, min(K_CEILING, abs(pnl) / combinedPremium))
 
-    kPremiumRisk = absPnlBase / combinedPremium
-    kPremiumRisk = max(K_FLOOR, min(K_CEILING, kPremiumRisk))
+    # ── Three independent scenarios ──
+    # Scenario 1: kBase — normal 1σ move, no IV shock
+    basePnl = _pnl(expectedMove, 0.0)
+    kBase = _toK(basePnl)
 
-    kSpotSensitivity = absPnlBase / abs(expectedMove) if abs(expectedMove) > 1e-10 else 0.0
+    # Scenario 2: kStressMove — larger move (1.5×), no IV shock
+    stressMovePnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, 0.0)
+    kStressMove = _toK(stressMovePnl)
 
-    # Stress scenarios (logged only, not used for sizing)
-    stressPnl_1_5x = abs(_computePnl(expectedMove * 1.5))
-    stressPnl_2x = abs(_computePnl(expectedMove * 2.0))
-    stressK_1_5x = max(K_FLOOR, min(K_CEILING, stressPnl_1_5x / combinedPremium))
-    stressK_2x = max(K_FLOOR, min(K_CEILING, stressPnl_2x / combinedPremium))
+    # Scenario 3: kStressVol — normal move, with policy-driven vol stress
+    stressVolPnl = _pnl(expectedMove, deltaSigma)
+    kStressVol = _toK(stressVolPnl)
+
+    # Scenario 4: kCrash — large move (1.5×) + IV shock combined (true "bad day")
+    crashPnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, deltaSigma)
+    kCrash = _toK(crashPnl)
+
+    # Size off the worst scenario
+    scenarios = {"kBase": kBase, "kStressMove": kStressMove, "kStressVol": kStressVol, "kCrash": kCrash}
+    kForSizing = max(scenarios.values())
+    kBindingScenario = max(scenarios, key=scenarios.get)
+
+    kSpotSensitivity = abs(basePnl) / abs(expectedMove) if abs(expectedMove) > 1e-10 else 0.0
 
     return {
-        "kPremiumRisk": round(kPremiumRisk, 6),
+        "kForSizing": round(kForSizing, 6),
+        "kBase": round(kBase, 6),
+        "kStressMove": round(kStressMove, 6),
+        "kStressVol": round(kStressVol, 6),
+        "kCrash": round(kCrash, 6),
+        "kBindingScenario": kBindingScenario,
         "kSpotSensitivity": round(kSpotSensitivity, 6),
         "expectedMove": round(expectedMove, 2),
         "avgIV": round(avgIV, 6),
         "posGamma": round(posGamma, 8),
         "posTheta": round(posTheta, 4),
         "posVega": round(posVega, 4),
-        "stressK_1_5x": round(stressK_1_5x, 6),
-        "stressK_2x": round(stressK_2x, 6),
         "pnlBreakdown": {
             "pnlDelta": round(posDelta * expectedMove, 4),
             "pnlGamma": round(0.5 * posGamma * expectedMove * expectedMove, 4),
             "pnlVega": round(posVega * deltaSigma, 4),
             "pnlTheta": round(posTheta * 1.0, 4),
-            "totalPnlPerUnit": round(basePnl, 4),
+            "basePnl": round(basePnl, 4),
+            "stressMovePnl": round(stressMovePnl, 4),
+            "stressVolPnl": round(stressVolPnl, 4),
+            "crashPnl": round(crashPnl, 4),
         },
     }
 
@@ -428,7 +558,7 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
     """Resolve k value: dynamic if enabled and quotes are clean, static fallback otherwise.
 
     Args:
-        config: strategy config dict (must have kTable, may have useDynamicK, ivShockPercent)
+        config: strategy config dict (must have kTable, may have useDynamicK)
         kite: Kite client instance
         ceSymbol, peSymbol: contract trading symbols
         exchange: "NFO" or "BFO"
@@ -451,7 +581,21 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
 
     # Dynamic K path
     staticK = lookupK(sizingDte, config["kTable"])  # always compute for fallback + logging
-    ivShockPercent = config.get("ivShockPercent", 0.0)
+
+    # IV shock: additive components, capped. Feeds kStressVol and kCrash scenarios.
+    # ivShock = baseShockByDte + vixAdd + realizedMoveAdd (+ termAdd + eventAdd future)
+    baseIvShock = lookupIvShock(sizingDte)
+    vixAddon, vixLevel = getVixAddon(kite)
+    intradayAddon, intradayMovePct = getIntradayMoveAddon(kite, underlying)
+    ivShockRaw = baseIvShock + vixAddon + intradayAddon
+    ivShockCap = IV_SHOCK_CAP_VP / 100.0
+    ivShockAbsolute = min(ivShockRaw, ivShockCap)
+
+    print(f"{tag}[DYNAMIC-K] IV shock build-up: base={baseIvShock*100:.0f}vp "
+          f"+ VIX={vixAddon*100:.0f}vp (VIX={vixLevel}) "
+          f"+ intraday={intradayAddon*100:.0f}vp (move={intradayMovePct}%) "
+          f"= {ivShockRaw*100:.1f}vp"
+          f"{f' (CAPPED to {ivShockCap*100:.0f}vp)' if ivShockRaw > ivShockCap else ''}")
 
     def _fallback(reason):
         print(f"{tag}[DYNAMIC-K] Falling back to static K={staticK}: {reason}")
@@ -585,13 +729,13 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         ceIV=ceIV, peIV=peIV,
         spot=spot, combinedPremium=combinedPremium,
         lotSize=lotSize, strategyType=strategyType,
-        ivShockPercent=ivShockPercent,
+        ivShockAbsolute=ivShockAbsolute,
     )
 
     if result is None:
         return _fallback("computeDynamicK returned None")
 
-    kValue = result["kPremiumRisk"]
+    kValue = result["kForSizing"]
     metadata = {
         "source": "dynamic",
         "staticK": staticK,
@@ -608,11 +752,19 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         "peQuoteTimestamp": str(peQuoteTimestamp) if hasattr(peQuoteTimestamp, 'hour') else None,
         "ceBid": ceBid, "ceAsk": ceAsk, "ceSpreadPct": round(ceSpreadPct, 2) if ceSpreadPct is not None else None,
         "peBid": peBid, "peAsk": peAsk, "peSpreadPct": round(peSpreadPct, 2) if peSpreadPct is not None else None,
+        "ivShockApplied": round(ivShockAbsolute * 100, 1),  # total vol points applied
+        "ivShockBase": round(baseIvShock * 100, 1),
+        "vixLevel": vixLevel,
+        "vixAddon": round(vixAddon * 100, 1),
+        "intradayMovePct": intradayMovePct,
+        "intradayAddon": round(intradayAddon * 100, 1),
     }
 
-    print(f"{tag}[DYNAMIC-K] kPremiumRisk={kValue:.4f} kSpotSens={result['kSpotSensitivity']:.4f} "
+    print(f"{tag}[DYNAMIC-K] kForSizing={kValue:.4f} (binding={result['kBindingScenario']}) "
+          f"kBase={result['kBase']:.4f} kStressMove={result['kStressMove']:.4f} "
+          f"kStressVol={result['kStressVol']:.4f} kCrash={result['kCrash']:.4f} "
           f"staticK={staticK:.2f} avgIV={result['avgIV']:.4f} expMove={result['expectedMove']:.2f} "
-          f"stressK(1.5x)={result['stressK_1_5x']:.4f} stressK(2x)={result['stressK_2x']:.4f}")
+          f"ivShock={ivShockAbsolute*100:.1f}vp")
 
     return (kValue, metadata)
 
@@ -671,7 +823,6 @@ STRATEGY_CONFIGS = {
         "exitTime": "12:30",
         "orderTag": "V2-N-STD-4D-30SL",
         "useDynamicK": False,      # flip to True to enable Greeks-based dynamic k
-        "ivShockPercent": 0.0,     # IV shock for stress k (% of current IV)
     },
     "N_STD_2D_55SL_I": {
         "underlying": "NIFTY",
@@ -688,7 +839,6 @@ STRATEGY_CONFIGS = {
         "exitTime": "15:29",
         "orderTag": "V2-N-STD-2D-55SL",
         "useDynamicK": False,
-        "ivShockPercent": 0.0,
     },
     "SX_STD_4D_20SL_I": {
         "underlying": "SENSEX",
@@ -704,7 +854,6 @@ STRATEGY_CONFIGS = {
         "exitTime": "12:30",
         "orderTag": "V2-SX-STD-4D-20SL",
         "useDynamicK": False,
-        "ivShockPercent": 0.0,
     },
     "SX_STD_2D_100SL_I": {
         "underlying": "SENSEX",
@@ -721,7 +870,6 @@ STRATEGY_CONFIGS = {
         "exitTime": "15:29",
         "orderTag": "V2-SX-STD-2D-100SL",
         "useDynamicK": False,
-        "ivShockPercent": 0.0,
     },
 }
 
@@ -1451,13 +1599,20 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         print(f"{tag}  K value:         {kValue}")
         print(f"{tag}  K source:        {kMetadata.get('source', 'unknown')}")
         if kMetadata.get("source") == "dynamic":
-            print(f"{tag}  K (premium):     {kMetadata.get('kPremiumRisk', 'N/A')}")
+            print(f"{tag}  K scenarios:     kBase={kMetadata.get('kBase', 'N/A')} | "
+                  f"kStressMove={kMetadata.get('kStressMove', 'N/A')} | "
+                  f"kStressVol={kMetadata.get('kStressVol', 'N/A')} | "
+                  f"kCrash={kMetadata.get('kCrash', 'N/A')}")
+            print(f"{tag}  Binding:         {kMetadata.get('kBindingScenario', 'N/A')}")
             print(f"{tag}  K (spot sens):   {kMetadata.get('kSpotSensitivity', 'N/A')}")
             print(f"{tag}  Static K ref:    {kMetadata.get('staticK', 'N/A')}")
             print(f"{tag}  Avg IV:          {kMetadata.get('avgIV', 'N/A')}")
             print(f"{tag}  Expected move:   {kMetadata.get('expectedMove', 'N/A')}")
-            print(f"{tag}  Stress K 1.5x:   {kMetadata.get('stressK_1_5x', 'N/A')}")
-            print(f"{tag}  Stress K 2x:     {kMetadata.get('stressK_2x', 'N/A')}")
+            print(f"{tag}  IV shock:        {kMetadata.get('ivShockApplied', 'N/A')}vp "
+                  f"(base={kMetadata.get('ivShockBase', 'N/A')} "
+                  f"+VIX={kMetadata.get('vixAddon', 'N/A')} "
+                  f"+move={kMetadata.get('intradayAddon', 'N/A')})")
+            print(f"{tag}  VIX:             {kMetadata.get('vixLevel', 'N/A')}")
             print(f"{tag}  CE IV:           {kMetadata.get('ceIV', 'N/A')}")
             print(f"{tag}  PE IV:           {kMetadata.get('peIV', 'N/A')}")
             print(f"{tag}  CE prem src:     {kMetadata.get('cePremiumSource', 'N/A')}")
@@ -1610,9 +1765,10 @@ ENTRY_LOG_FIELDS = [
     "finalLots", "selectedExpiry", "ceContract", "peContract", "skipped", "skipReason",
     "gttProtected", "positionIntegrity",
     # Dynamic K fields
-    "kSource", "kPremiumRisk", "kSpotSensitivity", "staticK",
+    "kSource", "kForSizing", "kBase", "kStressMove", "kStressVol", "kCrash", "kBindingScenario",
+    "kSpotSensitivity", "staticK",
     "avgIV", "expectedMove", "posGamma", "posTheta", "posVega",
-    "stressK_1_5x", "stressK_2x",
+    "ivShockApplied", "ivShockBase", "vixLevel", "vixAddon", "intradayMovePct", "intradayAddon",
     "cePremiumUsed", "pePremiumUsed", "cePremiumSource", "pePremiumSource",
     "ceIV", "peIV", "timeToExpiryYears", "quoteTimestamp",
     "ceBid", "ceAsk", "ceSpreadPct", "peBid", "peAsk", "peSpreadPct",
@@ -1655,7 +1811,12 @@ def logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
         "positionIntegrity": positionIntegrity,
         # Dynamic K fields
         "kSource": km.get("source", "static"),
-        "kPremiumRisk": km.get("kPremiumRisk", ""),
+        "kForSizing": km.get("kForSizing", ""),
+        "kBase": km.get("kBase", ""),
+        "kStressMove": km.get("kStressMove", ""),
+        "kStressVol": km.get("kStressVol", ""),
+        "kCrash": km.get("kCrash", ""),
+        "kBindingScenario": km.get("kBindingScenario", ""),
         "kSpotSensitivity": km.get("kSpotSensitivity", ""),
         "staticK": km.get("staticK", kValue),
         "avgIV": km.get("avgIV", ""),
@@ -1663,8 +1824,12 @@ def logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
         "posGamma": km.get("posGamma", ""),
         "posTheta": km.get("posTheta", ""),
         "posVega": km.get("posVega", ""),
-        "stressK_1_5x": km.get("stressK_1_5x", ""),
-        "stressK_2x": km.get("stressK_2x", ""),
+        "ivShockApplied": km.get("ivShockApplied", ""),
+        "ivShockBase": km.get("ivShockBase", ""),
+        "vixLevel": km.get("vixLevel", ""),
+        "vixAddon": km.get("vixAddon", ""),
+        "intradayMovePct": km.get("intradayMovePct", ""),
+        "intradayAddon": km.get("intradayAddon", ""),
         "cePremiumUsed": km.get("cePremiumUsed", ""),
         "pePremiumUsed": km.get("pePremiumUsed", ""),
         "cePremiumSource": km.get("cePremiumSource", ""),
