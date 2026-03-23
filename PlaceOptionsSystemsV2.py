@@ -837,7 +837,7 @@ STRATEGY_CONFIGS = {
         "entryTime": "09:30",
         "exitTime": "12:30",
         "orderTag": "V2-N-STD-4D-30SL",
-        "useDynamicK": False,      # flip to True to enable Greeks-based dynamic k
+        "useDynamicK": True,
     },
     "N_STD_2D_55SL_I": {
         "underlying": "NIFTY",
@@ -853,7 +853,7 @@ STRATEGY_CONFIGS = {
         "entryTime": "12:30",
         "exitTime": "15:29",
         "orderTag": "V2-N-STD-2D-55SL",
-        "useDynamicK": False,
+        "useDynamicK": True,
     },
     "SX_STD_4D_20SL_I": {
         "underlying": "SENSEX",
@@ -868,7 +868,7 @@ STRATEGY_CONFIGS = {
         "entryTime": "09:30",
         "exitTime": "12:30",
         "orderTag": "V2-SX-STD-4D-20SL",
-        "useDynamicK": False,
+        "useDynamicK": True,
     },
     "SX_STD_2D_100SL_I": {
         "underlying": "SENSEX",
@@ -884,7 +884,7 @@ STRATEGY_CONFIGS = {
         "entryTime": "12:30",
         "exitTime": "15:29",
         "orderTag": "V2-SX-STD-2D-100SL",
-        "useDynamicK": False,
+        "useDynamicK": True,
     },
 }
 
