@@ -1434,21 +1434,27 @@ class TestComputeDynamicK:
         assert r["kSpotSensitivity"] > 0
 
     def test_clamp_floor(self):
-        """Tiny risk → all k scenarios clamped to K_FLOOR."""
+        """Tiny risk → kForSizing clamped to K_FLOOR, raw scenarios preserved."""
         ce = {"delta": 0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
         pe = {"delta": -0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 500, 65, "straddle")
         assert r is not None
         assert r["kForSizing"] == V2.K_FLOOR
-        assert r["kBase"] == V2.K_FLOOR
+        assert r["kClamped"] is True
+        # Raw scenarios should be below floor (unclamped)
+        assert r["kBase"] < V2.K_FLOOR
+        assert r["kRaw"] < V2.K_FLOOR
 
     def test_clamp_ceiling(self):
-        """Huge risk → k clamped to K_CEILING."""
+        """Huge risk → kForSizing clamped to K_CEILING, raw value preserved."""
         ce = {"delta": 0.5, "gamma": 1.0, "theta": -100, "vega": 500}
         pe = {"delta": -0.5, "gamma": 1.0, "theta": -100, "vega": 500}
         r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 50, 65, "straddle")
         assert r is not None
         assert r["kForSizing"] == V2.K_CEILING
+        assert r["kClamped"] is True
+        # Raw value should be above ceiling (unclamped)
+        assert r["kRaw"] > V2.K_CEILING
 
     def test_near_expiry_higher_than_far_expiry(self):
         """DTE=1 kForSizing > DTE=5 kForSizing (more gamma risk per premium unit near expiry)."""

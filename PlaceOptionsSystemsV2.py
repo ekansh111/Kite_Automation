@@ -493,46 +493,59 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
     deltaSigma = ivShockAbsolute  # absolute decimal (e.g. 0.10 = 10 vol points)
 
     def _pnl(deltaS, volShock):
-        """Taylor expansion P&L per unit for a given spot move and vol shock."""
+        """Taylor expansion P&L per unit for a given spot move and vol shock.
+
+        Theta is included in every scenario (including stress scenarios) because
+        all are one-day horizons — even on a crash day, one day of time decay
+        still occurs. This is intentional, not an oversight.
+        """
         return (posDelta * deltaS
                 + 0.5 * posGamma * deltaS * deltaS
                 + posVega * volShock
                 + posTheta * 1.0)  # theta already per calendar day
 
-    def _toK(pnl):
-        """Convert absolute P&L to k, clamped to [K_FLOOR, K_CEILING]."""
-        return max(K_FLOOR, min(K_CEILING, abs(pnl) / combinedPremium))
+    def _rawK(pnl):
+        """Convert absolute P&L to k ratio (unclamped). Clamping happens once at the end."""
+        return abs(pnl) / combinedPremium
 
-    # ── Three independent scenarios ──
+    # ── Four independent scenarios (all computed as raw, unclamped values) ──
     # Scenario 1: kBase — normal 1σ move, no IV shock
     basePnl = _pnl(expectedMove, 0.0)
-    kBase = _toK(basePnl)
+    rawKBase = _rawK(basePnl)
 
     # Scenario 2: kStressMove — larger move (1.5×), no IV shock
     stressMovePnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, 0.0)
-    kStressMove = _toK(stressMovePnl)
+    rawKStressMove = _rawK(stressMovePnl)
 
     # Scenario 3: kStressVol — normal move, with policy-driven vol stress
     stressVolPnl = _pnl(expectedMove, deltaSigma)
-    kStressVol = _toK(stressVolPnl)
+    rawKStressVol = _rawK(stressVolPnl)
 
     # Scenario 4: kCrash — large move (1.5×) + IV shock combined (true "bad day")
     crashPnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, deltaSigma)
-    kCrash = _toK(crashPnl)
+    rawKCrash = _rawK(crashPnl)
 
-    # Size off the worst scenario
-    scenarios = {"kBase": kBase, "kStressMove": kStressMove, "kStressVol": kStressVol, "kCrash": kCrash}
-    kForSizing = max(scenarios.values())
-    kBindingScenario = max(scenarios, key=scenarios.get)
+    # Determine binding scenario from RAW values (before clamping)
+    rawScenarios = {
+        "kBase": rawKBase, "kStressMove": rawKStressMove,
+        "kStressVol": rawKStressVol, "kCrash": rawKCrash,
+    }
+    rawKForSizing = max(rawScenarios.values())
+    kBindingScenario = max(rawScenarios, key=rawScenarios.get)
+
+    # Clamp only the final sizing k (floor for prudence, ceiling for data-quality guard)
+    kForSizing = max(K_FLOOR, min(K_CEILING, rawKForSizing))
 
     kSpotSensitivity = abs(basePnl) / abs(expectedMove) if abs(expectedMove) > 1e-10 else 0.0
 
     return {
         "kForSizing": round(kForSizing, 6),
-        "kBase": round(kBase, 6),
-        "kStressMove": round(kStressMove, 6),
-        "kStressVol": round(kStressVol, 6),
-        "kCrash": round(kCrash, 6),
+        "kRaw": round(rawKForSizing, 6),         # unclamped worst scenario
+        "kBase": round(rawKBase, 6),              # all scenario values are raw (unclamped)
+        "kStressMove": round(rawKStressMove, 6),
+        "kStressVol": round(rawKStressVol, 6),
+        "kCrash": round(rawKCrash, 6),
+        "kClamped": kForSizing != rawKForSizing,  # True if floor or ceiling was applied
         "kBindingScenario": kBindingScenario,
         "kSpotSensitivity": round(kSpotSensitivity, 6),
         "expectedMove": round(expectedMove, 2),
@@ -760,7 +773,9 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         "intradayAddon": round(intradayAddon * 100, 1),
     }
 
-    print(f"{tag}[DYNAMIC-K] kForSizing={kValue:.4f} (binding={result['kBindingScenario']}) "
+    clampTag = " [CLAMPED]" if result.get("kClamped") else ""
+    print(f"{tag}[DYNAMIC-K] kForSizing={kValue:.4f}{clampTag} (raw={result['kRaw']:.4f}, "
+          f"binding={result['kBindingScenario']}) "
           f"kBase={result['kBase']:.4f} kStressMove={result['kStressMove']:.4f} "
           f"kStressVol={result['kStressVol']:.4f} kCrash={result['kCrash']:.4f} "
           f"staticK={staticK:.2f} avgIV={result['avgIV']:.4f} expMove={result['expectedMove']:.2f} "
@@ -1765,7 +1780,7 @@ ENTRY_LOG_FIELDS = [
     "finalLots", "selectedExpiry", "ceContract", "peContract", "skipped", "skipReason",
     "gttProtected", "positionIntegrity",
     # Dynamic K fields
-    "kSource", "kForSizing", "kBase", "kStressMove", "kStressVol", "kCrash", "kBindingScenario",
+    "kSource", "kForSizing", "kRaw", "kClamped", "kBase", "kStressMove", "kStressVol", "kCrash", "kBindingScenario",
     "kSpotSensitivity", "staticK",
     "avgIV", "expectedMove", "posGamma", "posTheta", "posVega",
     "ivShockApplied", "ivShockBase", "vixLevel", "vixAddon", "intradayMovePct", "intradayAddon",
@@ -1812,6 +1827,8 @@ def logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
         # Dynamic K fields
         "kSource": km.get("source", "static"),
         "kForSizing": km.get("kForSizing", ""),
+        "kRaw": km.get("kRaw", ""),
+        "kClamped": km.get("kClamped", ""),
         "kBase": km.get("kBase", ""),
         "kStressMove": km.get("kStressMove", ""),
         "kStressVol": km.get("kStressVol", ""),
