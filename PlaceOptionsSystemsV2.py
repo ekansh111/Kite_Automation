@@ -142,7 +142,12 @@ def bsPrice(spot, strike, T, iv, optionType, r=RISK_FREE_RATE):
         r: annualised risk-free rate (default RISK_FREE_RATE)
 
     Returns: option price (float)
+
+    Raises:
+        ValueError: if iv <= 0
     """
+    if iv <= 0:
+        raise ValueError(f"bsPrice: iv must be positive, got {iv}")
     T = max(T, 1e-10)
     sqrtT = math.sqrt(T)
     d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT)
@@ -165,7 +170,12 @@ def bsGreeks(spot, strike, T, iv, optionType, r=RISK_FREE_RATE):
         gamma: ∂²V/∂S²
         theta: premium change per 1 calendar day (annual theta / 365)
         vega:  raw ∂V/∂σ  (so pnl_vega = vega * deltaSigma_decimal)
+
+    Raises:
+        ValueError: if iv <= 0
     """
+    if iv <= 0:
+        raise ValueError(f"bsGreeks: iv must be positive, got {iv}")
     T = max(T, 1e-10)
     sqrtT = math.sqrt(T)
     d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT)
@@ -336,7 +346,8 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         ceIV, peIV: annualised IV for each leg (decimal)
         spot: underlying spot price
         combinedPremium: CE premium + PE premium
-        lotSize: contract lot size
+        lotSize: contract lot size. Not used in current k computation (per-unit P&L
+            makes lot size cancel out), retained for API symmetry / future extensions.
         strategyType: "straddle" or "single"
         ivShockPercent: IV increase as % of current IV (0 = no shock)
 
@@ -423,7 +434,8 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         exchange: "NFO" or "BFO"
         underlying: "NIFTY" or "SENSEX"
         sizingDte: DTE used for static K lookup (exit DTE)
-        callPremium, putPremium: premiums from fetchOptionPremiums (used as fallback)
+        callPremium, putPremium: premiums from fetchOptionPremiums. Not used by dynamic k
+            (which fetches fresh quotes), retained for interface compatibility with executeEntry.
         lotSize: contract lot size
         expiryDate: expiry date (date object)
 
@@ -473,13 +485,27 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
     cePremium, ceSource, ceBid, ceAsk, ceSpreadPct = getBestPremium(ceQuote)
     pePremium, peSource, peBid, peAsk, peSpreadPct = getBestPremium(peQuote)
 
-    # Quote timestamp
-    quoteTimestamp = ceQuote.get("last_trade_time", None)
-    if isinstance(quoteTimestamp, str):
+    # Quote timestamps — track both legs, use older for staleness check
+    ceQuoteTimestamp = ceQuote.get("last_trade_time", None)
+    peQuoteTimestamp = peQuote.get("last_trade_time", None)
+    if isinstance(ceQuoteTimestamp, str):
         try:
-            quoteTimestamp = datetime.fromisoformat(quoteTimestamp)
+            ceQuoteTimestamp = datetime.fromisoformat(ceQuoteTimestamp)
         except (ValueError, TypeError):
             pass
+    if isinstance(peQuoteTimestamp, str):
+        try:
+            peQuoteTimestamp = datetime.fromisoformat(peQuoteTimestamp)
+        except (ValueError, TypeError):
+            pass
+    # Use the older timestamp for staleness (conservative)
+    quoteTimestamp = None
+    if hasattr(ceQuoteTimestamp, 'hour') and hasattr(peQuoteTimestamp, 'hour'):
+        quoteTimestamp = min(ceQuoteTimestamp, peQuoteTimestamp)
+    elif hasattr(ceQuoteTimestamp, 'hour'):
+        quoteTimestamp = ceQuoteTimestamp
+    elif hasattr(peQuoteTimestamp, 'hour'):
+        quoteTimestamp = peQuoteTimestamp
 
     # Quote-quality gate
     if cePremium <= 0 or pePremium <= 0:
@@ -503,7 +529,9 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
 
     # Staleness check during market hours (09:15 - 15:30 IST)
     now = datetime.now()
-    if hasattr(quoteTimestamp, 'hour') and 9 <= now.hour < 16:
+    marketOpen = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    marketClose = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if hasattr(quoteTimestamp, 'hour') and marketOpen <= now <= marketClose:
         staleSec = (now - quoteTimestamp).total_seconds()
         if staleSec > QUOTE_STALE_SECONDS:
             return _fallback(f"stale quote: {staleSec:.0f}s old (limit={QUOTE_STALE_SECONDS}s)")
@@ -576,8 +604,10 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         "peIV": round(peIV, 6),
         "timeToExpiryYears": round(T, 8),
         "quoteTimestamp": str(quoteTimestamp) if quoteTimestamp else None,
-        "ceBid": ceBid, "ceAsk": ceAsk, "ceSpreadPct": round(ceSpreadPct, 2) if ceSpreadPct else None,
-        "peBid": peBid, "peAsk": peAsk, "peSpreadPct": round(peSpreadPct, 2) if peSpreadPct else None,
+        "ceQuoteTimestamp": str(ceQuoteTimestamp) if hasattr(ceQuoteTimestamp, 'hour') else None,
+        "peQuoteTimestamp": str(peQuoteTimestamp) if hasattr(peQuoteTimestamp, 'hour') else None,
+        "ceBid": ceBid, "ceAsk": ceAsk, "ceSpreadPct": round(ceSpreadPct, 2) if ceSpreadPct is not None else None,
+        "peBid": peBid, "peAsk": peAsk, "peSpreadPct": round(peSpreadPct, 2) if peSpreadPct is not None else None,
     }
 
     print(f"{tag}[DYNAMIC-K] kPremiumRisk={kValue:.4f} kSpotSens={result['kSpotSensitivity']:.4f} "
