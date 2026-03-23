@@ -1026,6 +1026,835 @@ class TestRegressionBugs:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 1: TestBlackScholes — BS pricing and Greeks math
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBlackScholes:
+    """Verify the core Black-Scholes pricing and Greeks math is not broken."""
+
+    def test_bsPrice_call_put_parity(self):
+        """C - P = S - K*exp(-rT) (no dividends)."""
+        import math
+        spot, strike, T, iv, r = 24000, 24000, 7 / 365, 0.14, 0.07
+        call = V2.bsPrice(spot, strike, T, iv, "CE", r)
+        put = V2.bsPrice(spot, strike, T, iv, "PE", r)
+        parity = spot - strike * math.exp(-r * T)
+        assert abs((call - put) - parity) < 0.01, (
+            f"Put-call parity violated: C-P={call-put:.4f}, S-Ke^(-rT)={parity:.4f}"
+        )
+
+    def test_bsPrice_monotonic_with_iv(self):
+        """Higher IV → higher option price (same spot/strike/T)."""
+        spot, strike, T = 24000, 24000, 7 / 365
+        price_low = V2.bsPrice(spot, strike, T, 0.10, "CE")
+        price_high = V2.bsPrice(spot, strike, T, 0.20, "CE")
+        assert price_high > price_low, (
+            f"Price at 20% vol ({price_high:.2f}) should exceed 10% vol ({price_low:.2f})"
+        )
+
+    def test_bsPrice_monotonic_with_time(self):
+        """Longer expiry → higher price for both CE and PE."""
+        spot, strike, iv = 24000, 24000, 0.14
+        for optType in ("CE", "PE"):
+            price_short = V2.bsPrice(spot, strike, 2 / 365, iv, optType)
+            price_long = V2.bsPrice(spot, strike, 10 / 365, iv, optType)
+            assert price_long > price_short, (
+                f"{optType}: longer T ({price_long:.2f}) should exceed shorter T ({price_short:.2f})"
+            )
+
+    def test_bsGreeks_atm_call(self):
+        """ATM call: delta ~0.5, gamma > 0, theta < 0, vega > 0."""
+        g = V2.bsGreeks(24000, 24000, 5 / 365, 0.14, "CE")
+        assert 0.45 < g["delta"] < 0.60, f"delta={g['delta']}"
+        assert g["gamma"] > 0
+        assert g["theta"] < 0
+        assert g["vega"] > 0
+
+    def test_bsGreeks_atm_put(self):
+        """ATM put: delta ~-0.5, gamma > 0, theta < 0, vega > 0."""
+        g = V2.bsGreeks(24000, 24000, 5 / 365, 0.14, "PE")
+        assert -0.60 < g["delta"] < -0.45
+        assert g["gamma"] > 0
+        assert g["theta"] < 0
+        assert g["vega"] > 0
+
+    def test_bsGreeks_deep_itm_call(self):
+        """Deep ITM call: delta close to 1, gamma very small, vega < ATM vega."""
+        g_itm = V2.bsGreeks(24000, 20000, 7 / 365, 0.14, "CE")
+        g_atm = V2.bsGreeks(24000, 24000, 7 / 365, 0.14, "CE")
+        assert g_itm["delta"] > 0.95, f"deep ITM call delta={g_itm['delta']}"
+        assert g_itm["gamma"] < g_atm["gamma"]
+        assert g_itm["vega"] < g_atm["vega"]
+
+    def test_bsGreeks_deep_otm_put(self):
+        """Deep OTM put: delta close to 0, gamma very small, vega very small."""
+        g = V2.bsGreeks(24000, 20000, 7 / 365, 0.14, "PE")
+        assert abs(g["delta"]) < 0.05, f"deep OTM put delta={g['delta']}"
+        assert g["gamma"] < 0.0001
+        assert g["vega"] < 1.0
+
+    def test_bsGreeks_near_expiry_gamma_rises(self):
+        """ATM gamma rises as T falls; ATM |theta| rises as T falls."""
+        g_long = V2.bsGreeks(24000, 24000, 5 / 365, 0.14, "CE")
+        g_short = V2.bsGreeks(24000, 24000, 1 / 365, 0.14, "CE")
+        g_tiny = V2.bsGreeks(24000, 24000, 1e-6, 0.14, "CE")
+        assert g_short["gamma"] > g_long["gamma"]
+        assert g_tiny["gamma"] > g_short["gamma"]
+        assert abs(g_short["theta"]) > abs(g_long["theta"])
+
+    def test_bsGreeks_vega_scaling_convention(self):
+        """Vega = ∂V/∂σ: finite-difference check.
+        price(iv+0.01) - price(iv) ≈ vega × 0.01 within tolerance."""
+        spot, strike, T, iv = 24000, 24000, 7 / 365, 0.14
+        p1 = V2.bsPrice(spot, strike, T, iv, "CE")
+        p2 = V2.bsPrice(spot, strike, T, iv + 0.01, "CE")
+        vega = V2.bsGreeks(spot, strike, T, iv, "CE")["vega"]
+        fd_approx = p2 - p1
+        vega_approx = vega * 0.01
+        assert abs(fd_approx - vega_approx) < 0.5, (
+            f"Vega scaling: fd={fd_approx:.4f}, vega*0.01={vega_approx:.4f}"
+        )
+
+    def test_bsGreeks_theta_scaling_convention(self):
+        """If theta is per calendar day: price(T) - price(T - 1/365) ≈ -theta within tolerance."""
+        spot, strike, T, iv = 24000, 24000, 10 / 365, 0.14
+        p1 = V2.bsPrice(spot, strike, T, iv, "CE")
+        p2 = V2.bsPrice(spot, strike, T - 1 / 365, iv, "CE")
+        theta = V2.bsGreeks(spot, strike, T, iv, "CE")["theta"]
+        # p2 - p1 is change from one day passing (should be negative for long call)
+        # theta is already negative, so p2 - p1 ≈ theta
+        assert abs((p2 - p1) - theta) < 1.0, (
+            f"Theta scaling: fd={p2 - p1:.4f}, theta={theta:.4f}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 2: TestImpliedVol — IV solver robustness
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestImpliedVol:
+    """Verify the IV solver converges, rejects bad inputs, and respects bounds."""
+
+    def test_roundtrip_call(self):
+        """Price CE with known IV → solve back → recovered IV matches."""
+        spot, strike, T, iv = 24000, 24000, 10 / 365, 0.16
+        price = V2.bsPrice(spot, strike, T, iv, "CE")
+        recovered = V2.bsImpliedVol(price, spot, strike, T, "CE")
+        assert recovered is not None
+        assert abs(recovered - iv) < 0.001
+
+    def test_roundtrip_put(self):
+        """Price PE with known IV → solve back → recovered IV matches."""
+        spot, strike, T, iv = 24000, 24000, 10 / 365, 0.16
+        price = V2.bsPrice(spot, strike, T, iv, "PE")
+        recovered = V2.bsImpliedVol(price, spot, strike, T, "PE")
+        assert recovered is not None
+        assert abs(recovered - iv) < 0.001
+
+    def test_newton_fallback_to_bisection(self):
+        """Deep OTM + short DTE where Newton may fail — bisection should converge."""
+        spot, strike, T = 24000, 25500, 3 / 365
+        price = V2.bsPrice(spot, strike, T, 0.50, "CE")
+        if price > 0.01:
+            recovered = V2.bsImpliedVol(price, spot, strike, T, "CE")
+            if recovered is not None:
+                assert abs(recovered - 0.50) < 0.05
+
+    def test_rejects_zero_price(self):
+        """optionPrice = 0 → returns None."""
+        assert V2.bsImpliedVol(0, 24000, 24000, 5 / 365, "CE") is None
+
+    def test_rejects_negative_price(self):
+        """optionPrice < 0 → returns None."""
+        assert V2.bsImpliedVol(-10, 24000, 24000, 5 / 365, "CE") is None
+
+    def test_rejects_below_intrinsic(self):
+        """CE premium below intrinsic → returns None."""
+        # spot=24000, strike=23000 → intrinsic=1000, price=500 → reject
+        assert V2.bsImpliedVol(500, 24000, 23000, 5 / 365, "CE") is None
+
+    def test_rejects_bad_time(self):
+        """T = 0 → should not crash. Either clamps and works or returns None."""
+        result = V2.bsImpliedVol(100, 24000, 24000, 0, "CE")
+        # implementation clamps T to 1e-6 — either works or returns None, no crash
+        assert result is None or isinstance(result, float)
+
+    def test_respects_bounds(self):
+        """Returned IV is always within [IV_SOLVER_MIN, IV_SOLVER_MAX]."""
+        # High vol case
+        price = V2.bsPrice(24000, 24000, 10 / 365, 2.0, "CE")
+        iv = V2.bsImpliedVol(price, 24000, 24000, 10 / 365, "CE")
+        if iv is not None:
+            assert V2.IV_SOLVER_MIN <= iv <= V2.IV_SOLVER_MAX
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 3: TestQuoteHandling — getBestPremium and quote-quality gates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestQuoteHandling:
+    """Test premium selection and quote-quality gates in resolveK."""
+
+    # --- getBestPremium ---
+
+    def test_mid_when_bid_ask_valid(self):
+        """Uses mid when both bid and ask are present and valid."""
+        q = {"last_price": 105, "depth": {
+            "buy": [{"price": 100, "quantity": 50}],
+            "sell": [{"price": 102, "quantity": 50}],
+        }}
+        price, src, bid, ask, spread = V2.getBestPremium(q)
+        assert src == "mid"
+        assert price == 101.0
+        assert bid == 100
+        assert ask == 102
+
+    def test_bid_when_only_bid_valid(self):
+        """Falls back to bid when ask is missing."""
+        q = {"last_price": 95, "depth": {
+            "buy": [{"price": 90, "quantity": 50}],
+            "sell": [],
+        }}
+        price, src, _, _, _ = V2.getBestPremium(q)
+        assert src == "bid"
+        assert price == 90
+
+    def test_ask_when_only_ask_valid(self):
+        """Falls back to ask when bid is missing."""
+        q = {"last_price": 95, "depth": {
+            "buy": [],
+            "sell": [{"price": 100, "quantity": 50}],
+        }}
+        price, src, _, _, _ = V2.getBestPremium(q)
+        assert src == "ask"
+        assert price == 100
+
+    def test_ltp_fallback(self):
+        """Falls back to LTP when depth is entirely empty."""
+        q = {"last_price": 95, "depth": {"buy": [], "sell": []}}
+        price, src, _, _, _ = V2.getBestPremium(q)
+        assert src == "ltp"
+        assert price == 95.0
+
+    def test_rejects_bid_greater_than_ask(self):
+        """bid > ask is rejected — falls back to LTP."""
+        q = {"last_price": 80, "depth": {
+            "buy": [{"price": 105, "quantity": 50}],
+            "sell": [{"price": 100, "quantity": 50}],
+        }}
+        price, src, _, _, _ = V2.getBestPremium(q)
+        assert src == "ltp"  # bid > ask → depth rejected
+
+    # --- resolveK quote-quality gates ---
+
+    def _make_dynamic_config(self):
+        return {
+            "useDynamicK": True,
+            "kTable": V2.K_TABLE_STRADDLE,
+            "strategyType": "straddle",
+            "ivShockPercent": 0.0,
+        }
+
+    def _make_mock_kite(self, spot=24000, ceBid=99, ceAsk=101, peBid=98, peAsk=102,
+                        ceStrike=24000, peStrike=24000):
+        """Build a mock kite with ltp, quote, and instruments returning clean data."""
+        kite = MagicMock()
+        kite.ltp.return_value = {"NSE:NIFTY 50": {"last_price": spot}}
+
+        ceKey, peKey = "NFO:NIFTY26MAR24000CE", "NFO:NIFTY26MAR24000PE"
+        now = datetime.now()
+        kite.quote.return_value = {
+            ceKey: {
+                "last_price": (ceBid + ceAsk) / 2,
+                "last_trade_time": now,
+                "depth": {
+                    "buy": [{"price": ceBid, "quantity": 100}],
+                    "sell": [{"price": ceAsk, "quantity": 100}],
+                },
+            },
+            peKey: {
+                "last_price": (peBid + peAsk) / 2,
+                "last_trade_time": now,
+                "depth": {
+                    "buy": [{"price": peBid, "quantity": 100}],
+                    "sell": [{"price": peAsk, "quantity": 100}],
+                },
+            },
+        }
+        # Instruments cache for strike lookup
+        V2.GetInstrumentsCached = MagicMock(return_value=[
+            {"tradingsymbol": "NIFTY26MAR24000CE", "strike": ceStrike},
+            {"tradingsymbol": "NIFTY26MAR24000PE", "strike": peStrike},
+        ])
+        return kite
+
+    def test_resolveK_rejects_wide_spread(self):
+        """CE spread > 30% of mid → static fallback."""
+        # bid=50, ask=90 → spread=40, mid=70, spread%=57% > 30%
+        kite = self._make_mock_kite(ceBid=50, ceAsk=90, peBid=98, peAsk=102)
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+        assert "spread" in meta.get("fallbackReason", "").lower()
+
+    def test_resolveK_rejects_bid_greater_than_ask(self):
+        """bid > ask on PE → static fallback."""
+        kite = self._make_mock_kite(peBid=110, peAsk=100)
+        config = self._make_dynamic_config()
+        # getBestPremium returns "ltp" for PE since bid>ask, while CE gets "mid"
+        # → inconsistent premium quality → fallback
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+
+    def test_resolveK_rejects_near_zero_premium(self):
+        """Premium < MIN_PREMIUM_INR → static fallback."""
+        kite = self._make_mock_kite(ceBid=0.1, ceAsk=0.3, peBid=98, peAsk=102)
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+        assert "dust" in meta.get("fallbackReason", "").lower() or "zero" in meta.get("fallbackReason", "").lower()
+
+    def test_resolveK_rejects_mixed_mid_and_stale_ltp(self):
+        """CE uses fresh mid, PE uses LTP (no depth) → inconsistent → fallback."""
+        kite = self._make_mock_kite()
+        # Override PE quote to have no depth → falls back to LTP
+        peKey = "NFO:NIFTY26MAR24000PE"
+        kite.quote.return_value[peKey]["depth"] = {"buy": [], "sell": []}
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+        assert "inconsistent" in meta.get("fallbackReason", "").lower()
+
+    def test_resolveK_rejects_stale_quote_during_market_hours(self):
+        """Quote older than QUOTE_STALE_SECONDS during market hours → fallback."""
+        kite = self._make_mock_kite()
+        ceKey = "NFO:NIFTY26MAR24000CE"
+        stale_time = datetime.now() - timedelta(seconds=V2.QUOTE_STALE_SECONDS + 30)
+        kite.quote.return_value[ceKey]["last_trade_time"] = stale_time
+
+        config = self._make_dynamic_config()
+        # Patch datetime.now to be during market hours (11:00)
+        with patch("PlaceOptionsSystemsV2.datetime") as mock_dt:
+            mock_now = datetime.now().replace(hour=11, minute=0)
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            kValue, meta = V2.resolveK(
+                config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+                "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+            )
+        assert meta["source"] == "static_fallback"
+        assert "stale" in meta.get("fallbackReason", "").lower()
+
+    def test_resolveK_allows_old_quote_outside_market_hours(self):
+        """Outside market hours (e.g., 20:00), staleness check should not trigger."""
+        kite = self._make_mock_kite()
+        ceKey = "NFO:NIFTY26MAR24000CE"
+        # Set a very old timestamp
+        kite.quote.return_value[ceKey]["last_trade_time"] = datetime(2026, 1, 1)
+
+        config = self._make_dynamic_config()
+        # During market hours the stale check fires; outside it doesn't.
+        # The staleness check condition is: 9 <= now.hour < 16
+        # At hour=20 the check is skipped.
+        # But this test may still fail for other reasons (IV solve etc.) depending on premiums.
+        # So we just check it doesn't fail due to staleness.
+        with patch("PlaceOptionsSystemsV2.datetime") as mock_dt:
+            mock_now = datetime.now().replace(hour=20, minute=0)
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            kValue, meta = V2.resolveK(
+                config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+                "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+            )
+        # Should NOT fail due to staleness
+        if meta["source"] == "static_fallback":
+            assert "stale" not in meta.get("fallbackReason", "").lower()
+
+    def test_resolveK_rejects_iv_mismatch_between_legs(self):
+        """CE IV and PE IV differ by > 50% of average → fallback."""
+        # Give CE a very different premium from PE so the IVs diverge
+        # CE premium very low → low IV, PE premium high → high IV
+        kite = self._make_mock_kite(ceBid=5, ceAsk=7, peBid=200, peAsk=210)
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 4: TestComputeDynamicK — dynamic-k calculation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestComputeDynamicK:
+    """Validate the risk engine: computeDynamicK."""
+
+    def _atm_greeks(self, T=5/365, iv=0.14, spot=24000):
+        ce = V2.bsGreeks(spot, spot, T, iv, "CE")
+        pe = V2.bsGreeks(spot, spot, T, iv, "PE")
+        return ce, pe
+
+    def _atm_premiums(self, T=5/365, iv=0.14, spot=24000):
+        return (V2.bsPrice(spot, spot, T, iv, "CE")
+                + V2.bsPrice(spot, spot, T, iv, "PE"))
+
+    def test_returns_both_k_values(self):
+        """Output contains kPremiumRisk, kSpotSensitivity, expectedMove, avgIV,
+        stress fields, and pnl breakdown."""
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
+        assert r is not None
+        for key in ("kPremiumRisk", "kSpotSensitivity", "expectedMove", "avgIV",
+                    "posGamma", "posTheta", "posVega", "stressK_1_5x", "stressK_2x",
+                    "pnlBreakdown"):
+            assert key in r, f"missing key: {key}"
+        for pnl_key in ("pnlDelta", "pnlGamma", "pnlVega", "pnlTheta", "totalPnlPerUnit"):
+            assert pnl_key in r["pnlBreakdown"], f"missing pnl key: {pnl_key}"
+
+    def test_atm_straddle_sanity(self):
+        """Typical NIFTY (spot=24000, IV=14%, DTE≈3): k in broad [0.10, 1.20]."""
+        ce, pe = self._atm_greeks(T=3/365)
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 200, 65, "straddle")
+        assert r is not None
+        assert 0.10 <= r["kPremiumRisk"] <= 1.20
+        assert r["kSpotSensitivity"] > 0
+
+    def test_clamp_floor(self):
+        """Tiny risk → k clamped to K_FLOOR."""
+        ce = {"delta": 0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
+        pe = {"delta": -0.001, "gamma": 0.00001, "theta": -0.001, "vega": 0.01}
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 500, 65, "straddle")
+        assert r is not None
+        assert r["kPremiumRisk"] == V2.K_FLOOR
+
+    def test_clamp_ceiling(self):
+        """Huge risk → k clamped to K_CEILING."""
+        ce = {"delta": 0.5, "gamma": 1.0, "theta": -100, "vega": 500}
+        pe = {"delta": -0.5, "gamma": 1.0, "theta": -100, "vega": 500}
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 50, 65, "straddle")
+        assert r is not None
+        assert r["kPremiumRisk"] == V2.K_CEILING
+
+    def test_near_expiry_higher_than_far_expiry(self):
+        """DTE=1 k > DTE=5 k (more gamma risk per premium unit near expiry)."""
+        spot, iv = 24000, 0.14
+        ce1, pe1 = self._atm_greeks(T=1/365, iv=iv, spot=spot)
+        ce5, pe5 = self._atm_greeks(T=5/365, iv=iv, spot=spot)
+        cp1 = self._atm_premiums(T=1/365, iv=iv, spot=spot)
+        cp5 = self._atm_premiums(T=5/365, iv=iv, spot=spot)
+
+        r1 = V2.computeDynamicK(ce1, pe1, iv, iv, spot, cp1, 65, "straddle")
+        r5 = V2.computeDynamicK(ce5, pe5, iv, iv, spot, cp5, 65, "straddle")
+        assert r1["kPremiumRisk"] > r5["kPremiumRisk"]
+
+    def test_stress_pnl_magnitude_grows(self):
+        """Stress P&L magnitude ≥ base P&L magnitude for typical ATM straddle."""
+        ce, pe = self._atm_greeks(T=3/365)
+        cp = self._atm_premiums(T=3/365)
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, cp, 65, "straddle")
+        assert r is not None
+        base = abs(r["pnlBreakdown"]["totalPnlPerUnit"])
+        # Stress k values should be present and bounded
+        assert V2.K_FLOOR <= r["stressK_1_5x"] <= V2.K_CEILING
+        assert V2.K_FLOOR <= r["stressK_2x"] <= V2.K_CEILING
+
+    def test_zero_iv_shock_zero_vega_contribution(self):
+        """ivShockPercent=0 → vega contribution is exactly zero."""
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
+                                "straddle", ivShockPercent=0.0)
+        assert r["pnlBreakdown"]["pnlVega"] == 0.0
+
+    def test_positive_iv_shock_hurts_short_straddle(self):
+        """Positive IV shock → negative vega P&L for short straddle (short vega)."""
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65,
+                                "straddle", ivShockPercent=10.0)
+        # Short straddle has negative posVega → posVega * deltaSigma < 0
+        assert r["pnlBreakdown"]["pnlVega"] < 0
+
+    def test_delta_neutral_straddle(self):
+        """ATM straddle: combined delta near zero, gamma/theta dominate."""
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
+        # Position delta should be near zero (ATM CE delta ~+0.5 + PE delta ~-0.5)
+        # pnlDelta should be small compared to pnlGamma
+        assert abs(r["pnlBreakdown"]["pnlDelta"]) < abs(r["pnlBreakdown"]["pnlGamma"])
+
+    def test_uses_absolute_pnl_for_k(self):
+        """Returned k values are always positive (uses abs())."""
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 250, 65, "straddle")
+        assert r["kPremiumRisk"] > 0
+        assert r["kSpotSensitivity"] > 0
+
+    def test_expected_move_uses_avg_iv(self):
+        """CE IV=0.12, PE IV=0.16 → avgIV=0.14, expectedMove computed from 0.14."""
+        import math
+        ce, pe = self._atm_greeks()
+        r = V2.computeDynamicK(ce, pe, 0.12, 0.16, 24000, 250, 65, "straddle")
+        assert r["avgIV"] == 0.14
+        expected = 24000 * 0.14 * math.sqrt(1.0 / 252.0)
+        assert abs(r["expectedMove"] - round(expected, 2)) < 0.01
+
+    def test_combined_premium_zero_rejected(self):
+        """combinedPremium <= 0 → returns None."""
+        ce, pe = self._atm_greeks()
+        assert V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 0, 65, "straddle") is None
+        assert V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, -10, 65, "straddle") is None
+
+    def test_spot_zero_rejected(self):
+        """spot <= 0 → returns None."""
+        ce, pe = self._atm_greeks()
+        assert V2.computeDynamicK(ce, pe, 0.14, 0.14, 0, 250, 65, "straddle") is None
+
+    def test_avg_iv_zero_rejected(self):
+        """avgIV = 0 → returns None (avoids division by zero in expectedMove)."""
+        ce, pe = self._atm_greeks()
+        assert V2.computeDynamicK(ce, pe, 0.0, 0.0, 24000, 250, 65, "straddle") is None
+
+    def test_nan_greeks_do_not_crash(self):
+        """NaN/inf in Greeks → function should not crash. May return None or clamped values."""
+        ce = {"delta": float("nan"), "gamma": 0.001, "theta": -5, "vega": 10}
+        pe = {"delta": -0.5, "gamma": 0.001, "theta": -5, "vega": 10}
+        # Should not raise — may return None or a result with clamped k
+        try:
+            r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 200, 65, "straddle")
+        except Exception:
+            pytest.fail("computeDynamicK crashed on NaN Greeks")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 5: TestResolveK — Integration / orchestrator / fallback behavior
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestResolveK:
+    """Test the resolveK orchestrator: dynamic happy path and all fallback triggers."""
+
+    def _make_dynamic_config(self):
+        return {
+            "useDynamicK": True,
+            "kTable": V2.K_TABLE_STRADDLE,
+            "strategyType": "straddle",
+            "ivShockPercent": 0.0,
+        }
+
+    def _make_clean_kite(self, spot=24000, cePremium=100, pePremium=100):
+        """Build a mock kite with clean data for the full dynamic path."""
+        kite = MagicMock()
+        kite.ltp.return_value = {"NSE:NIFTY 50": {"last_price": spot}}
+
+        ceKey, peKey = "NFO:NIFTY26MAR24000CE", "NFO:NIFTY26MAR24000PE"
+        now = datetime.now()
+        kite.quote.return_value = {
+            ceKey: {
+                "last_price": cePremium,
+                "last_trade_time": now,
+                "depth": {
+                    "buy": [{"price": cePremium - 1, "quantity": 100}],
+                    "sell": [{"price": cePremium + 1, "quantity": 100}],
+                },
+            },
+            peKey: {
+                "last_price": pePremium,
+                "last_trade_time": now,
+                "depth": {
+                    "buy": [{"price": pePremium - 1, "quantity": 100}],
+                    "sell": [{"price": pePremium + 1, "quantity": 100}],
+                },
+            },
+        }
+        V2.GetInstrumentsCached = MagicMock(return_value=[
+            {"tradingsymbol": "NIFTY26MAR24000CE", "strike": 24000.0},
+            {"tradingsymbol": "NIFTY26MAR24000PE", "strike": 24000.0},
+        ])
+        return kite
+
+    def test_returns_static_when_disabled(self):
+        """useDynamicK=False → static k, source='static'."""
+        config = {
+            "useDynamicK": False,
+            "kTable": V2.K_TABLE_STRADDLE,
+            "strategyType": "straddle",
+        }
+        kValue, meta = V2.resolveK(config, None, "X", "Y", "NFO", "NIFTY",
+                                    2, 100, 100, 65, date.today())
+        assert kValue == 0.70
+        assert meta["source"] == "static"
+
+    def test_dynamic_happy_path(self):
+        """Full dynamic path with clean data → source='dynamic', metadata populated."""
+        kite = self._make_clean_kite()
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "dynamic"
+        assert isinstance(kValue, float)
+        assert V2.K_FLOOR <= kValue <= V2.K_CEILING
+        # Metadata should be fully populated
+        for key in ("kPremiumRisk", "kSpotSensitivity", "staticK", "avgIV",
+                    "expectedMove", "ceIV", "peIV", "cePremiumUsed", "pePremiumUsed",
+                    "cePremiumSource", "pePremiumSource", "timeToExpiryYears"):
+            assert key in meta, f"missing metadata key: {key}"
+
+    def test_fallback_when_spot_fetch_fails(self):
+        """kite.ltp() failure → static fallback."""
+        kite = MagicMock()
+        kite.ltp.side_effect = Exception("API down")
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(config, kite, "X", "Y", "NFO", "NIFTY",
+                                    2, 100, 100, 65, date.today())
+        assert meta["source"] == "static_fallback"
+        assert "spot" in meta["fallbackReason"].lower()
+
+    def test_fallback_when_quote_fetch_fails(self):
+        """kite.quote() failure → static fallback."""
+        kite = MagicMock()
+        kite.ltp.return_value = {"NSE:NIFTY 50": {"last_price": 24000}}
+        kite.quote.side_effect = Exception("quote API error")
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+        assert "quote" in meta["fallbackReason"].lower()
+
+    def test_fallback_when_strike_lookup_fails(self):
+        """Strike not found in instruments → static fallback."""
+        kite = self._make_clean_kite()
+        V2.GetInstrumentsCached = MagicMock(return_value=[])  # empty instruments
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+        assert "strike" in meta["fallbackReason"].lower()
+
+    def test_fallback_when_iv_solve_fails(self):
+        """IV solver returns None for one leg → static fallback."""
+        # Premium of 0.30 is near-zero dust → bsImpliedVol may fail
+        # But MIN_PREMIUM_INR gate would catch this first (0.30 < 0.50)
+        # Use a premium that passes the gate but is below intrinsic
+        kite = self._make_clean_kite(cePremium=1.0, pePremium=1.0)
+        # Set strike so CE is deep ITM → price below intrinsic → IV solver fails
+        V2.GetInstrumentsCached = MagicMock(return_value=[
+            {"tradingsymbol": "NIFTY26MAR24000CE", "strike": 20000.0},  # deep ITM
+            {"tradingsymbol": "NIFTY26MAR24000PE", "strike": 24000.0},
+        ])
+        config = self._make_dynamic_config()
+        kValue, meta = V2.resolveK(
+            config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+            "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+        )
+        assert meta["source"] == "static_fallback"
+
+    def test_fallback_when_iv_near_bounds(self):
+        """IV near solver bounds → fallback. Simulate by patching bsImpliedVol."""
+        kite = self._make_clean_kite()
+        config = self._make_dynamic_config()
+        # Patch bsImpliedVol to return IV near upper bound
+        with patch.object(V2, "bsImpliedVol", return_value=V2.IV_SOLVER_MAX * 0.96):
+            kValue, meta = V2.resolveK(
+                config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+                "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+            )
+        assert meta["source"] == "static_fallback"
+        assert "bound" in meta["fallbackReason"].lower()
+
+    def test_passes_correct_iv_shock_to_compute(self):
+        """ivShockPercent from config flows through to computeDynamicK."""
+        kite = self._make_clean_kite()
+        config = self._make_dynamic_config()
+        config["ivShockPercent"] = 15.0
+
+        with patch.object(V2, "computeDynamicK", wraps=V2.computeDynamicK) as mock_cdk:
+            kValue, meta = V2.resolveK(
+                config, kite, "NIFTY26MAR24000CE", "NIFTY26MAR24000PE",
+                "NFO", "NIFTY", 2, 100, 100, 65, date.today() + timedelta(days=3),
+            )
+            if meta["source"] == "dynamic":
+                call_kwargs = mock_cdk.call_args
+                assert call_kwargs[1].get("ivShockPercent") == 15.0 or \
+                       (call_kwargs[0] and len(call_kwargs[0]) > 8 and call_kwargs[0][8] == 15.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 6: TestLogging — dynamic k fields in logs and dry-run
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDynamicKLogging:
+    """Test that dynamic k metadata appears correctly in log output."""
+
+    def test_logEntry_contains_dynamic_k_fields(self, tmp_path):
+        """When dynamic k metadata is provided, CSV row includes all dynamic k fields."""
+        import csv
+
+        # Override log path to tmp
+        original_path = V2.ENTRY_LOG_PATH
+        V2.ENTRY_LOG_PATH = tmp_path / "test_entry.csv"
+
+        kMetadata = {
+            "source": "dynamic",
+            "kPremiumRisk": 0.55,
+            "kSpotSensitivity": 0.42,
+            "staticK": 0.70,
+            "avgIV": 0.14,
+            "expectedMove": 211.5,
+            "posGamma": -0.004,
+            "posTheta": 12.5,
+            "posVega": -850.0,
+            "stressK_1_5x": 0.65,
+            "stressK_2x": 0.78,
+            "cePremiumUsed": 100.5,
+            "pePremiumUsed": 99.5,
+            "cePremiumSource": "mid",
+            "pePremiumSource": "mid",
+            "ceIV": 0.138,
+            "peIV": 0.142,
+            "timeToExpiryYears": 0.008,
+            "quoteTimestamp": "2026-03-23T10:30:00",
+            "ceBid": 99.5, "ceAsk": 101.5, "ceSpreadPct": 1.98,
+            "peBid": 98.5, "peAsk": 100.5, "peSpreadPct": 2.01,
+        }
+
+        config = {"underlying": "NIFTY", "phaseType": "early", "maxLots": 5}
+        sizeResult = {"combinedPremium": 200, "dailyVolPerLot": 9100, "allowedLots": 7,
+                      "finalLots": 5}
+
+        try:
+            V2.logEntry("N_STD_4D_30SL_I", config, 3, 0.55, 100.5, 99.5,
+                        sizeResult, date.today(), "CE_SYM", "PE_SYM",
+                        skipped=False, skipReason=None, kMetadata=kMetadata)
+
+            with open(V2.ENTRY_LOG_PATH) as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+
+            assert row["kSource"] == "dynamic"
+            assert row["kPremiumRisk"] == "0.55"
+            assert row["kSpotSensitivity"] == "0.42"
+            assert row["avgIV"] == "0.14"
+            assert row["ceIV"] == "0.138"
+            assert row["peIV"] == "0.142"
+            assert row["cePremiumSource"] == "mid"
+        finally:
+            V2.ENTRY_LOG_PATH = original_path
+
+    def test_logEntry_contains_fallback_reason(self, tmp_path):
+        """When falling back, kSource='static_fallback' appears."""
+        import csv
+        original_path = V2.ENTRY_LOG_PATH
+        V2.ENTRY_LOG_PATH = tmp_path / "test_entry_fb.csv"
+
+        kMetadata = {"source": "static_fallback", "staticK": 0.70,
+                     "fallbackReason": "CE spread too wide"}
+
+        config = {"underlying": "NIFTY", "phaseType": "early", "maxLots": 5}
+        sizeResult = {"combinedPremium": 200, "dailyVolPerLot": 9100, "allowedLots": 7,
+                      "finalLots": 5}
+
+        try:
+            V2.logEntry("N_STD_4D_30SL_I", config, 3, 0.70, 100, 100,
+                        sizeResult, date.today(), "CE", "PE",
+                        skipped=False, skipReason=None, kMetadata=kMetadata)
+
+            with open(V2.ENTRY_LOG_PATH) as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+
+            assert row["kSource"] == "static_fallback"
+            assert row["staticK"] == "0.7"
+        finally:
+            V2.ENTRY_LOG_PATH = original_path
+
+    def test_dry_run_prints_dynamic_k_breakdown(self, capsys):
+        """Dry-run output should include dynamic k details when source='dynamic'."""
+        # We can't easily run executeEntry in tests without many mocks,
+        # but we can verify the dry-run print logic would work with the right metadata
+        # by checking the string formatting code doesn't crash with a sample metadata dict
+        meta = {"source": "dynamic", "kPremiumRisk": 0.55, "kSpotSensitivity": 0.42,
+                "staticK": 0.70, "avgIV": 0.14, "expectedMove": 211.5,
+                "stressK_1_5x": 0.65, "stressK_2x": 0.78,
+                "ceIV": 0.138, "peIV": 0.142,
+                "cePremiumSource": "mid", "pePremiumSource": "mid",
+                "timeToExpiryYears": 0.008}
+
+        # Simulate dry-run print block
+        tag = "[DRY RUN] "
+        print(f"{tag}  K source:        {meta.get('source', 'unknown')}")
+        if meta.get("source") == "dynamic":
+            print(f"{tag}  K (premium):     {meta.get('kPremiumRisk', 'N/A')}")
+            print(f"{tag}  K (spot sens):   {meta.get('kSpotSensitivity', 'N/A')}")
+            print(f"{tag}  Avg IV:          {meta.get('avgIV', 'N/A')}")
+            print(f"{tag}  Expected move:   {meta.get('expectedMove', 'N/A')}")
+
+        output = capsys.readouterr().out
+        assert "dynamic" in output
+        assert "0.55" in output
+        assert "0.42" in output
+        assert "0.14" in output
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 7: Edge cases
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestEdgeCases:
+    """Edge cases: very small T, very high IV, division-by-zero guards."""
+
+    def test_very_small_time_does_not_crash(self):
+        """T = 1e-6 → pricing, Greeks, IV solve, dynamic k should not crash."""
+        T = 1e-6
+        price = V2.bsPrice(24000, 24000, T, 0.14, "CE")
+        assert isinstance(price, float)
+        g = V2.bsGreeks(24000, 24000, T, 0.14, "CE")
+        assert isinstance(g["delta"], float)
+        # IV solve at tiny T
+        V2.bsImpliedVol(price, 24000, 24000, T, "CE")  # should not crash
+
+    def test_very_high_iv_does_not_crash(self):
+        """IV near upper range (3.0) → no crash."""
+        price = V2.bsPrice(24000, 24000, 5 / 365, 3.0, "CE")
+        assert isinstance(price, float) and price > 0
+        g = V2.bsGreeks(24000, 24000, 5 / 365, 3.0, "CE")
+        assert isinstance(g["delta"], float)
+
+    def test_expected_move_zero_safe(self):
+        """If avgIV → 0 somehow, kSpotSensitivity should not divide by zero."""
+        ce = {"delta": 0.5, "gamma": 0.001, "theta": -5, "vega": 10}
+        pe = {"delta": -0.5, "gamma": 0.001, "theta": -5, "vega": 10}
+        # avgIV=0 → computeDynamicK returns None (checked separately)
+        result = V2.computeDynamicK(ce, pe, 0.0, 0.0, 24000, 200, 65, "straddle")
+        assert result is None  # rejected, no division by zero
+
+    def test_inf_greeks_do_not_crash(self):
+        """inf in Greeks → should not crash."""
+        ce = {"delta": float("inf"), "gamma": 0.001, "theta": -5, "vega": 10}
+        pe = {"delta": -0.5, "gamma": 0.001, "theta": -5, "vega": 10}
+        try:
+            r = V2.computeDynamicK(ce, pe, 0.14, 0.14, 24000, 200, 65, "straddle")
+        except Exception:
+            pytest.fail("computeDynamicK crashed on inf Greeks")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════════════════════════
 

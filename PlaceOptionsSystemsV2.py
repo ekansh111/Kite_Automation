@@ -92,6 +92,17 @@ K_TABLE_SINGLE = [
     (1, 1, 1.00),
 ]
 
+# Dynamic K constants
+K_FLOOR = 0.20              # min k (most aggressive sizing allowed)
+K_CEILING = 1.50            # max k (most conservative sizing allowed)
+RISK_FREE_RATE = 0.07       # ~7% annualised risk-free rate for Indian market
+IV_SOLVER_MIN = 0.01        # IV solver lower bound (1% annualised)
+IV_SOLVER_MAX = 5.0         # IV solver upper bound (500% annualised)
+QUOTE_STALE_SECONDS = 60    # quote older than this during market hours → stale
+IV_SPREAD_GATE = 0.50       # reject if |ceIV - peIV| / avgIV > this (50%)
+BID_ASK_SPREAD_GATE = 0.30  # reject if spread > 30% of mid-price
+MIN_PREMIUM_INR = 0.50      # reject near-zero dust premiums
+
 STATE_FILE_PATH = Path(WorkDirectory) / "v2_state.json"
 ENTRY_LOG_PATH = Path(WorkDirectory) / "v2_entry_log.csv"
 EXIT_LOG_PATH = Path(WorkDirectory) / "v2_exit_log.csv"
@@ -103,6 +114,477 @@ def lookupK(dte, kTable):
         if minDte <= dte <= maxDte:
             return kValue
     raise ValueError(f"No k value found for DTE={dte}. Must be between 1 and 7.")
+
+
+# ---------------------------------------------------------------------------
+# SECTION 1b: Black-Scholes Pricing and Greeks (European options, no dividends)
+# ---------------------------------------------------------------------------
+
+def _normcdf(x):
+    """Standard normal CDF using math.erf (no scipy dependency)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _normpdf(x):
+    """Standard normal PDF."""
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def bsPrice(spot, strike, T, iv, optionType, r=RISK_FREE_RATE):
+    """Black-Scholes European option price (no dividends).
+
+    Args:
+        spot: underlying spot price
+        strike: option strike price
+        T: time to expiry in years (exact, from datetime)
+        iv: annualised implied volatility as decimal (e.g. 0.14 for 14%)
+        optionType: "CE" for call, "PE" for put
+        r: annualised risk-free rate (default RISK_FREE_RATE)
+
+    Returns: option price (float)
+    """
+    T = max(T, 1e-10)
+    sqrtT = math.sqrt(T)
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT)
+    d2 = d1 - iv * sqrtT
+
+    if optionType == "CE":
+        return spot * _normcdf(d1) - strike * math.exp(-r * T) * _normcdf(d2)
+    else:
+        return strike * math.exp(-r * T) * _normcdf(-d2) - spot * _normcdf(-d1)
+
+
+def bsGreeks(spot, strike, T, iv, optionType, r=RISK_FREE_RATE):
+    """Black-Scholes Greeks for a European option (no dividends).
+
+    Args:
+        spot, strike, T, iv, optionType, r: same as bsPrice.
+
+    Returns dict:
+        delta: ∂V/∂S
+        gamma: ∂²V/∂S²
+        theta: premium change per 1 calendar day (annual theta / 365)
+        vega:  raw ∂V/∂σ  (so pnl_vega = vega * deltaSigma_decimal)
+    """
+    T = max(T, 1e-10)
+    sqrtT = math.sqrt(T)
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrtT)
+    d2 = d1 - iv * sqrtT
+    pdf_d1 = _normpdf(d1)
+
+    gamma = pdf_d1 / (spot * iv * sqrtT)
+    vega = spot * pdf_d1 * sqrtT  # raw ∂V/∂σ
+
+    # Annual theta, then divide by 365 for per-calendar-day
+    if optionType == "CE":
+        delta = _normcdf(d1)
+        theta_annual = (-(spot * pdf_d1 * iv) / (2.0 * sqrtT)
+                        - r * strike * math.exp(-r * T) * _normcdf(d2))
+    else:
+        delta = _normcdf(d1) - 1.0
+        theta_annual = (-(spot * pdf_d1 * iv) / (2.0 * sqrtT)
+                        + r * strike * math.exp(-r * T) * _normcdf(-d2))
+
+    theta = theta_annual / 365.0  # per calendar day
+
+    return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega}
+
+
+def bsImpliedVol(optionPrice, spot, strike, T, optionType, r=RISK_FREE_RATE):
+    """Back out implied volatility from market premium using Newton-Raphson + bisection.
+
+    Args:
+        optionPrice: observed option market price
+        spot, strike, T, optionType, r: same as bsPrice.
+
+    Returns: annualised IV as decimal, or None if solver fails.
+    """
+    T = max(T, 1e-6)
+
+    # Hard filters
+    if optionPrice <= 0:
+        return None
+    intrinsic = max(spot - strike, 0.0) if optionType == "CE" else max(strike - spot, 0.0)
+    if optionPrice < intrinsic - 0.50:
+        return None
+
+    # Phase 1: Newton-Raphson (fast convergence)
+    sigma = 0.30  # initial guess
+    for _ in range(50):
+        price = bsPrice(spot, strike, T, sigma, optionType, r)
+        vega = bsGreeks(spot, strike, T, sigma, optionType, r)["vega"]
+        if vega < 1e-12:
+            break  # vega too small, Newton won't converge — try bisection
+        diff = price - optionPrice
+        if abs(diff) < 1e-6:
+            if IV_SOLVER_MIN <= sigma <= IV_SOLVER_MAX:
+                return sigma
+            return None
+        sigma = sigma - diff / vega
+        if sigma <= 0:
+            break  # went negative, try bisection
+
+    # Phase 2: Bisection fallback (robust, slower)
+    lo, hi = IV_SOLVER_MIN, IV_SOLVER_MAX
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        price = bsPrice(spot, strike, T, mid, optionType, r)
+        if abs(price - optionPrice) < 1e-6:
+            return mid
+        if price < optionPrice:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-8:
+            break
+
+    finalSigma = (lo + hi) / 2.0
+    # Verify the final answer is reasonable
+    finalPrice = bsPrice(spot, strike, T, finalSigma, optionType, r)
+    if abs(finalPrice - optionPrice) < 0.50 and IV_SOLVER_MIN <= finalSigma <= IV_SOLVER_MAX:
+        return finalSigma
+    return None
+
+
+# ---------------------------------------------------------------------------
+# SECTION 1c: Quote Helpers and Instrument Lookup
+# ---------------------------------------------------------------------------
+
+def getBestPremium(quoteData):
+    """Extract the best available premium from a Kite quote response.
+
+    Preference: mid-price from best bid/ask > single-side > LTP.
+
+    Args:
+        quoteData: dict from kite.quote() for a single instrument key.
+
+    Returns:
+        (price, source, bid, ask, spreadPct) where source is "mid", "bid",
+        "ask", or "ltp". bid/ask/spreadPct may be None if depth unavailable.
+    """
+    depth = quoteData.get("depth", {})
+    buyDepth = depth.get("buy", [])
+    sellDepth = depth.get("sell", [])
+
+    bestBid = buyDepth[0].get("price", 0) if buyDepth else 0
+    bestAsk = sellDepth[0].get("price", 0) if sellDepth else 0
+
+    # Reject obviously bad depth (bid > ask means crossed book — fall through to LTP)
+    if bestBid > 0 and bestAsk > 0:
+        if bestBid > bestAsk:
+            # Crossed book — depth is unreliable, skip to LTP
+            ltp = float(quoteData.get("last_price", 0))
+            return (ltp, "ltp", bestBid, bestAsk, None)
+        mid = (bestBid + bestAsk) / 2.0
+        spreadPct = (bestAsk - bestBid) / mid * 100.0 if mid > 0 else 999.0
+        return (mid, "mid", bestBid, bestAsk, spreadPct)
+
+    if bestBid > 0:
+        return (bestBid, "bid", bestBid, None, None)
+
+    if bestAsk > 0:
+        return (bestAsk, "ask", None, bestAsk, None)
+
+    # Fall back to LTP
+    ltp = float(quoteData.get("last_price", 0))
+    return (ltp, "ltp", None, None, None)
+
+
+def lookupStrikeFromInstruments(tradingsymbol, exchange, kite):
+    """Look up strike price from the cached instruments dump.
+
+    Uses the authoritative instrument master — no symbol string parsing.
+
+    Args:
+        tradingsymbol: e.g. "NIFTY26MAR24000CE"
+        exchange: e.g. "NFO" or "BFO"
+        kite: Kite client instance (for GetInstrumentsCached)
+
+    Returns: strike as float, or None if not found.
+    """
+    instruments = GetInstrumentsCached(kite, exchange)
+    for inst in instruments:
+        if inst.get("tradingsymbol") == tradingsymbol:
+            return float(inst["strike"])
+    return None
+
+
+# ---------------------------------------------------------------------------
+# SECTION 1d: Dynamic K Computation
+# ---------------------------------------------------------------------------
+
+def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
+                    lotSize, strategyType="straddle", ivShockPercent=0.0):
+    """Compute dynamic k from live Greeks using a one-day Taylor approximation.
+
+    NOTE: This is a one-day Taylor approximation (delta + gamma + vega + theta),
+    not a full repricing engine. Near expiry, large moves can make the quadratic
+    gamma term less accurate. The approximation is structurally correct but has
+    limitations for very short DTE + large moves.
+
+    Computes two k variants:
+        kPremiumRisk:     |pnlPerUnit| / combinedPremium   (used for sizing)
+        kSpotSensitivity: |pnlPerUnit| / expectedMove      (logged for insight)
+
+    Convention notes (intentional mixed convention):
+        - Expected move uses 252 trading days (actual trading vol, standard for options risk)
+        - Theta uses 365 calendar days (continuous time decay including weekends)
+        This is deliberate — do not "fix" it.
+
+    Args:
+        ceGreeks, peGreeks: dicts with delta, gamma, theta, vega from bsGreeks()
+        ceIV, peIV: annualised IV for each leg (decimal)
+        spot: underlying spot price
+        combinedPremium: CE premium + PE premium
+        lotSize: contract lot size
+        strategyType: "straddle" or "single"
+        ivShockPercent: IV increase as % of current IV (0 = no shock)
+
+    Returns dict or None if inputs invalid:
+        kPremiumRisk, kSpotSensitivity, expectedMove, avgIV,
+        posGamma, posTheta, posVega, stressK_1_5x, stressK_2x, pnlBreakdown
+    """
+    if combinedPremium <= 0 or spot <= 0:
+        return None
+
+    avgIV = (ceIV + peIV) / 2.0
+    if avgIV <= 0:
+        return None
+
+    expectedMove = spot * avgIV * math.sqrt(1.0 / 252.0)  # trading-day convention
+
+    if strategyType == "straddle":
+        # Short straddle: negate because selling both legs
+        posDelta = -(ceGreeks["delta"] + peGreeks["delta"])
+        posGamma = -(ceGreeks["gamma"] + peGreeks["gamma"])
+        posTheta = -(ceGreeks["theta"] + peGreeks["theta"])
+        posVega = -(ceGreeks["vega"] + peGreeks["vega"])
+    else:
+        # Single leg (short): negate one leg
+        greeks = ceGreeks  # caller passes the relevant leg
+        posDelta = -greeks["delta"]
+        posGamma = -greeks["gamma"]
+        posTheta = -greeks["theta"]
+        posVega = -greeks["vega"]
+
+    deltaSigma = avgIV * (ivShockPercent / 100.0)  # absolute decimal
+
+    def _computePnl(deltaS):
+        """Taylor expansion P&L per unit for a given spot move."""
+        pnl = (posDelta * deltaS
+               + 0.5 * posGamma * deltaS * deltaS
+               + posVega * deltaSigma
+               + posTheta * 1.0)  # theta already per calendar day
+        return pnl
+
+    # Base scenario
+    basePnl = _computePnl(expectedMove)
+    absPnlBase = abs(basePnl)
+
+    kPremiumRisk = absPnlBase / combinedPremium
+    kPremiumRisk = max(K_FLOOR, min(K_CEILING, kPremiumRisk))
+
+    kSpotSensitivity = absPnlBase / abs(expectedMove) if abs(expectedMove) > 1e-10 else 0.0
+
+    # Stress scenarios (logged only, not used for sizing)
+    stressPnl_1_5x = abs(_computePnl(expectedMove * 1.5))
+    stressPnl_2x = abs(_computePnl(expectedMove * 2.0))
+    stressK_1_5x = max(K_FLOOR, min(K_CEILING, stressPnl_1_5x / combinedPremium))
+    stressK_2x = max(K_FLOOR, min(K_CEILING, stressPnl_2x / combinedPremium))
+
+    return {
+        "kPremiumRisk": round(kPremiumRisk, 6),
+        "kSpotSensitivity": round(kSpotSensitivity, 6),
+        "expectedMove": round(expectedMove, 2),
+        "avgIV": round(avgIV, 6),
+        "posGamma": round(posGamma, 8),
+        "posTheta": round(posTheta, 4),
+        "posVega": round(posVega, 4),
+        "stressK_1_5x": round(stressK_1_5x, 6),
+        "stressK_2x": round(stressK_2x, 6),
+        "pnlBreakdown": {
+            "pnlDelta": round(posDelta * expectedMove, 4),
+            "pnlGamma": round(0.5 * posGamma * expectedMove * expectedMove, 4),
+            "pnlVega": round(posVega * deltaSigma, 4),
+            "pnlTheta": round(posTheta * 1.0, 4),
+            "totalPnlPerUnit": round(basePnl, 4),
+        },
+    }
+
+
+def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
+             sizingDte, callPremium, putPremium, lotSize, expiryDate):
+    """Resolve k value: dynamic if enabled and quotes are clean, static fallback otherwise.
+
+    Args:
+        config: strategy config dict (must have kTable, may have useDynamicK, ivShockPercent)
+        kite: Kite client instance
+        ceSymbol, peSymbol: contract trading symbols
+        exchange: "NFO" or "BFO"
+        underlying: "NIFTY" or "SENSEX"
+        sizingDte: DTE used for static K lookup (exit DTE)
+        callPremium, putPremium: premiums from fetchOptionPremiums (used as fallback)
+        lotSize: contract lot size
+        expiryDate: expiry date (date object)
+
+    Returns:
+        (kValue, kMetadata) where kMetadata is a dict with source info and diagnostics.
+    """
+    tag = f"[{underlying}]"
+
+    # Static K path (default)
+    if not config.get("useDynamicK", False):
+        staticK = lookupK(sizingDte, config["kTable"])
+        return (staticK, {"source": "static", "staticK": staticK})
+
+    # Dynamic K path
+    staticK = lookupK(sizingDte, config["kTable"])  # always compute for fallback + logging
+    ivShockPercent = config.get("ivShockPercent", 0.0)
+
+    def _fallback(reason):
+        print(f"{tag}[DYNAMIC-K] Falling back to static K={staticK}: {reason}")
+        return (staticK, {"source": "static_fallback", "staticK": staticK,
+                          "fallbackReason": reason})
+
+    # Step 1: Fetch spot
+    try:
+        spotKey = UNDERLYING_LTP_KEY[underlying]
+        spotData = kite.ltp([spotKey])
+        spot = float(spotData[spotKey]["last_price"])
+    except Exception as e:
+        return _fallback(f"spot fetch failed: {e}")
+
+    if spot <= 0:
+        return _fallback("spot price is zero or negative")
+
+    # Step 2: Fetch full quotes for both legs
+    try:
+        ceKey = f"{exchange}:{ceSymbol}"
+        peKey = f"{exchange}:{peSymbol}"
+        quotes = kite.quote([ceKey, peKey])
+        ceQuote = quotes.get(ceKey)
+        peQuote = quotes.get(peKey)
+        if not ceQuote or not peQuote:
+            return _fallback("quote missing for one or both legs")
+    except Exception as e:
+        return _fallback(f"quote fetch failed: {e}")
+
+    # Step 3: Extract premiums with quality preference
+    cePremium, ceSource, ceBid, ceAsk, ceSpreadPct = getBestPremium(ceQuote)
+    pePremium, peSource, peBid, peAsk, peSpreadPct = getBestPremium(peQuote)
+
+    # Quote timestamp
+    quoteTimestamp = ceQuote.get("last_trade_time", None)
+    if isinstance(quoteTimestamp, str):
+        try:
+            quoteTimestamp = datetime.fromisoformat(quoteTimestamp)
+        except (ValueError, TypeError):
+            pass
+
+    # Quote-quality gate
+    if cePremium <= 0 or pePremium <= 0:
+        return _fallback("premium zero or negative on one/both legs")
+
+    if cePremium < MIN_PREMIUM_INR or pePremium < MIN_PREMIUM_INR:
+        return _fallback(f"near-zero dust premium: CE={cePremium}, PE={pePremium}")
+
+    if ceBid is not None and ceAsk is not None and ceBid > ceAsk:
+        return _fallback(f"CE bid > ask: {ceBid} > {ceAsk}")
+    if peBid is not None and peAsk is not None and peBid > peAsk:
+        return _fallback(f"PE bid > ask: {peBid} > {peAsk}")
+
+    if ceSpreadPct is not None and ceSpreadPct > BID_ASK_SPREAD_GATE * 100:
+        return _fallback(f"CE spread too wide: {ceSpreadPct:.1f}%")
+    if peSpreadPct is not None and peSpreadPct > BID_ASK_SPREAD_GATE * 100:
+        return _fallback(f"PE spread too wide: {peSpreadPct:.1f}%")
+
+    if (ceSource == "mid" and peSource == "ltp") or (ceSource == "ltp" and peSource == "mid"):
+        return _fallback(f"inconsistent premium quality: CE={ceSource}, PE={peSource}")
+
+    # Staleness check during market hours (09:15 - 15:30 IST)
+    now = datetime.now()
+    if hasattr(quoteTimestamp, 'hour') and 9 <= now.hour < 16:
+        staleSec = (now - quoteTimestamp).total_seconds()
+        if staleSec > QUOTE_STALE_SECONDS:
+            return _fallback(f"stale quote: {staleSec:.0f}s old (limit={QUOTE_STALE_SECONDS}s)")
+
+    # Step 4: Look up strikes from instruments cache
+    ceStrike = lookupStrikeFromInstruments(ceSymbol, exchange, kite)
+    peStrike = lookupStrikeFromInstruments(peSymbol, exchange, kite)
+    if ceStrike is None or peStrike is None:
+        return _fallback(f"strike lookup failed: CE={ceStrike}, PE={peStrike}")
+
+    # Step 5: Compute exact time to expiry
+    # Expiry is typically at 15:30 IST on expiry day
+    if isinstance(expiryDate, date) and not hasattr(expiryDate, 'hour'):
+        expiryDatetime = datetime(expiryDate.year, expiryDate.month, expiryDate.day, 15, 30, 0)
+    else:
+        expiryDatetime = expiryDate
+
+    T = max((expiryDatetime - now).total_seconds(), 0) / (365.0 * 24 * 3600)
+    if T < 1e-6:
+        return _fallback(f"T too small: {T:.8f} years")
+
+    # Step 6: Compute IV for both legs
+    ceIV = bsImpliedVol(cePremium, spot, ceStrike, T, "CE")
+    peIV = bsImpliedVol(pePremium, spot, peStrike, T, "PE")
+
+    if ceIV is None or peIV is None:
+        return _fallback(f"IV solver failed: ceIV={ceIV}, peIV={peIV}")
+
+    # IV near solver bounds → suspicious
+    ivBoundMargin = 0.05
+    if ceIV <= IV_SOLVER_MIN * (1 + ivBoundMargin) or ceIV >= IV_SOLVER_MAX * (1 - ivBoundMargin):
+        return _fallback(f"CE IV near solver bounds: {ceIV:.4f}")
+    if peIV <= IV_SOLVER_MIN * (1 + ivBoundMargin) or peIV >= IV_SOLVER_MAX * (1 - ivBoundMargin):
+        return _fallback(f"PE IV near solver bounds: {peIV:.4f}")
+
+    # IV consistency gate for ATM straddle
+    avgIV = (ceIV + peIV) / 2.0
+    if avgIV > 0 and abs(ceIV - peIV) / avgIV > IV_SPREAD_GATE:
+        return _fallback(f"CE/PE IV too far apart: CE={ceIV:.4f}, PE={peIV:.4f}, gap={abs(ceIV-peIV)/avgIV:.2%}")
+
+    # Step 7: Compute Greeks for both legs
+    ceGreeks = bsGreeks(spot, ceStrike, T, ceIV, "CE")
+    peGreeks = bsGreeks(spot, peStrike, T, peIV, "PE")
+
+    # Step 8: Compute dynamic K
+    strategyType = config.get("strategyType", "straddle")
+    combinedPremium = cePremium + pePremium
+
+    result = computeDynamicK(
+        ceGreeks=ceGreeks, peGreeks=peGreeks,
+        ceIV=ceIV, peIV=peIV,
+        spot=spot, combinedPremium=combinedPremium,
+        lotSize=lotSize, strategyType=strategyType,
+        ivShockPercent=ivShockPercent,
+    )
+
+    if result is None:
+        return _fallback("computeDynamicK returned None")
+
+    kValue = result["kPremiumRisk"]
+    metadata = {
+        "source": "dynamic",
+        "staticK": staticK,
+        **result,
+        "cePremiumUsed": round(cePremium, 2),
+        "pePremiumUsed": round(pePremium, 2),
+        "cePremiumSource": ceSource,
+        "pePremiumSource": peSource,
+        "ceIV": round(ceIV, 6),
+        "peIV": round(peIV, 6),
+        "timeToExpiryYears": round(T, 8),
+        "quoteTimestamp": str(quoteTimestamp) if quoteTimestamp else None,
+        "ceBid": ceBid, "ceAsk": ceAsk, "ceSpreadPct": round(ceSpreadPct, 2) if ceSpreadPct else None,
+        "peBid": peBid, "peAsk": peAsk, "peSpreadPct": round(peSpreadPct, 2) if peSpreadPct else None,
+    }
+
+    print(f"{tag}[DYNAMIC-K] kPremiumRisk={kValue:.4f} kSpotSens={result['kSpotSensitivity']:.4f} "
+          f"staticK={staticK:.2f} avgIV={result['avgIV']:.4f} expMove={result['expectedMove']:.2f} "
+          f"stressK(1.5x)={result['stressK_1_5x']:.4f} stressK(2x)={result['stressK_2x']:.4f}")
+
+    return (kValue, metadata)
 
 
 def computeTradingDte(today, expiryDate):
@@ -158,6 +640,8 @@ STRATEGY_CONFIGS = {
         "entryTime": "09:30",
         "exitTime": "12:30",
         "orderTag": "V2-N-STD-4D-30SL",
+        "useDynamicK": False,      # flip to True to enable Greeks-based dynamic k
+        "ivShockPercent": 0.0,     # IV shock for stress k (% of current IV)
     },
     "N_STD_2D_55SL_I": {
         "underlying": "NIFTY",
@@ -173,6 +657,8 @@ STRATEGY_CONFIGS = {
         "entryTime": "12:30",
         "exitTime": "15:29",
         "orderTag": "V2-N-STD-2D-55SL",
+        "useDynamicK": False,
+        "ivShockPercent": 0.0,
     },
     "SX_STD_4D_20SL_I": {
         "underlying": "SENSEX",
@@ -187,6 +673,8 @@ STRATEGY_CONFIGS = {
         "entryTime": "09:30",
         "exitTime": "12:30",
         "orderTag": "V2-SX-STD-4D-20SL",
+        "useDynamicK": False,
+        "ivShockPercent": 0.0,
     },
     "SX_STD_2D_100SL_I": {
         "underlying": "SENSEX",
@@ -202,6 +690,8 @@ STRATEGY_CONFIGS = {
         "entryTime": "12:30",
         "exitTime": "15:29",
         "orderTag": "V2-SX-STD-2D-100SL",
+        "useDynamicK": False,
+        "ivShockPercent": 0.0,
     },
 }
 
@@ -845,21 +1335,10 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
             print(f"{tag}[ENTRY] {strategyName}: IDEMPOTENCY SKIP - already entered today (key={entryKey})")
             return {"success": False, "reason": "idempotency_skip"}
 
-    # Step 1: Lookup K value using exit DTE (worst-case gamma during hold)
-    # 4D strategy enters DTE=4, exits DTE=2 → size at K(DTE=2) = 0.70
-    # 2D strategy enters DTE=2, expires DTE=0 → passes through DTE=1 (peak gamma) → K(DTE=1) = 1.00
-    exitDteConfig = config.get("exitDte", 0)
-    sizingDte = exitDteConfig if exitDteConfig >= 1 else 1
-    try:
-        kValue = lookupK(sizingDte, config["kTable"])
-    except ValueError as e:
-        print(f"{tag}[ENTRY] {strategyName}: {e}")
-        return {"success": False, "reason": str(e)}
-
-    # Step 2: Build OrderDetails (1 lot placeholder for contract resolution)
+    # Step 1: Build OrderDetails (1 lot placeholder for contract resolution)
     orderDetails = buildOrderDetails(strategyName, config, quantity=lotSize)
 
-    # Step 3: Fetch contract names via existing FetchContractName
+    # Step 2: Fetch contract names via existing FetchContractName
     try:
         contractResult = FetchContractName(orderDetails)
     except Exception as e:
@@ -873,12 +1352,31 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         print(f"{tag}[ENTRY] {strategyName}: {reason}")
         return {"success": False, "reason": reason}
 
-    # Step 4: Fetch premiums for sizing
+    # Step 3: Fetch premiums for sizing
     try:
         callPremium, putPremium = fetchOptionPremiums(kite, ceSymbol, peSymbol, exchange)
     except Exception as e:
         print(f"{tag}[ENTRY] {strategyName}: premium fetch failed: {e}")
         return {"success": False, "reason": f"premium fetch failed: {e}"}
+
+    # Step 4: Resolve K value — dynamic (Greeks-based) if enabled, static fallback otherwise
+    # K is sized at exit DTE (worst-case gamma during hold):
+    #   4D strategy: enters DTE=4, exits DTE=2 → K(DTE=2)
+    #   2D strategy: enters DTE=2, expires DTE=0 → passes through DTE=1 (peak gamma) → K(DTE=1)
+    exitDteConfig = config.get("exitDte", 0)
+    sizingDte = exitDteConfig if exitDteConfig >= 1 else 1
+    try:
+        kValue, kMetadata = resolveK(
+            config=config, kite=kite,
+            ceSymbol=ceSymbol, peSymbol=peSymbol,
+            exchange=exchange, underlying=underlying,
+            sizingDte=sizingDte,
+            callPremium=callPremium, putPremium=putPremium,
+            lotSize=lotSize, expiryDate=expiryDate,
+        )
+    except Exception as e:
+        print(f"{tag}[ENTRY] {strategyName}: K resolution failed: {e}")
+        return {"success": False, "reason": f"K resolution failed: {e}"}
 
     # Step 5: Compute position size
     sizeResult = computePositionSize(
@@ -893,7 +1391,7 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
     if sizeResult["skipped"]:
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
                  sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True,
-                 skipReason=sizeResult["skipReason"])
+                 skipReason=sizeResult["skipReason"], kMetadata=kMetadata)
         print(f"{tag}[ENTRY] {strategyName}: SKIPPED - {sizeResult['skipReason']}")
         return {"success": False, "reason": sizeResult["skipReason"]}
 
@@ -907,7 +1405,8 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         reason = (f"portfolio cap exceeded: current={round(currentPortfolioVol, 2)} + "
                   f"proposed={round(proposedDailyVol, 2)} > cap={PORTFOLIO_DAILY_VOL_CAP}")
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
-                 sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True, skipReason=reason)
+                 sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True,
+                 skipReason=reason, kMetadata=kMetadata)
         print(f"{tag}[ENTRY] {strategyName}: SKIPPED - {reason}")
         return {"success": False, "reason": reason}
 
@@ -920,6 +1419,22 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         print(f"{tag}  Trading DTE:     {dte}")
         print(f"{tag}  Sizing DTE:      {sizingDte} (K sized at exit-DTE risk)")
         print(f"{tag}  K value:         {kValue}")
+        print(f"{tag}  K source:        {kMetadata.get('source', 'unknown')}")
+        if kMetadata.get("source") == "dynamic":
+            print(f"{tag}  K (premium):     {kMetadata.get('kPremiumRisk', 'N/A')}")
+            print(f"{tag}  K (spot sens):   {kMetadata.get('kSpotSensitivity', 'N/A')}")
+            print(f"{tag}  Static K ref:    {kMetadata.get('staticK', 'N/A')}")
+            print(f"{tag}  Avg IV:          {kMetadata.get('avgIV', 'N/A')}")
+            print(f"{tag}  Expected move:   {kMetadata.get('expectedMove', 'N/A')}")
+            print(f"{tag}  Stress K 1.5x:   {kMetadata.get('stressK_1_5x', 'N/A')}")
+            print(f"{tag}  Stress K 2x:     {kMetadata.get('stressK_2x', 'N/A')}")
+            print(f"{tag}  CE IV:           {kMetadata.get('ceIV', 'N/A')}")
+            print(f"{tag}  PE IV:           {kMetadata.get('peIV', 'N/A')}")
+            print(f"{tag}  CE prem src:     {kMetadata.get('cePremiumSource', 'N/A')}")
+            print(f"{tag}  PE prem src:     {kMetadata.get('pePremiumSource', 'N/A')}")
+            print(f"{tag}  T (years):       {kMetadata.get('timeToExpiryYears', 'N/A')}")
+        elif kMetadata.get("source") == "static_fallback":
+            print(f"{tag}  Fallback reason: {kMetadata.get('fallbackReason', 'N/A')}")
         print(f"{tag}  CE contract:     {ceSymbol}")
         print(f"{tag}  PE contract:     {peSymbol}")
         print(f"{tag}  CE premium:      {callPremium}")
@@ -958,7 +1473,7 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
     except Exception as e:
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
                  sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True,
-                 skipReason=f"CE order failed: {e}")
+                 skipReason=f"CE order failed: {e}", kMetadata=kMetadata)
         print(f"[ENTRY] {strategyName}: CE order FAILED: {e}")
         return {"success": False, "reason": f"CE order failed: {e}"}
 
@@ -975,7 +1490,7 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
                  sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True,
                  skipReason=f"PARTIAL FILL - PE order failed after CE placed (ceOrderId={ceOrderId}): {e}",
-                 gttProtected=False, positionIntegrity="partial")
+                 gttProtected=False, positionIntegrity="partial", kMetadata=kMetadata)
         print(f"[ENTRY] {strategyName}: *** PARTIAL FILL *** PE FAILED after CE placed.")
         print(f"[ENTRY] {strategyName}: NAKED SHORT {ceSymbol} - MANUAL INTERVENTION REQUIRED")
         print(f"[ENTRY] {strategyName}: Use --exit={underlying} to flatten, then retry")
@@ -1019,7 +1534,8 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         saveState(state)
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
                  sizeResult, expiryDate, ceSymbol, peSymbol, skipped=False,
-                 skipReason="GTT_FAILED", gttProtected=False, positionIntegrity="partial")
+                 skipReason="GTT_FAILED", gttProtected=False, positionIntegrity="partial",
+                 kMetadata=kMetadata)
         return {
             "success": False, "strategyName": strategyName,
             "ceSymbol": ceSymbol, "peSymbol": peSymbol,
@@ -1040,7 +1556,7 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
     # Step 11: Log entry
     logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
              sizeResult, expiryDate, ceSymbol, peSymbol, skipped=False, skipReason=None,
-             gttProtected=gttOk, positionIntegrity="healthy")
+             gttProtected=gttOk, positionIntegrity="healthy", kMetadata=kMetadata)
 
     print(f"[ENTRY] {strategyName}: SUCCESS - {finalLots} lots, qty={totalQuantity}, "
           f"CE={ceSymbol}, PE={peSymbol}, gttProtected={gttOk}")
@@ -1063,6 +1579,13 @@ ENTRY_LOG_FIELDS = [
     "dailyVolPerLot", "dailyVolBudget", "allowedLots", "strategyMaxLots",
     "finalLots", "selectedExpiry", "ceContract", "peContract", "skipped", "skipReason",
     "gttProtected", "positionIntegrity",
+    # Dynamic K fields
+    "kSource", "kPremiumRisk", "kSpotSensitivity", "staticK",
+    "avgIV", "expectedMove", "posGamma", "posTheta", "posVega",
+    "stressK_1_5x", "stressK_2x",
+    "cePremiumUsed", "pePremiumUsed", "cePremiumSource", "pePremiumSource",
+    "ceIV", "peIV", "timeToExpiryYears", "quoteTimestamp",
+    "ceBid", "ceAsk", "ceSpreadPct", "peBid", "peAsk", "peSpreadPct",
 ]
 
 EXIT_LOG_FIELDS = [
@@ -1073,9 +1596,10 @@ EXIT_LOG_FIELDS = [
 
 def logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
              sizeResult, expiryDate, ceSymbol, peSymbol, skipped, skipReason,
-             gttProtected=True, positionIntegrity="healthy"):
+             gttProtected=True, positionIntegrity="healthy", kMetadata=None):
     """Write a structured entry log line to CSV and stdout."""
     underlying = config["underlying"]
+    km = kMetadata or {}
     row = {
         "timestamp": datetime.now().isoformat(),
         "strategyName": strategyName,
@@ -1099,6 +1623,32 @@ def logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
         "skipReason": skipReason or "",
         "gttProtected": gttProtected,
         "positionIntegrity": positionIntegrity,
+        # Dynamic K fields
+        "kSource": km.get("source", "static"),
+        "kPremiumRisk": km.get("kPremiumRisk", ""),
+        "kSpotSensitivity": km.get("kSpotSensitivity", ""),
+        "staticK": km.get("staticK", kValue),
+        "avgIV": km.get("avgIV", ""),
+        "expectedMove": km.get("expectedMove", ""),
+        "posGamma": km.get("posGamma", ""),
+        "posTheta": km.get("posTheta", ""),
+        "posVega": km.get("posVega", ""),
+        "stressK_1_5x": km.get("stressK_1_5x", ""),
+        "stressK_2x": km.get("stressK_2x", ""),
+        "cePremiumUsed": km.get("cePremiumUsed", ""),
+        "pePremiumUsed": km.get("pePremiumUsed", ""),
+        "cePremiumSource": km.get("cePremiumSource", ""),
+        "pePremiumSource": km.get("pePremiumSource", ""),
+        "ceIV": km.get("ceIV", ""),
+        "peIV": km.get("peIV", ""),
+        "timeToExpiryYears": km.get("timeToExpiryYears", ""),
+        "quoteTimestamp": km.get("quoteTimestamp", ""),
+        "ceBid": km.get("ceBid", ""),
+        "ceAsk": km.get("ceAsk", ""),
+        "ceSpreadPct": km.get("ceSpreadPct", ""),
+        "peBid": km.get("peBid", ""),
+        "peAsk": km.get("peAsk", ""),
+        "peSpreadPct": km.get("peSpreadPct", ""),
     }
 
     fileExists = ENTRY_LOG_PATH.exists()
