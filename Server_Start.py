@@ -1,6 +1,6 @@
 
 import string
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 from flask_ngrok import run_with_ngrok
 from json import loads
 from Server_Order_Place import order
@@ -9,12 +9,19 @@ from PlaceFNOTradesKite import LoopHashOrderRequest
 from PlaceMonthlyContrctFNOtrades import *
 from Server_Order_Handler import *
 from Kite_Server_Order_Handler import *
+from forecast_orchestrator import ForecastOrchestrator
+import os
 
 app = Flask(__name__)
 run_with_ngrok(app,subdomain="test111")#test111 subdomain for testing
 json = ""
 raw_data = ""
 print(app)
+
+# Initialize orchestrator (config only, no threads yet).
+# .start() is called in __main__ guard to avoid duplicate workers
+# when Flask reloader imports this module twice.
+orchestrator = ForecastOrchestrator()
 @app.route('/', methods=['POST'])
 
 
@@ -63,8 +70,64 @@ def webhook():
     else:
         abort(400)
 
+
+# ─── Forecast Orchestrator Routes ─────────────────────────────────
+
+@app.route('/forecast', methods=['POST'])
+def forecast_webhook():
+    """
+    Receives new 4-field webhook from TradingView for the forecast orchestrator.
+    Expected JSON: {"SystemName":"S30A_GoldM","Instrument":"GOLDM","Netposition":1,"ATR":1200}
+    Returns 200 immediately; processing happens in background worker thread.
+    """
+    payload = request.get_json()
+    if payload is None:
+        return 'No JSON payload', 400
+
+    result = orchestrator.HandleWebhook(payload)
+    status_code = 400 if result.get("status") == "error" else 200
+    return jsonify(result), status_code
+
+
+@app.route('/override', methods=['POST'])
+def override():
+    """
+    Manual override endpoint.
+    JSON: {"instrument":"GOLDM","override_type":"FORCE_FLAT"} or
+          {"instrument":"GOLDM","override_type":"SET_POSITION","value":5} or
+          {"instrument":"GOLDM","override_type":"CLEAR"}
+    """
+    payload = request.get_json()
+    if payload is None:
+        return 'No JSON payload', 400
+
+    instrument = payload.get("instrument")
+    override_type = payload.get("override_type")
+    value = payload.get("value")
+
+    if not instrument or not override_type:
+        return jsonify({"status": "error", "message": "instrument and override_type required"}), 400
+
+    result = orchestrator.ApplyOverride(instrument, override_type, value)
+    return jsonify(result), 200
+
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Returns orchestrator status: forecasts, positions, overrides, recent orders."""
+    return jsonify(orchestrator.GetStatus()), 200
+
+
 if __name__ == '__main__':
+    # Start orchestrator worker threads only in the main process.
+    # With Flask reloader (use_reloader=True), the module gets imported twice:
+    # once in the parent watcher process and once in the child.
+    # WERKZEUG_RUN_MAIN is set only in the child (actual server) process.
+    # Without reloader, this env var is absent so we always start.
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        orchestrator.Start()
+
     #app.run(host='0.0.0.0', port=80)
-    app.run()
+    app.run(port=5055)
     #2 ISSUE TIME IS CHAMGED TO 10 FOR STARTING AND AFTER CANCELLED ALSO ORDER PLACE
-    
+

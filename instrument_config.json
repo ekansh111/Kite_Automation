@@ -1,0 +1,441 @@
+{
+  "account": {
+    "total_capital": 10000000,
+    "annual_vol_target_pct": 0.50,
+    "dry_run": true
+  },
+  "instruments": {
+    "GOLDM": {
+      "enabled": true,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "YD6016",
+      "point_value": 10,
+      "daily_vol_target": 40219,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S30A": 0.34,
+        "S30E": 0.33,
+        "S30D": 0.33
+      },
+      "system_name_map": {
+        "S30A_GoldM": "S30A",
+        "S30E_GoldM": "S30E",
+        "S30D_GoldM": "S30D",
+        "AUTO_S30A_GoldM": "S30A",
+        "AUTO_S30E_GoldM": "S30E",
+        "AUTO_S30D_GoldM": "S30D"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "SILVERM": {
+      "enabled": true,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 5,
+      "daily_vol_target": 40219,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S30C": 0.34,
+        "S30D": 0.33,
+        "S45A": 0.33
+      },
+      "system_name_map": {
+        "S30C_SilverM": "S30C",
+        "S30D_SilverM": "S30D",
+        "S45A_SilverM": "S45A",
+        "AUTO_S30C_SilverM": "S30C",
+        "AUTO_S30D_SilverM": "S30D",
+        "AUTO_S45A_SilverM": "S45A"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "ZINCMINI": {
+      "enabled": true,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 1,
+      "daily_vol_target": 40219,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S15A": 0.50,
+        "S45A": 0.50
+      },
+      "system_name_map": {
+        "S15A_ZINC": "S15A",
+        "S45A_ZINC": "S45A",
+        "AUTO_S15A_ZINC": "S15A",
+        "AUTO_S45A_ZINC": "S45A"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "ALUMINIUM": {
+      "enabled": false,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 1,
+      "daily_vol_target": 40219,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60A": 1.00
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "NATURALGAS": {
+      "enabled": true,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 1250,
+      "daily_vol_target": 73125,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60A": 0.50,
+        "S60B": 0.50
+      },
+      "system_name_map": {
+        "S60A_NaturalGas": "S60A",
+        "S60B_NaturalGas": "S60B",
+        "AUTO_S60A_NaturalGas": "S60A",
+        "AUTO_S60B_NaturalGas": "S60B"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "CRUDEOIL": {
+      "enabled": true,
+      "exchange": "MCX",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 100,
+      "daily_vol_target": 73125,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S30A": 0.50,
+        "S45A": 0.50
+      },
+      "system_name_map": {
+        "S30A_CrudeOil": "S30A",
+        "S45A_CrudeOil": "S45A",
+        "AUTO_S30A_CrudeOil": "S30A",
+        "AUTO_S45A_CrudeOil": "S45A"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 1
+      }
+    },
+    "DHANIYA": {
+      "enabled": false,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 200,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60B": 0.34,
+        "S30A": 0.33,
+        "S45A": 0.33
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 5
+      }
+    },
+    "GUARSEED": {
+      "enabled": false,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 100,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60B": 0.34,
+        "S30A": 0.33,
+        "S45A": 0.33
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 5
+      }
+    },
+    "CASTOR": {
+      "enabled": false,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 100,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60B": 0.50,
+        "S30A": 0.50
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 5
+      }
+    },
+    "COCUDAKL": {
+      "enabled": false,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 100,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60B": 0.34,
+        "S30A": 0.33,
+        "S45A": 0.33
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 10
+      }
+    },
+    "TURMERIC": {
+      "enabled": false,
+      "exchange": "MCX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 100,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "SA": 1.00
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 10
+      }
+    },
+    "JEERA": {
+      "enabled": false,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 500,
+      "daily_vol_target": 36465,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S60A": 1.00
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 3
+      }
+    },
+    "NIFTY": {
+      "enabled": false,
+      "exchange": "NFO",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 65,
+      "daily_vol_target": 62156,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S15A": 0.25,
+        "S15B": 0.25,
+        "S30D": 0.25,
+        "S30C": 0.25
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "5",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 65
+      }
+    },
+    "BANKNIFTY": {
+      "enabled": false,
+      "exchange": "NFO",
+      "broker": "ZERODHA",
+      "user": "IK6635",
+      "point_value": 25,
+      "daily_vol_target": 62156,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S30A": 0.25,
+        "S30B": 0.25,
+        "S30C": 0.25,
+        "S45A": 0.25
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "5",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 25
+      }
+    }
+  }
+}
