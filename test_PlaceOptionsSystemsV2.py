@@ -1916,6 +1916,87 @@ class TestEdgeCases:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# GROUP 8: Intraday Move Addon (high-low range)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIntradayMoveAddon:
+    """Tests getIntradayMoveAddon uses high-low range, not open-to-close."""
+
+    def _mock_kite_ohlc(self, open_price, high, low, last):
+        """Build a mock kite with ohlc() returning the given OHLC data."""
+        mock_kite = MagicMock()
+        mock_kite.ohlc.return_value = {
+            "NSE:NIFTY 50": {
+                "ohlc": {"open": open_price, "high": high, "low": low, "close": last},
+                "last_price": last,
+            }
+        }
+        return mock_kite
+
+    def test_flat_open_to_close_but_wide_range(self):
+        """Market opened at 100, dropped to 97, recovered to 100 — range is 3%, not 0%."""
+        kite = self._mock_kite_ohlc(open_price=100, high=100.5, low=97, last=100)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        assert movePct == 3.5  # (100.5-97)/100 = 3.5%
+        assert addon == 0.06   # extreme → +6vp
+
+    def test_genuinely_flat_day(self):
+        """Market barely moved — range < 0.5%."""
+        kite = self._mock_kite_ohlc(open_price=74000, high=74200, low=73900, last=74100)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        assert movePct == 0.41  # (74200-73900)/74000 = 0.405%
+        assert addon == 0.0     # flat → 0vp
+
+    def test_mild_move_range(self):
+        """Range 0.5-1% → +2vp."""
+        kite = self._mock_kite_ohlc(open_price=24000, high=24150, low=23990, last=24100)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        # (24150-23990)/24000 = 0.667%
+        assert 0.5 <= movePct < 1.0
+        assert addon == 0.02
+
+    def test_significant_move_range(self):
+        """Range 1-1.5% → +4vp."""
+        kite = self._mock_kite_ohlc(open_price=24000, high=24200, low=23900, last=24050)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        # (24200-23900)/24000 = 1.25%
+        assert 1.0 <= movePct < 1.5
+        assert addon == 0.04
+
+    def test_extreme_move_range(self):
+        """Range > 1.5% → +6vp."""
+        kite = self._mock_kite_ohlc(open_price=24000, high=24300, low=23900, last=23950)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        # (24300-23900)/24000 = 1.667%
+        assert movePct >= 1.5
+        assert addon == 0.06
+
+    def test_api_failure_returns_zero(self):
+        """If kite.ohlc() fails, return 0 addon (fail-safe)."""
+        mock_kite = MagicMock()
+        mock_kite.ohlc.side_effect = Exception("API error")
+        addon, movePct = V2.getIntradayMoveAddon(mock_kite, "NIFTY")
+        assert addon == 0.0
+        assert movePct is None
+
+    def test_zero_open_returns_zero(self):
+        """If open price is 0 (bad data), return 0 addon."""
+        kite = self._mock_kite_ohlc(open_price=0, high=100, low=95, last=98)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        assert addon == 0.0
+        assert movePct is None
+
+    def test_regression_sensex_march24_would_have_caught_vol(self):
+        """Regression: SENSEX on March 24 showed 0.17% open-to-close but had wide swings.
+        If high-low range was 1.2%, should get +4vp not 0vp."""
+        kite = self._mock_kite_ohlc(open_price=73960, high=74400, low=73500, last=74084)
+        addon, movePct = V2.getIntradayMoveAddon(kite, "NIFTY")
+        # (74400-73500)/73960 = 1.216%
+        assert 1.0 <= movePct < 1.5
+        assert addon == 0.04  # +4vp, not 0vp like the old code would give
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════════════════════════
 

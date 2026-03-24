@@ -15,6 +15,14 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 V2_SCRIPT="$SCRIPT_DIR/PlaceOptionsSystemsV2.py"
 LOG_FILE="/tmp/v2_smoke_test_$(date +%Y%m%d_%H%M%S).log"
 
+# Detect Python — prefer python3 (has kiteconnect), use python3.13 for pytest if available
+PY=python3
+if command -v python3.13 &>/dev/null; then
+    PY_TEST=python3.13
+else
+    PY_TEST=python3
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,17 +34,16 @@ echo "  V2 Smoke Test — $(date '+%Y-%m-%d %H:%M:%S')"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-# Activate venv
+# Activate venv (optional — server may use system Python)
 if [ -f "$VENV_DIR/bin/activate" ]; then
     source "$VENV_DIR/bin/activate"
 else
-    echo -e "${RED}FAIL: venv not found at $VENV_DIR${NC}"
-    exit 1
+    echo -e "${YELLOW}INFO: No venv at $VENV_DIR — using system Python${NC}"
 fi
 
 # ─── Step 1: Unit Tests ──────────────────────────────
 echo "Step 1: Running unit tests..."
-if python3 -m pytest "$SCRIPT_DIR/test_PlaceOptionsSystemsV2.py" -v --tb=short 2>&1 | tee -a "$LOG_FILE"; then
+if $PY_TEST -m pytest "$SCRIPT_DIR/test_PlaceOptionsSystemsV2.py" -v --tb=short 2>&1 | tee -a "$LOG_FILE"; then
     echo -e "${GREEN}PASS: All unit tests passed${NC}"
 else
     echo -e "${RED}FAIL: Unit tests failed. Check output above.${NC}"
@@ -46,7 +53,7 @@ echo ""
 
 # ─── Step 2: Syntax Check ────────────────────────────
 echo "Step 2: Syntax check..."
-if python3 -c "import ast; ast.parse(open('$V2_SCRIPT').read()); print('OK')" 2>&1; then
+if $PY -c "import ast; ast.parse(open('$V2_SCRIPT').read()); print('OK')" 2>&1; then
     echo -e "${GREEN}PASS: Syntax OK${NC}"
 else
     echo -e "${RED}FAIL: Syntax error in PlaceOptionsSystemsV2.py${NC}"
@@ -69,9 +76,9 @@ fi
 echo "  Mode: DRY RUN"
 echo ""
 
-# Run and capture output
-DRY_OUTPUT=$(python3 "$V2_SCRIPT" --dry-run $OVERRIDES 2>&1)
-DRY_EXIT=$?
+# Run and capture output (|| true prevents set -e from killing the script)
+DRY_OUTPUT=$($PY "$V2_SCRIPT" --dry-run $OVERRIDES 2>&1) || true
+DRY_EXIT=${PIPESTATUS[0]:-$?}
 
 echo "$DRY_OUTPUT" | tee -a "$LOG_FILE"
 echo ""
@@ -128,7 +135,7 @@ if [ $ERRORS -eq 0 ]; then
     echo -e "${GREEN}  SMOKE TEST PASSED — safe to go live${NC}"
     echo ""
     echo "  Run live with:"
-    echo "  python3 $V2_SCRIPT $OVERRIDES"
+    echo "  $PY $V2_SCRIPT $OVERRIDES"
 else
     echo -e "${RED}  SMOKE TEST FAILED — $ERRORS error(s) found${NC}"
     echo "  Review log: $LOG_FILE"

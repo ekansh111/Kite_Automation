@@ -188,13 +188,15 @@ def getVixAddon(kite):
 
 
 def getIntradayMoveAddon(kite, underlying):
-    """Compute extra IV shock vol points based on how much spot has moved today.
+    """Compute extra IV shock vol points based on intraday high-low range.
 
-    Uses the OHLC data from kite.ohlc() to get today's open and current price.
+    Uses the OHLC data from kite.ohlc() to get today's high and low prices.
+    The high-low range captures true intraday volatility — a market that swings
+    3% down then recovers would show ~3% range, not 0% (which open-to-close gives).
 
     Returns:
         (addonDecimal, movePct) where addonDecimal is extra shock in decimal
-        (e.g. 0.04 for +4 vol points), and movePct is the realized move as %.
+        (e.g. 0.04 for +4 vol points), and movePct is the high-low range as %.
         Returns (0.0, None) on failure.
     """
     try:
@@ -202,14 +204,16 @@ def getIntradayMoveAddon(kite, underlying):
         ohlcData = kite.ohlc([spotKey])
         entry = ohlcData[spotKey]
         openPrice = float(entry["ohlc"]["open"])
-        lastPrice = float(entry["last_price"])
+        highPrice = float(entry["ohlc"]["high"])
+        lowPrice  = float(entry["ohlc"]["low"])
     except Exception:
         return (0.0, None)  # fail-safe: no add-on
 
-    if openPrice <= 0:
+    if openPrice <= 0 or lowPrice <= 0:
         return (0.0, None)
 
-    movePct = abs(lastPrice - openPrice) / openPrice * 100.0  # as percentage
+    # Use high-low range as % of open — captures true intraday volatility
+    movePct = (highPrice - lowPrice) / openPrice * 100.0
 
     for lo, hi, addon in INTRADAY_MOVE_ADDON_TABLE:
         if lo <= movePct < hi:
@@ -606,7 +610,7 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
 
     print(f"{tag}[DYNAMIC-K] IV shock build-up: base={baseIvShock*100:.0f}vp "
           f"+ VIX={vixAddon*100:.0f}vp (VIX={vixLevel}) "
-          f"+ intraday={intradayAddon*100:.0f}vp (move={intradayMovePct}%) "
+          f"+ intraday={intradayAddon*100:.0f}vp (range={intradayMovePct}%) "
           f"= {ivShockRaw*100:.1f}vp"
           f"{f' (CAPPED to {ivShockCap*100:.0f}vp)' if ivShockRaw > ivShockCap else ''}")
 
