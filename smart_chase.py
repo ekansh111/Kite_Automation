@@ -144,8 +144,13 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         CurrentPrice = Price
         Iterations = 0
 
+        FirstPoll = True
         while (time.time() - ChaseStart) < MaxChaseSeconds:
-            time.sleep(PollInterval)
+            if FirstPoll:
+                time.sleep(min(1.5, PollInterval))
+                FirstPoll = False
+            else:
+                time.sleep(PollInterval)
             Iterations += 1
 
             Status, FilledQty, PendingQty, AvgPrice = _CheckOrderStatus(
@@ -198,6 +203,7 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
                         _ModifyOrderPrice(BrokerSession, OrderDetails, OrderId,
                                           NewPrice, Broker)
                         CurrentPrice = NewPrice
+                        FirstPoll = True  # Quick re-check at new price level
                     except Exception as e:
                         Logger.warning("%s: Modify failed (iter %d): %s",
                                        Instrument, Iterations, e)
