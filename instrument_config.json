@@ -40,9 +40,22 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 2,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 2,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 8,
+        "poll_interval_seconds": 4,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 1.0
       }
     },
-    "SILVERM": {
+    "SILVERMIC": {
       "enabled": true,
       "exchange": "MCX",
       "broker": "ZERODHA",
@@ -77,14 +90,27 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 2,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 2,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 10,
+        "poll_interval_seconds": 4,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 1.0
       }
     },
     "ZINCMINI": {
       "enabled": true,
       "exchange": "MCX",
       "broker": "ZERODHA",
-      "user": "IK6635",
-      "point_value": 1,
+      "user": "YD6016",
+      "point_value": 1000,
       "daily_vol_target": 40219,
 
       "FDM": 1.1,
@@ -111,6 +137,19 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 4,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 10,
+        "chase_step_ticks": 5,
+        "max_chase_ticks": 50,
+        "poll_interval_seconds": 4,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 0.05
       }
     },
     "ALUMINIUM": {
@@ -172,6 +211,19 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 3,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 5,
+        "chase_step_ticks": 2,
+        "max_chase_ticks": 20,
+        "poll_interval_seconds": 4,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 0.10
       }
     },
     "CRUDEOIL": {
@@ -206,6 +258,19 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 2,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 1,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 5,
+        "poll_interval_seconds": 3,
+        "max_chase_seconds_entry": 40,
+        "max_chase_seconds_exit": 30,
+        "tick_size": 1.0
       }
     },
     "DHANIYA": {

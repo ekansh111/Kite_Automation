@@ -75,6 +75,20 @@ def InitDB():
                 status TEXT NOT NULL,
                 broker_order_id TEXT,
                 reason TEXT,
+                execution_mode TEXT,
+                initial_ltp REAL,
+                initial_bid REAL,
+                initial_ask REAL,
+                initial_spread REAL,
+                limit_price REAL,
+                fill_price REAL,
+                slippage REAL,
+                chase_iterations INTEGER,
+                chase_duration_seconds REAL,
+                market_fallback INTEGER,
+                spread_ratio REAL,
+                range_ratio REAL,
+                settle_wait_seconds REAL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -163,6 +177,19 @@ def GetRecentTVSignals(Instrument=None, limit=50):
     return [dict(r) for r in Rows]
 
 
+def GetLatestATR(Instrument):
+    """Return the most recent ATR value for an instrument from tradingview_signals."""
+    Conn = _GetConn()
+    Row = Conn.execute(
+        """SELECT atr FROM tradingview_signals
+           WHERE instrument = ? ORDER BY received_at DESC LIMIT 1""",
+        (Instrument,)
+    ).fetchone()
+    if Row:
+        return Row["atr"]
+    return None
+
+
 # ─── System Positions ───────────────────────────────────────────────
 
 def GetSystemPosition(Instrument):
@@ -221,6 +248,37 @@ def LogOrder(Instrument, Action, Qty, Status, BrokerOrderId=None, Reason=None):
                (instrument, action, qty, status, broker_order_id, reason, created_at)
                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
             (Instrument, Action, Qty, Status, BrokerOrderId, Reason)
+        )
+        Conn.commit()
+
+
+def LogSmartChaseOrder(Instrument, Action, Qty, Status, BrokerOrderId=None,
+                       Reason=None, FillInfo=None):
+    """Log a smart chase order with full execution details.
+    FillInfo is a dict with keys: execution_mode, initial_ltp, initial_bid,
+    initial_ask, initial_spread, limit_price, fill_price, slippage,
+    chase_iterations, chase_duration_seconds, market_fallback,
+    spread_ratio, range_ratio, settle_wait_seconds.
+    """
+    Info = FillInfo or {}
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            """INSERT INTO order_log
+               (instrument, action, qty, status, broker_order_id, reason,
+                execution_mode, initial_ltp, initial_bid, initial_ask,
+                initial_spread, limit_price, fill_price, slippage,
+                chase_iterations, chase_duration_seconds, market_fallback,
+                spread_ratio, range_ratio, settle_wait_seconds, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (Instrument, Action, Qty, Status, BrokerOrderId, Reason,
+             Info.get("execution_mode"), Info.get("initial_ltp"),
+             Info.get("initial_bid"), Info.get("initial_ask"),
+             Info.get("initial_spread"), Info.get("limit_price"),
+             Info.get("fill_price"), Info.get("slippage"),
+             Info.get("chase_iterations"), Info.get("chase_duration_seconds"),
+             Info.get("market_fallback"), Info.get("spread_ratio"),
+             Info.get("range_ratio"), Info.get("settle_wait_seconds"))
         )
         Conn.commit()
 

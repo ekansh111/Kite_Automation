@@ -22,8 +22,11 @@ from pathlib import Path
 from datetime import datetime
 
 import forecast_db as db
+import Kite_Server_Order_Handler as KiteHandler
+import Server_Order_Handler as AngelHandler
 from Kite_Server_Order_Handler import ControlOrderFlowKite
 from Server_Order_Handler import ControlOrderFlowAngel
+from smart_chase import SmartChaseExecute
 from Directories import workInputRoot
 
 Logger = logging.getLogger(__name__)
@@ -369,15 +372,11 @@ class ForecastOrchestrator:
     # ─── Order Execution ──────────────────────────────────────────────
 
     def _ExecuteDelta(self, Instrument, Delta, Target):
-        """Build old-format order dict and route to existing Kite/Angel handler.
+        """Build old-format order dict and route to smart chase or legacy handler.
 
-        The legacy handlers have inconsistent error handling:
-        - PlaceOrderKiteAPI (Server_Order_Place.py:72) returns 0 on failure instead of raising
-        - PlaceOrderAngelAPI (Server_Order_Handler.py:294) may return None on failure
-        - ControlOrderFlowKite returns order_id (could be 0 on failure)
-        - ControlOrderFlowAngel returns OrderIdDetails or OrderDetails dict
-
-        We check the return value explicitly: falsy (0, None, empty) = failure.
+        If the instrument has execution.use_smart_chase=true, runs the smart chase
+        algorithm (pre-flight checks, volatility assessment, chase loop).
+        Otherwise falls back to the legacy ControlOrderFlowKite/Angel path.
         """
         Config = self.Instruments[Instrument]
         Pos = db.GetSystemPosition(Instrument)
@@ -387,24 +386,78 @@ class ForecastOrchestrator:
 
         Broker = Config["broker"]
         Action = "BUY" if Delta > 0 else "SELL"
+        ExecConfig = Config.get("execution", {})
 
         Logger.info(
-            "%s: Executing %s %d contracts via %s (target=%d)",
-            Instrument, Action, abs(Delta), Broker, Target
+            "%s: Executing %s %d contracts via %s (target=%d, smart_chase=%s)",
+            Instrument, Action, abs(Delta), Broker, Target,
+            ExecConfig.get("use_smart_chase", False)
         )
 
         try:
-            Result = None
-            if Broker == "ZERODHA":
-                Result = ControlOrderFlowKite(OrderDict)
-            elif Broker == "ANGEL":
-                Result = ControlOrderFlowAngel(OrderDict)
-            else:
-                raise ValueError(f"Unknown broker: {Broker}")
+            # Check ATR availability before committing to smart chase path.
+            # Pre-steps modify OrderDict in-place, so we must decide the path
+            # BEFORE running them (legacy handler does its own pre-steps).
+            UseSmartChase = ExecConfig.get("use_smart_chase", False)
+            if UseSmartChase:
+                ATR = db.GetLatestATR(Instrument)
+                if ATR is None or ATR <= 0:
+                    Logger.warning("%s: No valid ATR for smart chase, falling back to legacy",
+                                   Instrument)
+                    UseSmartChase = False
+
+            if UseSmartChase:
+                # ── Smart Chase Path ──────────────────────────────────
+                # Run pre-steps that the legacy handler normally does:
+                # establish broker session, resolve contract name, validate qty
+                if Broker == "ZERODHA":
+                    Session = KiteHandler.EstablishConnectionKiteAPI(OrderDict)
+                    KiteHandler.ConfigureNetDirectionOfTrade(OrderDict)
+                    KiteHandler.Validate_Quantity(OrderDict)
+                    if OrderDict['ContractNameProvided'] == 'False':
+                        KiteHandler.PrepareInstrumentContractNameKite(Session, OrderDict)
+                elif Broker == "ANGEL":
+                    Session = AngelHandler.EstablishConnectionAngelAPI(OrderDict)
+                    AngelHandler.ConfigureNetDirectionOfTrade(OrderDict)
+                    AngelHandler.Validate_Quantity(OrderDict)
+                    if OrderDict['ContractNameProvided'] == 'False':
+                        AngelHandler.PrepareInstrumentContractName(Session, OrderDict)
+                else:
+                    raise ValueError(f"Unknown broker: {Broker}")
+
+                IsEntry = abs(Target) > abs(Current)
+                Success, OrderId, FillInfo = SmartChaseExecute(
+                    Session, OrderDict, ExecConfig, IsEntry, Broker, ATR
+                )
+
+                if Success:
+                    db.UpdateConfirmedQty(Instrument, Target)
+                    db.UpdateSystemPosition(Instrument, Target, Target)
+                    db.LogSmartChaseOrder(
+                        Instrument, Action, abs(Delta), "FILLED",
+                        BrokerOrderId=str(OrderId) if OrderId else None,
+                        FillInfo=FillInfo
+                    )
+                    Logger.info("%s: Smart chase FILLED (id=%s), confirmed_qty → %d",
+                                Instrument, OrderId, Target)
+                else:
+                    # Log failure WITH full FillInfo (partial execution data)
+                    db.LogSmartChaseOrder(
+                        Instrument, Action, abs(Delta), "FAILED",
+                        BrokerOrderId=str(OrderId) if OrderId else None,
+                        Reason=f"mode={FillInfo.get('execution_mode')}",
+                        FillInfo=FillInfo
+                    )
+                    raise RuntimeError(
+                        f"Smart chase failed (order_id={OrderId}, "
+                        f"mode={FillInfo.get('execution_mode')})"
+                    )
+                return
+
+            # ── Legacy Path ───────────────────────────────────────────
+            Result = self._ExecuteLegacy(OrderDict, Broker)
 
             # Check for non-raising failures:
-            # Kite returns order_id (int) — 0 means failure
-            # Angel returns OrderIdDetails dict or order ID — None/empty means failure
             if Result is None or Result == 0 or Result == "":
                 raise RuntimeError(
                     f"Broker handler returned falsy result: {Result!r}. "
@@ -426,6 +479,15 @@ class ForecastOrchestrator:
             db.LogOrder(Instrument, Action, abs(Delta), "FAILED",
                         Reason=str(e))
             Logger.error("%s: Order FAILED: %s", Instrument, e)
+
+    def _ExecuteLegacy(self, OrderDict, Broker):
+        """Route to the legacy ControlOrderFlow handler. Returns order_id."""
+        if Broker == "ZERODHA":
+            return ControlOrderFlowKite(OrderDict)
+        elif Broker == "ANGEL":
+            return ControlOrderFlowAngel(OrderDict)
+        else:
+            raise ValueError(f"Unknown broker: {Broker}")
 
     def _BuildOrderDict(self, Instrument, Delta, Target, Current):
         """
