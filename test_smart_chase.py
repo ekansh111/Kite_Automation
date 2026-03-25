@@ -140,7 +140,7 @@ class TestAssessVolatility(unittest.TestCase):
         intra_range = range_ratio * atr
         ohlc = {"high": 72450 + intra_range / 2, "low": 72450 - intra_range / 2}
 
-        mode = _AssessVolatility(quote, ohlc, atr, cfg)
+        mode, spread_level, range_level = _AssessVolatility(quote, ohlc, atr, cfg)
         self.assertEqual(mode, expected_mode,
                          f"spread_ratio={spread_ratio} range_ratio={range_ratio} "
                          f"→ expected {expected_mode}, got {mode}")
@@ -164,7 +164,7 @@ class TestAssessVolatility(unittest.TestCase):
         """When OHLC is None, range_ratio defaults to 0.5 (normal row)."""
         cfg = _make_config()
         quote = _make_quote(bid=72449, ask=72451)
-        mode = _AssessVolatility(quote, None, 500, cfg)
+        mode, sl, rl = _AssessVolatility(quote, None, 500, cfg)
         # spread=2, baseline=2 → ratio=1.0 → tight. range=normal. → C
         self.assertEqual(mode, "C")
 
@@ -172,7 +172,7 @@ class TestAssessVolatility(unittest.TestCase):
         """When ATR is 0, range_ratio defaults to 0.5 (normal row)."""
         cfg = _make_config()
         quote = _make_quote(bid=72449, ask=72451)
-        mode = _AssessVolatility(quote, {"high": 72500, "low": 72400}, 0, cfg)
+        mode, sl, rl = _AssessVolatility(quote, {"high": 72500, "low": 72400}, 0, cfg)
         self.assertEqual(mode, "C")
 
 
@@ -1319,7 +1319,8 @@ class TestVolatilityBoundary(unittest.TestCase):
         atr = 500.0
         intra_range = range_ratio * atr
         ohlc = {"high": 72450 + intra_range / 2, "low": 72450 - intra_range / 2}
-        return _AssessVolatility(q, ohlc, atr, cfg)
+        mode, sl, rl = _AssessVolatility(q, ohlc, atr, cfg)
+        return mode
 
     def test_spread_at_exact_1_5(self):
         """Spread ratio exactly 1.5 → tight."""
@@ -1365,7 +1366,7 @@ class TestVolatilityBoundary(unittest.TestCase):
         """If baseline_spread_ticks=0, spread_ratio defaults to 1.0."""
         cfg = _make_config(baseline_spread_ticks=0, tick_size=1.0)
         q = _make_quote(bid=72449, ask=72451)
-        mode = _AssessVolatility(q, {"high": 72500, "low": 72400}, 500, cfg)
+        mode, sl, rl = _AssessVolatility(q, {"high": 72500, "low": 72400}, 500, cfg)
         # spread_ratio=1.0 → tight; range=200/500=0.4 → low → C
         self.assertEqual(mode, "C")
 

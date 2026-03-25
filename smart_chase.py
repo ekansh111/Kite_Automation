@@ -88,8 +88,10 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
 
         # ── Step 1: Assess volatility ─────────────────────────────
         OHLC = _FetchOHLC(BrokerSession, OrderDetails, Broker)
-        Mode = _AssessVolatility(Quote, OHLC, ATR, Config)
+        Mode, SpreadLevel, RangeLevel = _AssessVolatility(Quote, OHLC, ATR, Config)
         FillInfo["execution_mode"] = Mode
+        FillInfo["spread_level"] = SpreadLevel
+        FillInfo["range_level"] = RangeLevel
 
         Bid = Quote.get("best_bid", Quote.get("ltp", 0))
         Ask = Quote.get("best_ask", Quote.get("ltp", 0))
@@ -101,6 +103,10 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         FillInfo["initial_spread"] = round(Ask - Bid, 4) if Ask and Bid else None
         FillInfo["spread_ratio"] = Quote.get("spread_ratio")
         FillInfo["range_ratio"] = Quote.get("range_ratio")
+        FillInfo["atr"] = ATR
+        FillInfo["ohlc"] = OHLC
+        FillInfo["baseline_spread"] = Config.get("baseline_spread_ticks", 2) * TickSize
+        FillInfo["depth"] = Quote.get("depth", {})
 
         Logger.info(
             "%s: Volatility assessment | spread=%.2f ratio=%.1f | range_ratio=%.2f → Mode %s",
@@ -149,7 +155,14 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
             if Status == "COMPLETE":
                 Elapsed = round(time.time() - ChaseStart, 1)
                 FillInfo["fill_price"] = AvgPrice
-                FillInfo["slippage"] = round(AvgPrice - LTP, 4) if AvgPrice else None
+                # Slippage: negative = favorable, positive = adverse
+                # BUY: paying more than LTP is adverse (+), less is favorable (-)
+                # SELL: receiving more than LTP is favorable (-), less is adverse (+)
+                if AvgPrice:
+                    RawSlip = AvgPrice - LTP
+                    FillInfo["slippage"] = round(-RawSlip, 4) if Direction < 0 else round(RawSlip, 4)
+                else:
+                    FillInfo["slippage"] = None
                 FillInfo["chase_iterations"] = Iterations
                 FillInfo["chase_duration_seconds"] = Elapsed
                 Logger.info(
@@ -202,7 +215,11 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         if Status == "COMPLETE":
             Elapsed = round(time.time() - ChaseStart, 1)
             FillInfo["fill_price"] = AvgPrice
-            FillInfo["slippage"] = round(AvgPrice - LTP, 4) if AvgPrice else None
+            if AvgPrice:
+                RawSlip = AvgPrice - LTP
+                FillInfo["slippage"] = round(-RawSlip, 4) if Direction < 0 else round(RawSlip, 4)
+            else:
+                FillInfo["slippage"] = None
             FillInfo["chase_iterations"] = Iterations
             FillInfo["chase_duration_seconds"] = Elapsed
             _SendOrderEmail(OrderDetails, FillInfo, "FILLED")
@@ -226,7 +243,11 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         )
         Elapsed = round(time.time() - ChaseStart, 1)
         FillInfo["fill_price"] = AvgPrice
-        FillInfo["slippage"] = round(AvgPrice - LTP, 4) if AvgPrice else None
+        if AvgPrice:
+            RawSlip = AvgPrice - LTP
+            FillInfo["slippage"] = round(-RawSlip, 4) if Direction < 0 else round(RawSlip, 4)
+        else:
+            FillInfo["slippage"] = None
         FillInfo["chase_iterations"] = Iterations
         FillInfo["chase_duration_seconds"] = Elapsed
 
@@ -395,7 +416,8 @@ def _AssessVolatility(Quote, OHLC, ATR, Config):
         ("high",   "tight"):  "A", ("high",   "normal"): "B", ("high",   "wide"): "B",
     }
 
-    return Matrix.get((RangeLevel, SpreadLevel), "A")
+    Mode = Matrix.get((RangeLevel, SpreadLevel), "A")
+    return Mode, SpreadLevel, RangeLevel
 
 
 # ─── Quote & OHLC Fetching ────────────────────────────────────────────
@@ -656,32 +678,118 @@ def _SendOrderEmail(OrderDetails, FillInfo, Outcome):
             Subject += f" @ {FillPrice}"
         Subject += f" — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
+        # Build slippage display
+        Slip = FillInfo.get('slippage', None)
+        if Slip is not None:
+            SlipLabel = f"{Slip:+.2f} ({'favorable' if Slip < 0 else 'adverse'})"
+        else:
+            SlipLabel = "N/A"
+
+        # Execution mode descriptions
+        ModeDesc = {
+            "A": "Match (cross spread — hit counterparty's price)",
+            "B": "Aggressive (cross spread + buffer ticks beyond)",
+            "C": "Passive (join your side of book — wait for fill)",
+        }
+        ModeExplain = ModeDesc.get(Mode, Mode)
+
+        # Matrix context
+        SpreadLvl = FillInfo.get('spread_level', 'N/A')
+        RangeLvl = FillInfo.get('range_level', 'N/A')
+
+        # Build matrix display with marker
+        def _MatrixCell(r, s, current_r, current_s):
+            CellMap = {
+                ("low","tight"):"C", ("low","normal"):"C", ("low","wide"):"C",
+                ("normal","tight"):"C", ("normal","normal"):"C", ("normal","wide"):"A",
+                ("high","tight"):"A", ("high","normal"):"B", ("high","wide"):"B",
+            }
+            Val = CellMap.get((r, s), "?")
+            return f"[{Val}]" if r == current_r and s == current_s else f" {Val} "
+
+        # Build volatility calculation breakdown
+        OhlcData = FillInfo.get('ohlc') or {}
+        OhlcHigh = OhlcData.get('high', 'N/A')
+        OhlcLow = OhlcData.get('low', 'N/A')
+        AtrVal = FillInfo.get('atr', 'N/A')
+        BaselineSpread = FillInfo.get('baseline_spread', 'N/A')
+
+        if OhlcHigh != 'N/A' and OhlcLow != 'N/A':
+            IntraRange = OhlcHigh - OhlcLow
+            RangeCalc = f"  Intraday High:  {OhlcHigh}\n  Intraday Low:   {OhlcLow}\n  Intraday Range: {IntraRange:.2f}\n  ATR:            {AtrVal}\n  Range/ATR:      {IntraRange:.2f} / {AtrVal} = {FillInfo.get('range_ratio', 'N/A')}"
+        else:
+            RangeCalc = f"  OHLC: N/A (defaulted to 0.5)\n  ATR:  {AtrVal}"
+
+        ActualSpread = FillInfo.get('initial_spread', 'N/A')
+        SpreadCalc = f"  Spread:         {ActualSpread}\n  Baseline:       {BaselineSpread}\n  Spread Ratio:   {ActualSpread} / {BaselineSpread} = {FillInfo.get('spread_ratio', 'N/A')}"
+
+        # Build order book depth
+        DepthData = FillInfo.get('depth', {})
+        BuyDepth = DepthData.get('buy', [])
+        SellDepth = DepthData.get('sell', [])
+        DepthLines = "Order Book:\n  BID (Buy)                    ASK (Sell)\n  Price      Qty   Orders     Price      Qty   Orders\n"
+        for i in range(min(5, max(len(BuyDepth), len(SellDepth)))):
+            b = BuyDepth[i] if i < len(BuyDepth) else {}
+            s = SellDepth[i] if i < len(SellDepth) else {}
+            bp = f"{b.get('price', ''):>10}" if b.get('price') else "         -"
+            bq = f"{b.get('quantity', ''):>5}" if b.get('quantity') else "    -"
+            bo = f"{b.get('orders', ''):>5}" if b.get('orders') else "    -"
+            sp = f"{s.get('price', ''):>10}" if s.get('price') else "         -"
+            sq = f"{s.get('quantity', ''):>5}" if s.get('quantity') else "    -"
+            so = f"{s.get('orders', ''):>5}" if s.get('orders') else "    -"
+            DepthLines += f"  {bp} {bq} {bo}     {sp} {sq} {so}\n"
+
+        MatrixStr = f"""
+Decision Matrix (Range x Spread -> Mode):
+  ┌──────────┬─────────┬─────────┬─────────┐
+  │          │ Tight   │ Normal  │  Wide   │
+  ├──────────┼─────────┼─────────┼─────────┤
+  │ Low      │  {_MatrixCell('low','tight',RangeLvl,SpreadLvl)}    │  {_MatrixCell('low','normal',RangeLvl,SpreadLvl)}    │  {_MatrixCell('low','wide',RangeLvl,SpreadLvl)}    │
+  │ Normal   │  {_MatrixCell('normal','tight',RangeLvl,SpreadLvl)}    │  {_MatrixCell('normal','normal',RangeLvl,SpreadLvl)}    │  {_MatrixCell('normal','wide',RangeLvl,SpreadLvl)}    │
+  │ High     │  {_MatrixCell('high','tight',RangeLvl,SpreadLvl)}    │  {_MatrixCell('high','normal',RangeLvl,SpreadLvl)}    │  {_MatrixCell('high','wide',RangeLvl,SpreadLvl)}    │
+  └──────────┴─────────┴─────────┴─────────┘
+  Current: Range={RangeLvl}, Spread={SpreadLvl} -> Mode {Mode}
+
+Thresholds:
+  Range:  low <= 0.4 | normal <= 0.8 | high > 0.8
+  Spread: tight <= 1.5 | normal <= 3.0 | wide > 3.0"""
+
         Body = f"""Instrument:     {Instrument}
 Action:         {Action}
 Quantity:       {Qty}
 Fill Price:     {FillInfo.get('fill_price', 'N/A')}
-Slippage:       {FillInfo.get('slippage', 'N/A')} vs LTP ({FillInfo.get('initial_ltp', 'N/A')})
-Execution Mode: {Mode}
+Slippage:       {SlipLabel} vs LTP ({FillInfo.get('initial_ltp', 'N/A')})
+Execution Mode: {Mode} — {ModeExplain}
 Outcome:        {Outcome}
 
 Market Context:
   Initial LTP:  {FillInfo.get('initial_ltp', 'N/A')}
   Best Bid:     {FillInfo.get('initial_bid', 'N/A')}
   Best Ask:     {FillInfo.get('initial_ask', 'N/A')}
-  Spread:       {FillInfo.get('initial_spread', 'N/A')}
-  Spread Ratio: {FillInfo.get('spread_ratio', 'N/A')}
-  Range/ATR:    {FillInfo.get('range_ratio', 'N/A')}
 
+Range Calculation:
+{RangeCalc}
+
+Spread Calculation:
+{SpreadCalc}
+
+{DepthLines}
 Execution Details:
   Chase Iters:  {FillInfo.get('chase_iterations', 0)}
   Duration:     {FillInfo.get('chase_duration_seconds', 0)}s
   Market Fallback: {'Yes' if FillInfo.get('market_fallback') else 'No'}
   Settle Wait:  {FillInfo.get('settle_wait_seconds', 0)}s
+{MatrixStr}
 
 Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 """
 
-        Msg = MIMEText(Body)
+        import html as _html
+        HtmlBody = f"""<html><body>
+<pre style="font-family: Consolas, 'Courier New', monospace; font-size: 14px; line-height: 1.4; color: #222; background: #f9f9f9; padding: 16px; border-radius: 6px;">
+{_html.escape(Body)}
+</pre></body></html>"""
+        Msg = MIMEText(HtmlBody, "html")
         Msg["Subject"] = Subject
         Msg["From"] = EmailCfg["sender"]
         Msg["To"] = EmailCfg["recipient"]
