@@ -792,103 +792,160 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 
         import html as _html
 
-        # Helper for key-value rows
-        def _kv(label, value):
-            return f'<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">{_html.escape(str(label))}</td><td style="padding:4px 0;color:#222;">{_html.escape(str(value))}</td></tr>'
+        # ── Color palette ──
+        NAVY = "#003366"
+        DARK_BG = "#1a1a2e"
+        CARD_BG = "#ffffff"
+        ACCENT_GREEN = "#00c853"
+        ACCENT_RED = "#ff1744"
+        MUTED = "#8892a0"
+        LABEL_CLR = "#6b7b8d"
+        VALUE_CLR = "#1a1a2e"
+        BORDER = "#e4e8ee"
+        SECTION_BG = "#f7f9fc"
+        ALT_ROW = "#f7f9fc"
 
-        # Helper for section header
-        def _section(title):
-            return f'<tr><td colspan="2" style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">{_html.escape(title)}</td></tr>'
+        # Action badge color
+        ActionColor = ACCENT_GREEN if Action == "BUY" else ACCENT_RED
 
         # Slippage color
-        SlipColor = "#2e7d32" if Slip is not None and Slip < 0 else "#c62828" if Slip is not None and Slip > 0 else "#555"
-        SlipHtml = f'<span style="color:{SlipColor};font-weight:bold;">{_html.escape(SlipLabel)}</span> vs LTP ({FillInfo.get("initial_ltp", "N/A")})'
+        SlipColor = ACCENT_GREEN if Slip is not None and Slip < 0 else ACCENT_RED if Slip is not None and Slip > 0 else MUTED
+        SlipBadge = "FAVORABLE" if Slip is not None and Slip < 0 else "ADVERSE" if Slip is not None and Slip > 0 else ""
 
         # Outcome color
-        OutColor = "#2e7d32" if Outcome == "FILLED" else "#c62828"
+        OutColor = ACCENT_GREEN if Outcome == "FILLED" else ACCENT_RED
 
-        # Build order book HTML table
-        DepthHtml = '<table style="width:100%;border-collapse:collapse;font-size:13px;margin:6px 0;">'
-        DepthHtml += '<tr style="background:#003366;color:white;"><th colspan="3" style="padding:4px 6px;text-align:center;">BID (Buy)</th><th colspan="3" style="padding:4px 6px;text-align:center;">ASK (Sell)</th></tr>'
-        DepthHtml += '<tr style="background:#e8e8e8;"><th style="padding:3px 6px;">Price</th><th style="padding:3px 6px;">Qty</th><th style="padding:3px 6px;">Ord</th><th style="padding:3px 6px;">Price</th><th style="padding:3px 6px;">Qty</th><th style="padding:3px 6px;">Ord</th></tr>'
+        # Helper: key-value row
+        def _kv(label, value, val_color=None, val_bold=False):
+            vc = val_color or VALUE_CLR
+            fw = "font-weight:600;" if val_bold else ""
+            return f'<tr><td style="padding:8px 12px;color:{LABEL_CLR};font-size:13px;font-weight:500;width:40%;border-bottom:1px solid {BORDER};">{_html.escape(str(label))}</td><td style="padding:8px 12px;color:{vc};font-size:14px;{fw}border-bottom:1px solid {BORDER};">{_html.escape(str(value))}</td></tr>'
+
+        # Helper: section card wrapper
+        def _card_start(title, icon=""):
+            return f"""<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;overflow:hidden;border:1px solid {BORDER};">
+<div style="background:{SECTION_BG};padding:12px 16px;border-bottom:1px solid {BORDER};">
+<span style="font-size:14px;font-weight:700;color:{NAVY};letter-spacing:0.3px;">{icon} {_html.escape(title)}</span>
+</div>
+<table style="width:100%;border-collapse:collapse;">"""
+
+        def _card_end():
+            return '</table></div>'
+
+        # ── Order Book table ──
+        DepthHtml = f'<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;overflow:hidden;border:1px solid {BORDER};">'
+        DepthHtml += f'<div style="background:{SECTION_BG};padding:12px 16px;border-bottom:1px solid {BORDER};"><span style="font-size:14px;font-weight:700;color:{NAVY};letter-spacing:0.3px;">📊 Order Book</span></div>'
+        DepthHtml += f'<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+        DepthHtml += f'<tr><th colspan="3" style="padding:8px;text-align:center;background:{ACCENT_GREEN};color:white;font-weight:600;font-size:11px;letter-spacing:1px;">BID (BUY)</th><th colspan="3" style="padding:8px;text-align:center;background:{ACCENT_RED};color:white;font-weight:600;font-size:11px;letter-spacing:1px;">ASK (SELL)</th></tr>'
+        DepthHtml += f'<tr style="background:{SECTION_BG};"><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Price</th><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Qty</th><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Ord</th><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Price</th><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Qty</th><th style="padding:6px 8px;font-size:11px;color:{MUTED};font-weight:600;">Ord</th></tr>'
         for i in range(min(5, max(len(BuyDepth), len(SellDepth)))):
             b = BuyDepth[i] if i < len(BuyDepth) else {}
             s = SellDepth[i] if i < len(SellDepth) else {}
-            bg = "#f2f7fb" if i % 2 == 0 else "#ffffff"
+            bg = ALT_ROW if i % 2 == 0 else CARD_BG
             DepthHtml += f'<tr style="background:{bg};">'
-            DepthHtml += f'<td style="padding:3px 6px;text-align:right;">{b.get("price", "-")}</td><td style="padding:3px 6px;text-align:right;">{b.get("quantity", "-")}</td><td style="padding:3px 6px;text-align:right;">{b.get("orders", "-")}</td>'
-            DepthHtml += f'<td style="padding:3px 6px;text-align:right;">{s.get("price", "-")}</td><td style="padding:3px 6px;text-align:right;">{s.get("quantity", "-")}</td><td style="padding:3px 6px;text-align:right;">{s.get("orders", "-")}</td>'
+            DepthHtml += f'<td style="padding:6px 8px;text-align:right;color:{ACCENT_GREEN};font-weight:500;">{b.get("price", "-")}</td><td style="padding:6px 8px;text-align:right;color:{VALUE_CLR};">{b.get("quantity", "-")}</td><td style="padding:6px 8px;text-align:right;color:{MUTED};">{b.get("orders", "-")}</td>'
+            DepthHtml += f'<td style="padding:6px 8px;text-align:right;color:{ACCENT_RED};font-weight:500;">{s.get("price", "-")}</td><td style="padding:6px 8px;text-align:right;color:{VALUE_CLR};">{s.get("quantity", "-")}</td><td style="padding:6px 8px;text-align:right;color:{MUTED};">{s.get("orders", "-")}</td>'
             DepthHtml += '</tr>'
-        DepthHtml += '</table>'
+        DepthHtml += '</table></div>'
 
-        # Build decision matrix HTML
+        # ── Decision Matrix ──
         def _mc(r, s, cr, cs):
             CellMap = {("low","tight"):"C",("low","normal"):"C",("low","wide"):"C",("normal","tight"):"C",("normal","normal"):"C",("normal","wide"):"A",("high","tight"):"A",("high","normal"):"B",("high","wide"):"B"}
             v = CellMap.get((r, s), "?")
             if r == cr and s == cs:
-                return f'<td style="padding:4px 8px;text-align:center;background:#003366;color:white;font-weight:bold;">{v}</td>'
-            return f'<td style="padding:4px 8px;text-align:center;">{v}</td>'
+                return f'<td style="padding:8px 12px;text-align:center;background:{NAVY};color:white;font-weight:700;font-size:15px;border-radius:6px;">{v}</td>'
+            return f'<td style="padding:8px 12px;text-align:center;color:{VALUE_CLR};font-size:14px;border:1px solid {BORDER};">{v}</td>'
 
-        MatrixHtml = '<table style="border-collapse:collapse;font-size:13px;margin:6px 0;">'
-        MatrixHtml += '<tr><th style="padding:4px 8px;"></th><th style="padding:4px 8px;background:#e8e8e8;">Tight</th><th style="padding:4px 8px;background:#e8e8e8;">Normal</th><th style="padding:4px 8px;background:#e8e8e8;">Wide</th></tr>'
+        MatrixHtml = f'<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;overflow:hidden;border:1px solid {BORDER};">'
+        MatrixHtml += f'<div style="background:{SECTION_BG};padding:12px 16px;border-bottom:1px solid {BORDER};"><span style="font-size:14px;font-weight:700;color:{NAVY};letter-spacing:0.3px;">🎯 Decision Matrix</span></div>'
+        MatrixHtml += f'<div style="padding:16px;"><table style="width:100%;border-collapse:separate;border-spacing:3px;font-size:13px;">'
+        MatrixHtml += f'<tr><th style="padding:8px;"></th><th style="padding:8px;background:{SECTION_BG};border-radius:6px;color:{MUTED};font-size:11px;font-weight:600;letter-spacing:0.5px;">TIGHT</th><th style="padding:8px;background:{SECTION_BG};border-radius:6px;color:{MUTED};font-size:11px;font-weight:600;letter-spacing:0.5px;">NORMAL</th><th style="padding:8px;background:{SECTION_BG};border-radius:6px;color:{MUTED};font-size:11px;font-weight:600;letter-spacing:0.5px;">WIDE</th></tr>'
         for rng in ["low", "normal", "high"]:
-            MatrixHtml += f'<tr><th style="padding:4px 8px;background:#e8e8e8;text-align:left;">{rng.title()}</th>{_mc(rng,"tight",RangeLvl,SpreadLvl)}{_mc(rng,"normal",RangeLvl,SpreadLvl)}{_mc(rng,"wide",RangeLvl,SpreadLvl)}</tr>'
+            MatrixHtml += f'<tr><th style="padding:8px;background:{SECTION_BG};border-radius:6px;text-align:left;color:{MUTED};font-size:11px;font-weight:600;letter-spacing:0.5px;">{rng.upper()}</th>{_mc(rng,"tight",RangeLvl,SpreadLvl)}{_mc(rng,"normal",RangeLvl,SpreadLvl)}{_mc(rng,"wide",RangeLvl,SpreadLvl)}</tr>'
         MatrixHtml += '</table>'
-        MatrixHtml += f'<div style="font-size:12px;color:#666;margin:4px 0;">Current: Range={RangeLvl}, Spread={SpreadLvl} → Mode {Mode}</div>'
-        MatrixHtml += f'<div style="font-size:11px;color:#999;margin:2px 0;">Range: low ≤ 0.4 | normal ≤ 0.8 | high &gt; 0.8</div>'
-        MatrixHtml += f'<div style="font-size:11px;color:#999;margin:2px 0;">Spread: tight ≤ 1.5 | normal ≤ 3.0 | wide &gt; 3.0</div>'
+        MatrixHtml += f'<div style="margin-top:12px;padding:10px;background:{SECTION_BG};border-radius:8px;font-size:12px;color:{LABEL_CLR};">'
+        MatrixHtml += f'<strong>Selected:</strong> Range=<strong>{RangeLvl}</strong>, Spread=<strong>{SpreadLvl}</strong> → Mode <strong style="color:{NAVY};">{Mode}</strong><br>'
+        MatrixHtml += f'<span style="font-size:11px;color:{MUTED};">Range: low ≤ 0.4 · normal ≤ 0.8 · high &gt; 0.8 &nbsp;|&nbsp; Spread: tight ≤ 1.5 · normal ≤ 3.0 · wide &gt; 3.0</span>'
+        MatrixHtml += '</div></div></div>'
 
-        # Range calc HTML
+        # ── Range calc ──
         if OhlcHigh != 'N/A' and OhlcLow != 'N/A':
             IntraRange = OhlcHigh - OhlcLow
-            RangeHtml = _kv("Intraday High", OhlcHigh) + _kv("Intraday Low", OhlcLow) + _kv("Intraday Range", f"{IntraRange:.2f}") + _kv("ATR", AtrVal) + _kv("Range / ATR", f"{IntraRange:.2f} / {AtrVal} = {FillInfo.get('range_ratio', 'N/A')}")
+            RangeHtml = _kv("Intraday High", OhlcHigh) + _kv("Intraday Low", OhlcLow) + _kv("Intraday Range", f"{IntraRange:.2f}") + _kv("ATR", f"{AtrVal}") + _kv("Range / ATR", f"{IntraRange:.2f} / {AtrVal} = {FillInfo.get('range_ratio', 'N/A')}")
         else:
-            RangeHtml = _kv("OHLC", "N/A (defaulted to 0.5)") + _kv("ATR", AtrVal)
+            RangeHtml = _kv("OHLC", "N/A (defaulted to 0.5)") + _kv("ATR", f"{AtrVal}")
 
-        SpreadHtml = _kv("Spread", ActualSpread) + _kv("Baseline", BaselineSpread) + _kv("Spread Ratio", f"{ActualSpread} / {BaselineSpread} = {FillInfo.get('spread_ratio', 'N/A')}")
+        SpreadHtml = _kv("Spread", f"{ActualSpread}") + _kv("Baseline", f"{BaselineSpread}") + _kv("Spread Ratio", f"{ActualSpread} / {BaselineSpread} = {FillInfo.get('spread_ratio', 'N/A')}")
+
+        # ── Slippage display ──
+        SlipDisplay = f'<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:{SlipColor};color:white;font-weight:600;font-size:12px;">{SlipBadge}</span> {Slip:+.2f} vs LTP ({FillInfo.get("initial_ltp", "N/A")})' if Slip is not None else "N/A"
 
         HtmlBody = f"""<html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:14px;color:#222;">
-<div style="max-width:600px;margin:0 auto;padding:12px;">
+<body style="margin:0;padding:0;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+<div style="max-width:600px;margin:0 auto;padding:16px;">
 
-<table style="width:100%;border-collapse:collapse;">
-{_section("Order Summary")}
-{_kv("Instrument", Instrument)}
-{_kv("Action", Action)}
-{_kv("Quantity", Qty)}
-{_kv("Fill Price", FillInfo.get('fill_price', 'N/A'))}
-<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">Slippage</td><td style="padding:4px 0;">{SlipHtml}</td></tr>
-{_kv("Execution Mode", f"{Mode} — {ModeExplain}")}
-<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">Outcome</td><td style="padding:4px 0;color:{OutColor};font-weight:bold;">{_html.escape(Outcome)}</td></tr>
+<!-- Header Banner -->
+<div style="background:linear-gradient(135deg,{DARK_BG} 0%,{NAVY} 100%);border-radius:16px;padding:24px;margin-bottom:16px;text-align:center;">
+<div style="font-size:11px;color:{MUTED};letter-spacing:2px;font-weight:600;margin-bottom:8px;">SMART CHASE</div>
+<div style="font-size:28px;font-weight:700;color:white;margin-bottom:4px;">{_html.escape(Instrument)}</div>
+<div style="margin:12px 0;">
+<span style="display:inline-block;padding:6px 20px;border-radius:20px;background:{ActionColor};color:white;font-weight:700;font-size:14px;letter-spacing:1px;">{_html.escape(Action)} {Qty}</span>
+</div>
+<div style="font-size:24px;font-weight:700;color:white;margin:8px 0;">₹{_html.escape(str(FillInfo.get('fill_price', 'N/A')))}</div>
+<div style="margin-top:8px;">
+<span style="display:inline-block;padding:4px 14px;border-radius:12px;background:{'rgba(0,200,83,0.2)' if Outcome == 'FILLED' else 'rgba(255,23,68,0.2)'};color:{OutColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">{_html.escape(Outcome)}</span>
+</div>
+</div>
 
-{_section("Market Context")}
-{_kv("Initial LTP", FillInfo.get('initial_ltp', 'N/A'))}
+<!-- Slippage Card -->
+<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;padding:16px;border:1px solid {BORDER};text-align:center;">
+<div style="font-size:11px;color:{MUTED};font-weight:600;letter-spacing:1px;margin-bottom:8px;">SLIPPAGE</div>
+<div style="font-size:22px;font-weight:700;color:{SlipColor};">{Slip:+.2f if Slip is not None else 'N/A'}</div>
+<div style="font-size:12px;color:{MUTED};margin-top:4px;">{'vs LTP ' + str(FillInfo.get("initial_ltp", "N/A")) if Slip is not None else ''}</div>
+<div style="margin-top:8px;"><span style="display:inline-block;padding:3px 12px;border-radius:10px;background:{SlipColor};color:white;font-size:11px;font-weight:600;letter-spacing:0.5px;">{SlipBadge}</span></div>
+</div>
+
+<!-- Execution Mode Card -->
+<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;padding:16px;border:1px solid {BORDER};text-align:center;">
+<div style="font-size:11px;color:{MUTED};font-weight:600;letter-spacing:1px;margin-bottom:8px;">EXECUTION MODE</div>
+<div style="display:inline-block;width:40px;height:40px;line-height:40px;border-radius:50%;background:{NAVY};color:white;font-size:20px;font-weight:700;">{_html.escape(Mode)}</div>
+<div style="font-size:13px;color:{LABEL_CLR};margin-top:8px;">{_html.escape(ModeExplain)}</div>
+</div>
+
+<!-- Market Context -->
+{_card_start("Market Context", "📈")}
+{_kv("Initial LTP", FillInfo.get('initial_ltp', 'N/A'), val_bold=True)}
 {_kv("Best Bid", FillInfo.get('initial_bid', 'N/A'))}
 {_kv("Best Ask", FillInfo.get('initial_ask', 'N/A'))}
+{_card_end()}
 
-{_section("Range Calculation")}
+<!-- Range Calculation -->
+{_card_start("Range Calculation", "📐")}
 {RangeHtml}
+{_card_end()}
 
-{_section("Spread Calculation")}
+<!-- Spread Calculation -->
+{_card_start("Spread Calculation", "↔️")}
 {SpreadHtml}
-</table>
+{_card_end()}
 
-<div style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">Order Book</div>
+<!-- Order Book -->
 {DepthHtml}
 
-<table style="width:100%;border-collapse:collapse;">
-{_section("Execution Details")}
-{_kv("Chase Iters", FillInfo.get('chase_iterations', 0))}
-{_kv("Duration", f"{FillInfo.get('chase_duration_seconds', 0)}s")}
-{_kv("Market Fallback", 'Yes' if FillInfo.get('market_fallback') else 'No')}
+<!-- Execution Details -->
+{_card_start("Execution Details", "⚡")}
+{_kv("Chase Iterations", FillInfo.get('chase_iterations', 0))}
+{_kv("Duration", f"{FillInfo.get('chase_duration_seconds', 0)}s", val_bold=True)}
+{_kv("Market Fallback", 'Yes' if FillInfo.get('market_fallback') else 'No', val_color=ACCENT_RED if FillInfo.get('market_fallback') else ACCENT_GREEN)}
 {_kv("Settle Wait", f"{FillInfo.get('settle_wait_seconds', 0)}s")}
-</table>
+{_card_end()}
 
-<div style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">Decision Matrix</div>
+<!-- Decision Matrix -->
 {MatrixHtml}
 
-<div style="margin-top:12px;padding:8px;background:#f5f5f5;border-radius:4px;font-size:12px;color:#888;">
-Broker Order ID: {_html.escape(str(OrderDetails.get('OrderId', 'N/A')))}
+<!-- Footer -->
+<div style="text-align:center;padding:16px 0;font-size:11px;color:{MUTED};">
+Order ID: {_html.escape(str(OrderDetails.get('OrderId', 'N/A')))} · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 </div>
 
 </div></body></html>"""
