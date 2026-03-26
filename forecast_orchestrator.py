@@ -681,7 +681,7 @@ class ForecastOrchestrator:
         return Positions
 
     def _SendReconAlert(self, Mismatches):
-        """Send email alert for reconciliation mismatches."""
+        """Send HTML email alert for reconciliation mismatches."""
         try:
             if not EMAIL_CONFIG_PATH.exists():
                 Logger.warning("No email config at %s, skipping alert", EMAIL_CONFIG_PATH)
@@ -690,12 +690,73 @@ class ForecastOrchestrator:
             with open(EMAIL_CONFIG_PATH, "r") as f:
                 EmailCfg = json.load(f)
 
-            Subject = f"[Trading Alert] Position Mismatch - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            Body = "Reconciliation found the following mismatches:\n\n"
-            Body += "\n".join(f"  - {m}" for m in Mismatches)
-            Body += "\n\nPlease review and take manual action if needed."
+            Timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            Subject = f"⚠️ Position Mismatch — {Timestamp}"
 
-            Msg = MIMEText(Body)
+            # Parse mismatch details for the table
+            Rows = ""
+            for m in Mismatches:
+                # Parse: "MISMATCH GOLDM: system=1, broker=0 (ZERODHA/YD6016)"
+                try:
+                    Parts = m.replace("MISMATCH ", "").split(": ")
+                    Instrument = Parts[0]
+                    Detail = Parts[1]
+                    SystemQty = Detail.split("system=")[1].split(",")[0]
+                    BrokerQty = Detail.split("broker=")[1].split(" ")[0]
+                    BrokerInfo = Detail.split("(")[1].rstrip(")")
+                    Delta = int(SystemQty) - int(BrokerQty)
+                    DeltaSign = f"+{Delta}" if Delta > 0 else str(Delta)
+                    DeltaColor = "#e74c3c" if abs(Delta) >= 2 else "#f39c12"
+                except Exception:
+                    Instrument = m
+                    SystemQty = BrokerQty = DeltaSign = BrokerInfo = "?"
+                    DeltaColor = "#e74c3c"
+
+                Rows += f"""
+                <tr>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #eee; font-weight: 600;">{Instrument}</td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #eee; text-align: center;">{SystemQty}</td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #eee; text-align: center;">{BrokerQty}</td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #eee; text-align: center; color: {DeltaColor}; font-weight: 700;">{DeltaSign}</td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #eee; color: #888; font-size: 13px;">{BrokerInfo}</td>
+                </tr>"""
+
+            Html = f"""
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="background: linear-gradient(135deg, #e74c3c, #c0392b); padding: 20px 24px; border-radius: 10px 10px 0 0;">
+                    <h2 style="color: white; margin: 0; font-size: 18px;">⚠️ Position Mismatch Detected</h2>
+                    <p style="color: rgba(255,255,255,0.8); margin: 6px 0 0; font-size: 13px;">{Timestamp}</p>
+                </div>
+
+                <div style="background: #fff; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 10px 10px; padding: 0;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                        <thead>
+                            <tr style="background: #f8f9fa;">
+                                <th style="padding: 12px 14px; text-align: left; color: #555; font-weight: 600; border-bottom: 2px solid #dee2e6;">Instrument</th>
+                                <th style="padding: 12px 14px; text-align: center; color: #555; font-weight: 600; border-bottom: 2px solid #dee2e6;">System</th>
+                                <th style="padding: 12px 14px; text-align: center; color: #555; font-weight: 600; border-bottom: 2px solid #dee2e6;">Broker</th>
+                                <th style="padding: 12px 14px; text-align: center; color: #555; font-weight: 600; border-bottom: 2px solid #dee2e6;">Delta</th>
+                                <th style="padding: 12px 14px; text-align: left; color: #555; font-weight: 600; border-bottom: 2px solid #dee2e6;">Account</th>
+                            </tr>
+                        </thead>
+                        <tbody>{Rows}
+                        </tbody>
+                    </table>
+
+                    <div style="padding: 16px 20px; background: #fff8e1; border-top: 1px solid #eee; border-radius: 0 0 10px 10px;">
+                        <p style="margin: 0; font-size: 13px; color: #666;">
+                            🔍 <strong>Action Required:</strong> Review positions and reconcile manually if needed.
+                            Check <code>/status</code> endpoint for full details.
+                        </p>
+                    </div>
+                </div>
+
+                <p style="text-align: center; font-size: 11px; color: #aaa; margin-top: 16px;">
+                    Forecast Orchestrator • Auto-generated alert • Do not reply
+                </p>
+            </div>"""
+
+            Msg = MIMEText(Html, "html")
             Msg["Subject"] = Subject
             Msg["From"] = EmailCfg["sender"]
             Msg["To"] = EmailCfg["recipient"]
