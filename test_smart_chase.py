@@ -13,12 +13,14 @@ Tests cover:
   9. End-to-end SmartChaseExecute with mocked broker
 """
 
+import json
 import os
 import sys
 import math
 import time
 import sqlite3
 import unittest
+from tempfile import TemporaryDirectory
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
 
@@ -58,6 +60,7 @@ for mod_name in ("Server_Order_Place", "Fetch_Positions_Data"):
     sys.modules[mod_name] = types.ModuleType(mod_name)
 
 # Now safe to import
+import smart_chase
 from smart_chase import (
     SmartChaseExecute, _AssessVolatility, _ComputeInitialPrice,
     _RoundToTick, _WaitForMarketOpen, _IsAtCircuit,
@@ -1445,6 +1448,61 @@ class TestEmailNotification(unittest.TestCase):
         mock_email.assert_called_once()
         args = mock_email.call_args[0]
         self.assertEqual(args[2], "REJECTED")
+
+    @patch("smart_chase.smtplib.SMTP_SSL")
+    def test_send_order_email_renders_html_without_format_error(self, mock_smtp):
+        """_SendOrderEmail should build and send the HTML email for filled orders."""
+        fill_info = {
+            "fill_price": 224465.0,
+            "slippage": 102.0,
+            "execution_mode": "A",
+            "spread_level": "normal",
+            "range_level": "high",
+            "ohlc": {"high": 224500.0, "low": 224300.0},
+            "atr": 17906.78,
+            "baseline_spread": 64.0,
+            "range_ratio": 1.6,
+            "initial_spread": 105.0,
+            "spread_ratio": 1.64,
+            "initial_ltp": 224363.0,
+            "initial_bid": 224368.0,
+            "initial_ask": 224473.0,
+            "depth": {
+                "buy": [{"price": 224368.0, "quantity": 2, "orders": 1}],
+                "sell": [{"price": 224473.0, "quantity": 3, "orders": 1}],
+            },
+            "chase_iterations": 1,
+            "chase_duration_seconds": 1.5,
+            "market_fallback": False,
+            "settle_wait_seconds": 0,
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            cfg_path = _Path(tmpdir) / "email_config.json"
+            cfg_path.write_text(json.dumps({
+                "sender": "sender@example.com",
+                "recipient": "recipient@example.com",
+                "app_password": "test-password",
+            }), encoding="utf-8")
+
+            with patch("smart_chase.EMAIL_CONFIG_PATH", cfg_path):
+                smart_chase._SendOrderEmail(
+                    _make_order_details(tradetype="sell", symbol="SILVERMIC26APRFUT", qty="1"),
+                    fill_info,
+                    "FILLED",
+                )
+
+        smtp_server = mock_smtp.return_value.__enter__.return_value
+        smtp_server.login.assert_called_once_with("sender@example.com", "test-password")
+        smtp_server.send_message.assert_called_once()
+
+        sent_msg = smtp_server.send_message.call_args[0][0]
+        payload = sent_msg.get_payload(decode=True).decode(sent_msg.get_content_charset())
+        self.assertIn("+102.00", payload)
+        self.assertIn("vs LTP 224363.0", payload)
+        self.assertIn("background:#d9f1ff", payload)
+        self.assertIn("color:#0f2f57", payload)
+        self.assertIn('font-size:24px;font-weight:700;line-height:1.2;">₹224465.0</span>', payload)
 
 
 # ══════════════════════════════════════════════════════════════════

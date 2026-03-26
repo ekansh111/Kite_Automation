@@ -804,6 +804,8 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
         BORDER = "#e4e8ee"
         SECTION_BG = "#f7f9fc"
         ALT_ROW = "#f7f9fc"
+        INSTRUMENT_BG = "#d9f1ff"
+        INSTRUMENT_TEXT = "#0f2f57"
 
         # Action badge color
         ActionColor = ACCENT_GREEN if Action == "BUY" else ACCENT_RED
@@ -877,8 +879,17 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 
         SpreadHtml = _kv("Spread", f"{ActualSpread}") + _kv("Baseline", f"{BaselineSpread}") + _kv("Spread Ratio", f"{ActualSpread} / {BaselineSpread} = {FillInfo.get('spread_ratio', 'N/A')}")
 
-        # ── Slippage display ──
-        SlipDisplay = f'<span style="display:inline-block;padding:2px 8px;border-radius:4px;background:{SlipColor};color:white;font-weight:600;font-size:12px;">{SlipBadge}</span> {Slip:+.2f} vs LTP ({FillInfo.get("initial_ltp", "N/A")})' if Slip is not None else "N/A"
+        # Precompute slippage fragments so the HTML template does not embed
+        # conditional logic inside a format specifier.
+        SlipValue = f"{Slip:+.2f}" if Slip is not None else "N/A"
+        SlipVsLtp = (
+            f'vs LTP {FillInfo.get("initial_ltp", "N/A")}'
+            if Slip is not None else ""
+        )
+        SlipBadgeHtml = (
+            f'<div style="margin-top:8px;"><span style="display:inline-block;padding:3px 12px;border-radius:10px;background:{SlipColor};color:white;font-size:11px;font-weight:600;letter-spacing:0.5px;">{SlipBadge}</span></div>'
+            if Slip is not None else ""
+        )
 
         HtmlBody = f"""<html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
@@ -887,11 +898,15 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 <!-- Header Banner -->
 <div style="background:linear-gradient(135deg,{DARK_BG} 0%,{NAVY} 100%);border-radius:16px;padding:24px;margin-bottom:16px;text-align:center;">
 <div style="font-size:11px;color:{MUTED};letter-spacing:2px;font-weight:600;margin-bottom:8px;">SMART CHASE</div>
-<div style="font-size:28px;font-weight:700;color:white;margin-bottom:4px;">{_html.escape(Instrument)}</div>
+<div style="margin-bottom:4px;">
+<span style="display:inline-block;padding:8px 16px;border-radius:14px;background:{INSTRUMENT_BG};color:{INSTRUMENT_TEXT};font-size:28px;font-weight:700;line-height:1.2;">{_html.escape(Instrument)}</span>
+</div>
 <div style="margin:12px 0;">
 <span style="display:inline-block;padding:6px 20px;border-radius:20px;background:{ActionColor};color:white;font-weight:700;font-size:14px;letter-spacing:1px;">{_html.escape(Action)} {Qty}</span>
 </div>
-<div style="font-size:24px;font-weight:700;color:white;margin:8px 0;">₹{_html.escape(str(FillInfo.get('fill_price', 'N/A')))}</div>
+<div style="margin:8px 0;">
+<span style="display:inline-block;padding:8px 18px;border-radius:14px;background:{INSTRUMENT_BG};color:{INSTRUMENT_TEXT};font-size:24px;font-weight:700;line-height:1.2;">₹{_html.escape(str(FillInfo.get('fill_price', 'N/A')))}</span>
+</div>
 <div style="margin-top:8px;">
 <span style="display:inline-block;padding:4px 14px;border-radius:12px;background:{'rgba(0,200,83,0.2)' if Outcome == 'FILLED' else 'rgba(255,23,68,0.2)'};color:{OutColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">{_html.escape(Outcome)}</span>
 </div>
@@ -900,9 +915,9 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 <!-- Slippage Card -->
 <div style="background:{CARD_BG};border-radius:12px;margin:12px 0;padding:16px;border:1px solid {BORDER};text-align:center;">
 <div style="font-size:11px;color:{MUTED};font-weight:600;letter-spacing:1px;margin-bottom:8px;">SLIPPAGE</div>
-<div style="font-size:22px;font-weight:700;color:{SlipColor};">{Slip:+.2f if Slip is not None else 'N/A'}</div>
-<div style="font-size:12px;color:{MUTED};margin-top:4px;">{'vs LTP ' + str(FillInfo.get("initial_ltp", "N/A")) if Slip is not None else ''}</div>
-<div style="margin-top:8px;"><span style="display:inline-block;padding:3px 12px;border-radius:10px;background:{SlipColor};color:white;font-size:11px;font-weight:600;letter-spacing:0.5px;">{SlipBadge}</span></div>
+<div style="font-size:22px;font-weight:700;color:{SlipColor};">{SlipValue}</div>
+<div style="font-size:12px;color:{MUTED};margin-top:4px;">{SlipVsLtp}</div>
+{SlipBadgeHtml}
 </div>
 
 <!-- Execution Mode Card -->
