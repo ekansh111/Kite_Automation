@@ -185,32 +185,37 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
                 _SendOrderEmail(OrderDetails, FillInfo, Status)
                 return False, OrderId, FillInfo
 
-            # Still OPEN — chase the price
-            if CurrentOffset < MaxChaseTicks:
-                CurrentOffset = min(CurrentOffset + ChaseStep, MaxChaseTicks)
+            # Still OPEN — passive phase: let the initial price sit before chasing
+            PassivePhase = (time.time() - ChaseStart) < PollInterval
 
-            FreshQuote = _FetchQuote(BrokerSession, OrderDetails, Broker)
-            if FreshQuote:
-                FreshRef = (FreshQuote.get("best_ask", FreshQuote["ltp"]) if Direction > 0
-                            else FreshQuote.get("best_bid", FreshQuote["ltp"]))
-                NewPrice = _RoundToTick(
-                    FreshRef + Direction * CurrentOffset * TickSize,
-                    TickSize, Direction
-                )
+            if not PassivePhase:
+                # Chase phase: widen price toward counterparty
+                if CurrentOffset < MaxChaseTicks:
+                    CurrentOffset = min(CurrentOffset + ChaseStep, MaxChaseTicks)
 
-                if NewPrice != CurrentPrice:
-                    try:
-                        _ModifyOrderPrice(BrokerSession, OrderDetails, OrderId,
-                                          NewPrice, Broker)
-                        CurrentPrice = NewPrice
-                        FirstPoll = True  # Quick re-check at new price level
-                    except Exception as e:
-                        Logger.warning("%s: Modify failed (iter %d): %s",
-                                       Instrument, Iterations, e)
+                FreshQuote = _FetchQuote(BrokerSession, OrderDetails, Broker)
+                if FreshQuote:
+                    FreshRef = (FreshQuote.get("best_ask", FreshQuote["ltp"]) if Direction > 0
+                                else FreshQuote.get("best_bid", FreshQuote["ltp"]))
+                    NewPrice = _RoundToTick(
+                        FreshRef + Direction * CurrentOffset * TickSize,
+                        TickSize, Direction
+                    )
+
+                    if NewPrice != CurrentPrice:
+                        try:
+                            _ModifyOrderPrice(BrokerSession, OrderDetails, OrderId,
+                                              NewPrice, Broker)
+                            CurrentPrice = NewPrice
+                            FirstPoll = True  # Quick re-check at new price level
+                        except Exception as e:
+                            Logger.warning("%s: Modify failed (iter %d): %s",
+                                           Instrument, Iterations, e)
 
             Logger.info(
-                "%s: Chase iter %d | status=%s | price=%.2f | elapsed=%.1fs",
-                Instrument, Iterations, Status, CurrentPrice,
+                "%s: %s iter %d | status=%s | price=%.2f | elapsed=%.1fs",
+                Instrument, "Passive" if PassivePhase else "Chase",
+                Iterations, Status, CurrentPrice,
                 time.time() - ChaseStart
             )
 
@@ -968,6 +973,9 @@ Order ID: {_html.escape(str(OrderDetails.get('OrderId', 'N/A')))} · {datetime.n
         Msg["Subject"] = Subject
         Msg["From"] = EmailCfg["sender"]
         Msg["To"] = EmailCfg["recipient"]
+        Msg["X-Priority"] = "1"
+        Msg["X-MSMail-Priority"] = "High"
+        Msg["Importance"] = "High"
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as Server:
             Server.login(EmailCfg["sender"], EmailCfg["app_password"])
@@ -1006,6 +1014,9 @@ Waiting for market to resume free trading before placing order.
         Msg["Subject"] = Subject
         Msg["From"] = EmailCfg["sender"]
         Msg["To"] = EmailCfg["recipient"]
+        Msg["X-Priority"] = "1"
+        Msg["X-MSMail-Priority"] = "High"
+        Msg["Importance"] = "High"
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as Server:
             Server.login(EmailCfg["sender"], EmailCfg["app_password"])

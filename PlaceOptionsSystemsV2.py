@@ -1080,6 +1080,9 @@ def sendEntryEmail(strategyName, config, dte, kValue, callPremium, putPremium,
         msg["From"] = EMAIL_FROM
         msg["To"] = EMAIL_TO
         msg["Subject"] = subject
+        msg["X-Priority"] = "1"
+        msg["X-MSMail-Priority"] = "High"
+        msg["Importance"] = "High"
         msg.attach(MIMEText(htmlBody, "html"))
 
         server = smtplib.SMTP_SSL(EMAIL_SMTP, EMAIL_PORT)

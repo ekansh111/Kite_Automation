@@ -760,6 +760,9 @@ class ForecastOrchestrator:
             Msg["Subject"] = Subject
             Msg["From"] = EmailCfg["sender"]
             Msg["To"] = EmailCfg["recipient"]
+            Msg["X-Priority"] = "1"
+            Msg["X-MSMail-Priority"] = "High"
+            Msg["Importance"] = "High"
 
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as Server:
                 Server.login(EmailCfg["sender"], EmailCfg["app_password"])
