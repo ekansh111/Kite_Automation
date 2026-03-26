@@ -33,6 +33,9 @@ from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
 from Holidays import CheckForDateHoliday
 from Directories import WorkDirectory
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +113,16 @@ MIN_PREMIUM_INR = 0.50      # reject near-zero dust premiums
 # Future: + termAdd + eventAdd (zero for now, framework accommodates them).
 
 # Base IV shock by DTE (vol points). Shorter DTE = more fragile to IV spikes.
+# Calibrated to 95th-99th percentile single-day India VIX moves.
+# Front-end IV spikes disproportionately more than back-end (term structure steepens in stress).
 IV_SHOCK_TABLE = [
-    (3, 7, 10),    # 3-4-5-6-7 DTE → 10 vol points
-    (2, 2, 12),    # 2 DTE → 12 vol points
-    (1, 1, 15),    # 1 DTE → 15 vol points
+    (0,   0, 18),    # 0 DTE   → 18 vp  (gamma-dominated, extreme intraday risk)
+    (1,   1, 15),    # 1 DTE   → 15 vp  (overnight gap + gamma)
+    (2,   2, 12),    # 2 DTE   → 12 vp
+    (3,   5, 10),    # 3-5 DTE → 10 vp
+    (6,  10,  8),    # 6-10 DTE → 8 vp  (term structure attenuates)
+    (11, 21,  6),    # 11-21 DTE → 6 vp (monthly territory)
+    (22, 45,  4),    # 22-45 DTE → 4 vp (mean reversion dampens)
 ]
 
 # VIX add-on: extra vol points based on India VIX level (additive, not multiplicative).
@@ -144,6 +153,598 @@ STRESS_MOVE_MULTIPLIER = 1.5
 STATE_FILE_PATH = Path(WorkDirectory) / "v2_state.json"
 ENTRY_LOG_PATH = Path(WorkDirectory) / "v2_entry_log.csv"
 EXIT_LOG_PATH = Path(WorkDirectory) / "v2_exit_log.csv"
+
+# ---------------------------------------------------------------------------
+# Email Notification Config
+# ---------------------------------------------------------------------------
+EMAIL_NOTIFY_ENABLED = True
+EMAIL_FROM = "ekansh.n111@gmail.com"
+EMAIL_FROM_PASSWORD = "sgwl lnvt hewf wplo"
+EMAIL_TO = "ekansh.n@gmail.com"
+EMAIL_SMTP = "smtp.gmail.com"
+EMAIL_PORT = 465
+
+
+def _fmt(val, decimals=2):
+    """Format a numeric value for display, return 'N/A' for empty/None."""
+    if val is None or val == "":
+        return "N/A"
+    try:
+        return f"{float(val):,.{decimals}f}"
+    except (ValueError, TypeError):
+        return str(val)
+
+
+def _pct(val):
+    """Format as percentage string."""
+    if val is None or val == "":
+        return "N/A"
+    try:
+        return f"{float(val):.1f}%"
+    except (ValueError, TypeError):
+        return str(val)
+
+
+def buildEntryEmailHtml(strategyName, config, dte, kValue, callPremium, putPremium,
+                        sizeResult, expiryDate, ceSymbol, peSymbol, kMetadata,
+                        gttOk, gttIds, state):
+    """Build a formatted HTML email body for an entry order notification."""
+    underlying = config["underlying"]
+    km = kMetadata or {}
+    now = datetime.now()
+
+    # ── Colour palette ──
+    navy = "#003366"
+    accent = "#2E75B6"
+    green = "#27AE60"
+    red = "#E74C3C"
+    grey_bg = "#F8F9FA"
+    border_col = "#DEE2E6"
+
+    statusColor = green if gttOk else red
+    statusText = "PROTECTED (GTT Active)" if gttOk else "UNPROTECTED (GTT FAILED)"
+    kSourceLabel = km.get("source", "static").upper()
+    bindingScenario = km.get("kBindingScenario", "N/A")
+
+    # ── Build IV shock breakdown string ──
+    ivShockStr = "N/A"
+    if km.get("source") == "dynamic":
+        base = km.get("ivShockBase", "")
+        vix = km.get("vixAddon", "")
+        move = km.get("intradayAddon", "")
+        total = km.get("ivShockApplied", "")
+        ivShockStr = f"{_fmt(total, 0)}vp = {_fmt(base, 0)} (base) + {_fmt(vix, 0)} (VIX) + {_fmt(move, 0)} (move)"
+
+    # ── Cross-system position summary ──
+    positionRows = ""
+    for ul in ["NIFTY", "SENSEX"]:
+        ulState = state.get(ul, {})
+        st = ulState.get("currentState", "noPosition")
+        strat = ulState.get("activeStrategy", "-")
+        lots = ulState.get("activeLots", 0)
+        contracts = ulState.get("activeContracts", [])
+        integrity = ulState.get("positionIntegrity", "healthy")
+        gttProt = ulState.get("gttProtected", True)
+        gttIdsList = ulState.get("activeGttIds", [])
+
+        stateColor = green if st in ("earlyOpen", "lateOpen") else "#888"
+        integrityColor = green if integrity == "healthy" else red
+        gttColor = green if gttProt else red
+
+        contractStr = "<br>".join(contracts) if contracts else "-"
+        gttIdsStr = ", ".join(str(g) for g in gttIdsList) if gttIdsList else "-"
+
+        positionRows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};font-weight:600;">{ul}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};color:{stateColor};">{st}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};">{strat or '-'}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};text-align:center;">{lots}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};font-size:12px;">{contractStr}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};color:{integrityColor};">{integrity}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};color:{gttColor};">{gttProt}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid {border_col};font-size:11px;">{gttIdsStr}</td>
+        </tr>"""
+
+    html = f"""
+    <html>
+    <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#EAECEE;">
+      <div style="max-width:680px;margin:20px auto;background:#FFFFFF;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+
+        <!-- Header -->
+        <div style="background:{navy};padding:20px 28px;">
+          <h1 style="margin:0;color:#FFFFFF;font-size:20px;letter-spacing:0.5px;">
+            V2 Order Placed &mdash; {underlying} {config['phaseType'].upper()}
+          </h1>
+          <p style="margin:6px 0 0;color:#AAC4E0;font-size:13px;">
+            {strategyName} &bull; {now.strftime('%d %b %Y, %I:%M %p')} &bull; Expiry {expiryDate}
+          </p>
+        </div>
+
+        <!-- Status Banner -->
+        <div style="background:{statusColor};padding:10px 28px;">
+          <span style="color:#FFFFFF;font-size:13px;font-weight:600;">
+            Position Status: {statusText}
+          </span>
+        </div>
+
+        <!-- Contract & Sizing -->
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Contract &amp; Position Sizing
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">CE Contract</td>
+              <td style="padding:8px 12px;font-family:monospace;">{ceSymbol}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">PE Contract</td>
+              <td style="padding:8px 12px;font-family:monospace;">{peSymbol}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">CE Premium (LTP)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmt(callPremium)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">PE Premium (LTP)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmt(putPremium)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Combined Premium</td>
+              <td style="padding:8px 12px;">\u20B9{_fmt(sizeResult['combinedPremium'])}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Trading DTE / Sizing DTE</td>
+              <td style="padding:8px 12px;">{dte} / {km.get('sizingDte', config.get('exitDte', '?'))}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Lot Size</td>
+              <td style="padding:8px 12px;">{LOT_SIZES[underlying]}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Final Lots</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{navy};">{sizeResult['finalLots']}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Total Quantity</td>
+              <td style="padding:8px 12px;">{sizeResult['finalLots'] * LOT_SIZES[underlying]}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Allowed Lots (formula)</td>
+              <td style="padding:8px 12px;">{sizeResult['allowedLots']}  (max cap: {config['maxLots']})</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">DailyVol / Lot</td>
+              <td style="padding:8px 12px;">\u20B9{_fmt(sizeResult['dailyVolPerLot'])}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Daily Vol Budget</td>
+              <td style="padding:8px 12px;">\u20B9{_fmt(DAILY_VOL_BUDGETS[underlying], 0)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">SL Trigger / Order %</td>
+              <td style="padding:8px 12px;">{config['stopLossTriggerPercent']}% / {config['stopLossOrderPlacePercent']}%</td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- Sizing Formula -->
+        <div style="padding:16px 28px 0;">
+          <div style="background:{grey_bg};border-left:4px solid {accent};padding:12px 16px;font-size:12px;font-family:monospace;color:#333;">
+            dailyVolPerLot = K &times; combinedPremium &times; lotSize = {_fmt(kValue, 4)} &times; {_fmt(sizeResult['combinedPremium'])} &times; {LOT_SIZES[underlying]} = \u20B9{_fmt(sizeResult['dailyVolPerLot'])}<br>
+            allowedLots = budget / dailyVolPerLot = {_fmt(DAILY_VOL_BUDGETS[underlying], 0)} / {_fmt(sizeResult['dailyVolPerLot'])} = {sizeResult['allowedLots']}<br>
+            finalLots = min(allowedLots, maxLots) = min({sizeResult['allowedLots']}, {config['maxLots']}) = {sizeResult['finalLots']}
+          </div>
+        </div>
+
+        <!-- Dynamic K Breakdown -->
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            K Value &mdash; {kSourceLabel}
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">K for Sizing (final)</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{navy};">{_fmt(kValue, 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">K Source</td>
+              <td style="padding:8px 12px;">{kSourceLabel}</td>
+            </tr>"""
+
+    if km.get("source") == "dynamic":
+        html += f"""
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">kBase (normal day)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('kBase'), 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">kStressMove (1.5\u00D7 move)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('kStressMove'), 4)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">kStressVol (IV spike)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('kStressVol'), 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">kCrash (move + spike)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('kCrash'), 4)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Binding Scenario</td>
+              <td style="padding:8px 12px;font-weight:600;color:{accent};">{bindingScenario}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Static K (reference)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('staticK'), 2)}</td>
+            </tr>
+          </table>
+        </div>"""
+
+        # ── kCrash Worked Calculation ──
+        pnl = km.get("pnlBreakdown", {})
+        stressMove = float(km.get("expectedMove", 0)) * STRESS_MOVE_MULTIPLIER
+        # The premium used inside computeDynamicK (mid-price from quotes, not LTP)
+        kPremiumUsed = (float(km.get("cePremiumUsed", 0)) + float(km.get("pePremiumUsed", 0)))
+        html += f"""
+        <div style="padding:20px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            kCrash Worked Calculation
+          </h2>
+          <p style="margin:0 0 10px;color:#555;font-size:12px;">
+            kCrash = |P&amp;L from 1.5&times; spot move + IV shock| &divide; combined premium
+          </p>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:monospace;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;" colspan="2">Step 1: IV Shock Build-up</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;width:55%;">Base shock (DTE)</td>
+              <td style="padding:6px 10px;">+{_fmt(km.get('ivShockBase'), 0)} vp</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">VIX addon (VIX = {_fmt(km.get('vixLevel'))})</td>
+              <td style="padding:6px 10px;">+{_fmt(km.get('vixAddon'), 0)} vp</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;">Intraday move addon ({_pct(km.get('intradayMovePct'))} move)</td>
+              <td style="padding:6px 10px;">+{_fmt(km.get('intradayAddon'), 0)} vp</td>
+            </tr>
+            <tr style="border-top:2px solid {accent};">
+              <td style="padding:6px 10px;font-weight:700;">Total IV Shock (cap: {IV_SHOCK_CAP_VP}vp)</td>
+              <td style="padding:6px 10px;font-weight:700;">{_fmt(km.get('ivShockApplied'), 0)} vp ({_fmt(float(km.get('ivShockApplied', 0)) / 100, 4)} decimal)</td>
+            </tr>
+          </table>"""
+
+        # ── Reference lookup tables with active row highlighted ──
+        highlight = f"background:{accent};color:#FFF;font-weight:600;"
+        sizingDte = km.get("sizingDte", "")
+        vixLevel = float(km.get("vixLevel", 0)) if km.get("vixLevel") else 0
+        intradayPct = float(km.get("intradayMovePct", 0)) if km.get("intradayMovePct") else 0
+
+        # DTE base shock table
+        dteRows = ""
+        for lo, hi, vp in IV_SHOCK_TABLE:
+            label = f"{lo} DTE" if lo == hi else f"{lo}\u2013{hi} DTE"
+            isActive = isinstance(sizingDte, (int, float)) and lo <= sizingDte <= hi
+            style = highlight if isActive else ""
+            arrow = " \u25C0" if isActive else ""
+            dteRows += f'<tr><td style="padding:4px 10px;{style}">{label}</td><td style="padding:4px 10px;text-align:center;{style}">{vp} vp{arrow}</td></tr>'
+
+        # VIX addon table
+        vixRows = ""
+        for lo, hi, vp in VIX_ADDON_TABLE:
+            hiLabel = f"{hi}" if hi < 9000 else "+"
+            label = f"VIX {lo}\u2013{hiLabel}" if hi < 9000 else f"VIX {lo}+"
+            isActive = lo <= vixLevel < hi
+            style = highlight if isActive else ""
+            arrow = " \u25C0" if isActive else ""
+            vixRows += f'<tr><td style="padding:4px 10px;{style}">{label}</td><td style="padding:4px 10px;text-align:center;{style}">+{vp} vp{arrow}</td></tr>'
+
+        # Intraday move addon table
+        moveRows = ""
+        for lo, hi, vp in INTRADAY_MOVE_ADDON_TABLE:
+            hiLabel = f"{hi}%" if hi < 9000 else "+"
+            label = f"{lo}\u2013{hiLabel}" if hi < 9000 else f"{lo}%+"
+            isActive = lo <= intradayPct < hi
+            style = highlight if isActive else ""
+            arrow = " \u25C0" if isActive else ""
+            moveRows += f'<tr><td style="padding:4px 10px;{style}">{label}</td><td style="padding:4px 10px;text-align:center;{style}">+{vp} vp{arrow}</td></tr>'
+
+        html += f"""
+          <div style="display:flex;gap:8px;margin-top:10px;">
+          <table style="flex:1;border-collapse:collapse;font-size:11px;">
+            <tr style="background:{navy};color:#FFF;"><td style="padding:4px 10px;font-weight:600;" colspan="2">Base Shock by DTE</td></tr>
+            {dteRows}
+          </table>
+          <table style="flex:1;border-collapse:collapse;font-size:11px;">
+            <tr style="background:{navy};color:#FFF;"><td style="padding:4px 10px;font-weight:600;" colspan="2">VIX Addon</td></tr>
+            {vixRows}
+          </table>
+          <table style="flex:1;border-collapse:collapse;font-size:11px;">
+            <tr style="background:{navy};color:#FFF;"><td style="padding:4px 10px;font-weight:600;" colspan="2">Intraday Move Addon</td></tr>
+            {moveRows}
+          </table>
+          </div>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:monospace;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;" colspan="2">Step 2: Stress Move</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;width:55%;">Expected 1&sigma; move</td>
+              <td style="padding:6px 10px;">{_fmt(km.get('expectedMove'))} pts</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">Stress multiplier</td>
+              <td style="padding:6px 10px;">&times; {STRESS_MOVE_MULTIPLIER}</td>
+            </tr>
+            <tr style="border-top:2px solid {accent};">
+              <td style="padding:6px 10px;font-weight:700;">Crash move (&Delta;S)</td>
+              <td style="padding:6px 10px;font-weight:700;">{_fmt(stressMove)} pts</td>
+            </tr>
+          </table>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:monospace;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;" colspan="3">Step 3: Crash P&amp;L (Taylor Expansion at 1.5&times; move + IV shock)</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;width:45%;">&delta; &times; &Delta;S</td>
+              <td style="padding:6px 10px;width:25%;font-size:11px;color:#666;">{_fmt(km.get('posGamma',0), 6).replace('-','')}&hellip; &times; {_fmt(stressMove)}</td>
+              <td style="padding:6px 10px;text-align:right;">{_fmt(pnl.get('crashDeltaPnl'), 2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">&frac12; &times; &Gamma; &times; &Delta;S&sup2;</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">0.5 &times; {_fmt(km.get('posGamma'), 6)} &times; {_fmt(stressMove)}&sup2;</td>
+              <td style="padding:6px 10px;text-align:right;color:{red};">{_fmt(pnl.get('crashGammaPnl'), 2)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;">&nu; &times; &Delta;&sigma;</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(km.get('posVega'))} &times; {_fmt(float(km.get('ivShockApplied', 0)) / 100, 4)}</td>
+              <td style="padding:6px 10px;text-align:right;color:{red};">{_fmt(pnl.get('crashVegaPnl'), 2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">&theta; &times; 1 day</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(km.get('posTheta'))} &times; 1</td>
+              <td style="padding:6px 10px;text-align:right;color:{green};">+{_fmt(pnl.get('crashThetaPnl'), 2)}</td>
+            </tr>
+            <tr style="border-top:2px solid {accent};">
+              <td style="padding:6px 10px;font-weight:700;" colspan="2">Crash P&amp;L (net)</td>
+              <td style="padding:6px 10px;font-weight:700;text-align:right;color:{red};">{_fmt(pnl.get('crashPnl'), 2)}</td>
+            </tr>
+          </table>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:monospace;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;" colspan="3">Step 4: K Ratio</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;width:45%;">Combined premium (mid-price)</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(km.get('cePremiumUsed'))} + {_fmt(km.get('pePremiumUsed'))}</td>
+              <td style="padding:6px 10px;text-align:right;">\u20B9{_fmt(kPremiumUsed)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">|crashPnl| / premium</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(abs(float(pnl.get('crashPnl', 0))), 2)} / {_fmt(kPremiumUsed)}</td>
+              <td style="padding:6px 10px;text-align:right;font-weight:700;font-size:14px;color:{navy};">{_fmt(km.get('kCrash'), 4)}</td>
+            </tr>
+          </table>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:monospace;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;" colspan="3">Step 5: IV Shock Impact on kCrash</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;width:45%;">kStressMove (1.5&times; move, <b>no</b> shock)</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(abs(float(pnl.get('stressMovePnl', 0))), 2)} / {_fmt(kPremiumUsed)}</td>
+              <td style="padding:6px 10px;text-align:right;">{_fmt(km.get('kStressMove'), 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">Vega P&amp;L from {_fmt(km.get('ivShockApplied'), 0)}vp shock</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(km.get('posVega'))} &times; {_fmt(float(km.get('ivShockApplied', 0)) / 100, 4)}</td>
+              <td style="padding:6px 10px;text-align:right;color:{red};">{_fmt(pnl.get('crashVegaPnl'), 2)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;">Shock adds to k</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(abs(float(pnl.get('crashVegaPnl', 0))), 2)} / {_fmt(kPremiumUsed)}</td>
+              <td style="padding:6px 10px;text-align:right;color:{red};font-weight:600;">+{_fmt(abs(float(pnl.get('crashVegaPnl', 0))) / kPremiumUsed if kPremiumUsed > 0 else 0, 4)}</td>
+            </tr>
+            <tr style="border-top:2px solid {accent};">
+              <td style="padding:6px 10px;font-weight:700;">kCrash = kStressMove + shock impact</td>
+              <td style="padding:6px 10px;font-size:11px;color:#666;">{_fmt(km.get('kStressMove'), 4)} + {_fmt(abs(float(pnl.get('crashVegaPnl', 0))) / kPremiumUsed if kPremiumUsed > 0 else 0, 4)}</td>
+              <td style="padding:6px 10px;text-align:right;font-weight:700;font-size:14px;color:{navy};">{_fmt(km.get('kCrash'), 4)}</td>
+            </tr>
+          </table>
+        </div>"""
+
+    elif km.get("source") == "static_fallback":
+        html += f"""
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Fallback Reason</td>
+              <td style="padding:8px 12px;color:{red};">{km.get('fallbackReason', 'N/A')}</td>
+            </tr>
+          </table>
+        </div>"""
+    else:
+        # static source — close the K value table
+        html += """
+          </table>
+        </div>"""
+
+    # ── Greeks & Market Data (dynamic only) ──
+    if km.get("source") == "dynamic":
+        html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Greeks &amp; Market Data
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Avg IV</td>
+              <td style="padding:8px 12px;">{_pct(float(km.get('avgIV', 0)) * 100 if km.get('avgIV') else '')}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">CE IV / PE IV</td>
+              <td style="padding:8px 12px;">{_pct(float(km.get('ceIV', 0)) * 100 if km.get('ceIV') else '')} / {_pct(float(km.get('peIV', 0)) * 100 if km.get('peIV') else '')}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Expected 1\u03C3 Move</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('expectedMove'))} pts</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Position Gamma</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('posGamma'), 6)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Position Theta</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('posTheta'))}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Position Vega</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('posVega'))}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">VIX Level</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('vixLevel'))}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Intraday Move</td>
+              <td style="padding:8px 12px;">{_pct(km.get('intradayMovePct'))}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">IV Shock Build-up</td>
+              <td style="padding:8px 12px;font-family:monospace;font-size:12px;">{ivShockStr}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">T (years to expiry)</td>
+              <td style="padding:8px 12px;">{_fmt(km.get('timeToExpiryYears'), 6)}</td>
+            </tr>
+          </table>
+
+          <!-- Quote Quality -->
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Leg</td>
+              <td style="padding:6px 10px;font-weight:600;">Bid</td>
+              <td style="padding:6px 10px;font-weight:600;">Ask</td>
+              <td style="padding:6px 10px;font-weight:600;">Spread %</td>
+              <td style="padding:6px 10px;font-weight:600;">Source</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;">CE</td>
+              <td style="padding:6px 10px;">{_fmt(km.get('ceBid'))}</td>
+              <td style="padding:6px 10px;">{_fmt(km.get('ceAsk'))}</td>
+              <td style="padding:6px 10px;">{_pct(km.get('ceSpreadPct'))}</td>
+              <td style="padding:6px 10px;">{km.get('cePremiumSource', 'N/A')}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;">PE</td>
+              <td style="padding:6px 10px;">{_fmt(km.get('peBid'))}</td>
+              <td style="padding:6px 10px;">{_fmt(km.get('peAsk'))}</td>
+              <td style="padding:6px 10px;">{_pct(km.get('peSpreadPct'))}</td>
+              <td style="padding:6px 10px;">{km.get('pePremiumSource', 'N/A')}</td>
+            </tr>
+          </table>
+        </div>"""
+
+    # ── GTT Orders ──
+    gttStatusColor = green if gttOk else red
+    gttIdDisplay = ", ".join(str(g) for g in gttIds) if gttIds else "None"
+    html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            GTT Stop-Loss Orders
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">GTT Status</td>
+              <td style="padding:8px 12px;font-weight:600;color:{gttStatusColor};">{'Set Successfully' if gttOk else 'FAILED'}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">GTT IDs</td>
+              <td style="padding:8px 12px;font-family:monospace;">{gttIdDisplay}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">SL Trigger %</td>
+              <td style="padding:8px 12px;">{config['stopLossTriggerPercent']}%</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">SL Order Place %</td>
+              <td style="padding:8px 12px;">{config['stopLossOrderPlacePercent']}%</td>
+            </tr>
+          </table>
+        </div>"""
+
+    # ── Overall Position Across Systems ──
+    html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Overall Position Across Systems
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 8px;font-weight:600;">Underlying</td>
+              <td style="padding:6px 8px;font-weight:600;">State</td>
+              <td style="padding:6px 8px;font-weight:600;">Strategy</td>
+              <td style="padding:6px 8px;font-weight:600;text-align:center;">Lots</td>
+              <td style="padding:6px 8px;font-weight:600;">Contracts</td>
+              <td style="padding:6px 8px;font-weight:600;">Integrity</td>
+              <td style="padding:6px 8px;font-weight:600;">GTT</td>
+              <td style="padding:6px 8px;font-weight:600;">GTT IDs</td>
+            </tr>
+            {positionRows}
+          </table>
+        </div>"""
+
+    # ── Footer ──
+    html += f"""
+        <div style="padding:20px 28px;margin-top:20px;border-top:1px solid {border_col};text-align:center;">
+          <p style="margin:0;color:#999;font-size:11px;">
+            PlaceOptionsSystemsV2 &bull; Auto-generated entry notification &bull; {now.strftime('%d %b %Y %H:%M:%S')}
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>"""
+
+    return html
+
+
+def sendEntryEmail(strategyName, config, dte, kValue, callPremium, putPremium,
+                   sizeResult, expiryDate, ceSymbol, peSymbol, kMetadata,
+                   gttOk, gttIds, state):
+    """Send an HTML email notification after a successful entry order placement."""
+    if not EMAIL_NOTIFY_ENABLED:
+        return
+
+    try:
+        underlying = config["underlying"]
+        subject = (f"V2 Entry: {strategyName} | {sizeResult['finalLots']} lots | "
+                   f"{underlying} | {datetime.now().strftime('%d %b %H:%M')}")
+
+        htmlBody = buildEntryEmailHtml(
+            strategyName, config, dte, kValue, callPremium, putPremium,
+            sizeResult, expiryDate, ceSymbol, peSymbol, kMetadata,
+            gttOk, gttIds, state)
+
+        msg = MIMEMultipart("alternative")
+        msg["From"] = EMAIL_FROM
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = subject
+        msg.attach(MIMEText(htmlBody, "html"))
+
+        server = smtplib.SMTP_SSL(EMAIL_SMTP, EMAIL_PORT)
+        server.login(EMAIL_FROM, EMAIL_FROM_PASSWORD)
+        server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+        server.quit()
+        print(f"[EMAIL] Entry notification sent for {strategyName}")
+    except Exception as e:
+        # Email failure must NEVER block the trading flow
+        print(f"[EMAIL] WARNING: failed to send entry notification: {e}")
+        logging.warning(f"Entry email notification failed: {e}")
 
 
 def lookupK(dte, kTable):
@@ -566,6 +1167,11 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
             "stressMovePnl": round(stressMovePnl, 4),
             "stressVolPnl": round(stressVolPnl, 4),
             "crashPnl": round(crashPnl, 4),
+            # Crash-specific component P&Ls (1.5× move + IV shock)
+            "crashDeltaPnl": round(posDelta * expectedMove * STRESS_MOVE_MULTIPLIER, 4),
+            "crashGammaPnl": round(0.5 * posGamma * (expectedMove * STRESS_MOVE_MULTIPLIER) ** 2, 4),
+            "crashVegaPnl": round(posVega * deltaSigma, 4),
+            "crashThetaPnl": round(posTheta * 1.0, 4),
         },
     }
 
@@ -1761,6 +2367,11 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
     logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
              sizeResult, expiryDate, ceSymbol, peSymbol, skipped=False, skipReason=None,
              gttProtected=gttOk, positionIntegrity="healthy", kMetadata=kMetadata)
+
+    # Step 12: Send email notification (non-blocking — failure does not affect trade)
+    sendEntryEmail(strategyName, config, dte, kValue, callPremium, putPremium,
+                   sizeResult, expiryDate, ceSymbol, peSymbol, kMetadata,
+                   gttOk, gttIds, state)
 
     print(f"[ENTRY] {strategyName}: SUCCESS - {finalLots} lots, qty={totalQuantity}, "
           f"CE={ceSymbol}, PE={peSymbol}, gttProtected={gttOk}")
