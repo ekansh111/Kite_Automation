@@ -100,7 +100,7 @@ K_FLOOR = 0.20              # min k (most aggressive sizing allowed)
 K_CEILING = 5.00            # data-quality guard (not a risk limit)
 RISK_FREE_RATE = 0.07       # ~7% annualised risk-free rate for Indian market
 IV_SOLVER_MIN = 0.01        # IV solver lower bound (1% annualised)
-IV_SOLVER_MAX = 5.0         # IV solver upper bound (500% annualised)
+IV_SOLVER_MAX = 6.0         # IV solver upper bound (600% annualised)
 QUOTE_STALE_SECONDS = 60    # quote older than this during market hours → stale
 IV_SPREAD_GATE = 0.50       # reject if |ceIV - peIV| / avgIV > this (50%)
 BID_ASK_SPREAD_GATE = 0.30  # reject if spread > 30% of mid-price
@@ -330,11 +330,78 @@ def buildEntryEmailHtml(strategyName, config, dte, kValue, callPremium, putPremi
         </div>
 
         <!-- Sizing Formula -->
-        <div style="padding:16px 28px 0;">
-          <div style="background:{grey_bg};border-left:4px solid {accent};padding:12px 16px;font-size:12px;font-family:monospace;color:#333;">
-            dailyVolPerLot = K &times; combinedPremium &times; lotSize = {_fmt(kValue, 4)} &times; {_fmt(sizeResult['combinedPremium'])} &times; {LOT_SIZES[underlying]} = \u20B9{_fmt(sizeResult['dailyVolPerLot'])}<br>
-            allowedLots = budget / dailyVolPerLot = {_fmt(DAILY_VOL_BUDGETS[underlying], 0)} / {_fmt(sizeResult['dailyVolPerLot'])} = {sizeResult['allowedLots']}<br>
-            finalLots = min(allowedLots, maxLots) = min({sizeResult['allowedLots']}, {config['maxLots']}) = {sizeResult['finalLots']}
+        <div style="padding:20px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Position Sizing Formula
+          </h2>
+
+          <!-- Step 1: dailyVolPerLot -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;margin-bottom:12px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 1: Daily Volatility Per Lot</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">How much P&amp;L volatility does one lot produce on a worst-case day?</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">dailyVolPerLot</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">K &times; combinedPremium &times; lotSize</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">{_fmt(kValue, 4)} &times; {_fmt(sizeResult['combinedPremium'])} &times; {LOT_SIZES[underlying]}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;font-size:15px;color:{navy};">\u20B9{_fmt(sizeResult['dailyVolPerLot'])}</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Step 2: allowedLots -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;margin-bottom:12px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 2: Allowed Lots</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">How many lots fit within the daily volatility budget?</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">allowedLots</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">floor(budget / dailyVolPerLot)</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">floor(\u20B9{_fmt(DAILY_VOL_BUDGETS[underlying], 0)} / \u20B9{_fmt(sizeResult['dailyVolPerLot'])})</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;font-size:15px;color:{navy};">{sizeResult['allowedLots']} lots</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Step 3: finalLots -->
+          <div style="background:#E8F5E9;border:2px solid {green};border-radius:6px;padding:16px 18px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 3: Final Lots (capped)</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">Apply the strategy&rsquo;s hard maximum lot cap.</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">finalLots</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">min(allowedLots, maxLots)</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">min({sizeResult['allowedLots']}, {config['maxLots']})</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-weight:700;font-size:18px;color:{green};">{sizeResult['finalLots']} lots &nbsp;({sizeResult['finalLots'] * LOT_SIZES[underlying]} qty)</td>
+              </tr>
+            </table>
           </div>
         </div>
 
@@ -648,6 +715,285 @@ def buildEntryEmailHtml(strategyName, config, dte, kValue, callPremium, putPremi
               <td style="padding:6px 10px;">{km.get('pePremiumSource', 'N/A')}</td>
             </tr>
           </table>
+        </div>"""
+
+    # ── Greeks & IV Calculation Methodology (dynamic only) ──
+    if km.get("source") == "dynamic":
+        ceG = km.get("ceGreeks", {})
+        peG = km.get("peGreeks", {})
+        _spot = km.get("spot", "?")
+        _ceK = km.get("ceStrike", "?")
+        _peK = km.get("peStrike", "?")
+        _T = km.get("timeToExpiryYears", "?")
+        _ceIV = km.get("ceIV", "?")
+        _peIV = km.get("peIV", "?")
+        _cePrem = km.get("cePremiumUsed", "?")
+        _pePrem = km.get("pePremiumUsed", "?")
+        _r = RISK_FREE_RATE
+
+        # Compute d1 values and BS verification prices for display
+        try:
+            import math as _m
+            _TVal = float(_T)
+            _sqrtT = _m.sqrt(max(_TVal, 1e-10))
+
+            _ceIVVal = float(_ceIV)
+            _d1_ce = (_m.log(float(_spot) / float(_ceK)) + (float(_r) + 0.5 * _ceIVVal ** 2) * _TVal) / (_ceIVVal * _sqrtT)
+            _d2_ce = _d1_ce - _ceIVVal * _sqrtT
+            _nd1_ce = _normcdf(_d1_ce)
+            _nd2_ce = _normcdf(_d2_ce)
+            _npd1_ce = _normpdf(_d1_ce)
+
+            _peIVVal = float(_peIV)
+            _d1_pe = (_m.log(float(_spot) / float(_peK)) + (float(_r) + 0.5 * _peIVVal ** 2) * _TVal) / (_peIVVal * _sqrtT)
+            _d2_pe = _d1_pe - _peIVVal * _sqrtT
+            _nd1_pe = _normcdf(_d1_pe)
+            _nd2_pe = _normcdf(_d2_pe)
+            _npd1_pe = _normpdf(_d1_pe)
+
+            # Verify: plug solved IV back into BS to reproduce market premium
+            _ceBSPrice = bsPrice(float(_spot), float(_ceK), _TVal, _ceIVVal, "CE", float(_r))
+            _peBSPrice = bsPrice(float(_spot), float(_peK), _TVal, _peIVVal, "PE", float(_r))
+
+            d1_ce_str = _fmt(_d1_ce, 6)
+            d2_ce_str = _fmt(_d2_ce, 6)
+            nd1_ce_str = _fmt(_nd1_ce, 6)
+            nd2_ce_str = _fmt(_nd2_ce, 6)
+            npd1_ce_str = _fmt(_npd1_ce, 6)
+            ceBSStr = _fmt(_ceBSPrice, 2)
+            ceErrStr = _fmt(abs(_ceBSPrice - float(_cePrem)), 4)
+
+            d1_pe_str = _fmt(_d1_pe, 6)
+            d2_pe_str = _fmt(_d2_pe, 6)
+            nd1_pe_str = _fmt(_nd1_pe, 6)
+            nd2_pe_str = _fmt(_nd2_pe, 6)
+            npd1_pe_str = _fmt(_npd1_pe, 6)
+            peBSStr = _fmt(_peBSPrice, 2)
+            peErrStr = _fmt(abs(_peBSPrice - float(_pePrem)), 4)
+        except Exception:
+            d1_ce_str = d2_ce_str = nd1_ce_str = nd2_ce_str = npd1_ce_str = "err"
+            d1_pe_str = d2_pe_str = nd1_pe_str = nd2_pe_str = npd1_pe_str = "err"
+            ceBSStr = peBSStr = ceErrStr = peErrStr = "err"
+
+        html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Greeks &amp; IV &mdash; Calculation Methodology
+          </h2>
+
+          <!-- IV Solver -->
+          <div style="background:{grey_bg};border-left:4px solid {accent};padding:12px 16px;margin-bottom:14px;">
+            <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:{navy};">Step 1: Implied Volatility Solver</p>
+            <p style="margin:0 0 8px;font-size:12px;color:#555;line-height:1.6;">
+              IV is the &sigma; that makes the Black-Scholes theoretical price equal the observed market premium.
+              We solve for &sigma; numerically &mdash; there is no closed-form inverse.
+            </p>
+            <p style="margin:0 0 8px;font-size:12px;color:#555;line-height:1.6;">
+              <b>r = {_fmt(_r * 100, 1)}% (annualised risk-free rate)</b> &mdash; Indian 10Y government bond yield, used for
+              discounting in the BS formula. Affects option pricing through the drift term and strike discounting.
+            </p>
+            <p style="margin:0;font-size:12px;color:#555;line-height:1.8;">
+              <b>Phase 1 &mdash; Newton-Raphson</b> (fast, up to 50 iterations):<br>
+              <span style="font-family:monospace;font-size:11px;margin-left:12px;">
+                &sigma;<sub>0</sub> = 0.30 (initial guess)
+              </span><br>
+              <span style="font-family:monospace;font-size:11px;margin-left:12px;">
+                &sigma;<sub>n+1</sub> = &sigma;<sub>n</sub> &minus; [BS(S, K, T, &sigma;<sub>n</sub>, r) &minus; P<sub>market</sub>] / vega(&sigma;<sub>n</sub>)
+              </span><br>
+              <span style="font-family:monospace;font-size:11px;margin-left:12px;">
+                converges when |BS(&sigma;) &minus; P<sub>market</sub>| &lt; 10<sup>&minus;6</sup>
+              </span><br>
+              <b>Phase 2 &mdash; Bisection fallback</b> (robust, if Newton fails):<br>
+              <span style="font-family:monospace;font-size:11px;margin-left:12px;">
+                binary search on [{_fmt(IV_SOLVER_MIN, 2)}, {_fmt(IV_SOLVER_MAX, 1)}], up to 100 iterations
+              </span>
+            </p>
+          </div>
+
+          <!-- IV Solver Inputs -->
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:6px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Input</td>
+              <td style="padding:6px 10px;font-weight:600;">CE</td>
+              <td style="padding:6px 10px;font-weight:600;">PE</td>
+              <td style="padding:6px 10px;font-weight:600;">Description</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">P<sub>market</sub></td>
+              <td style="padding:6px 10px;">\u20B9{_fmt(_cePrem)}</td>
+              <td style="padding:6px 10px;">\u20B9{_fmt(_pePrem)}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Mid-price from order book (bid+ask)/2</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">S (Spot)</td>
+              <td style="padding:6px 10px;">{_fmt(_spot)}</td>
+              <td style="padding:6px 10px;">{_fmt(_spot)}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Underlying last traded price</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">K (Strike)</td>
+              <td style="padding:6px 10px;">{_fmt(_ceK, 0)}</td>
+              <td style="padding:6px 10px;">{_fmt(_peK, 0)}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Option strike price</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">T</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(_T, 6)}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(_T, 6)}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Time to expiry in years (sizingDTE / 252)</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">r</td>
+              <td style="padding:6px 10px;">{_fmt(_r * 100, 1)}%</td>
+              <td style="padding:6px 10px;">{_fmt(_r * 100, 1)}%</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Annualised risk-free rate (India 10Y bond)</td>
+            </tr>
+          </table>
+
+          <!-- IV Solver Output + Verification -->
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;">
+            <tr style="background:{accent};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Result</td>
+              <td style="padding:6px 10px;font-weight:600;">CE</td>
+              <td style="padding:6px 10px;font-weight:600;">PE</td>
+              <td style="padding:6px 10px;font-weight:600;">Verification</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">Solved &sigma; (IV)</td>
+              <td style="padding:6px 10px;font-weight:700;color:{navy};font-size:13px;">{_pct(float(_ceIV) * 100) if _ceIV != '?' else '?'}</td>
+              <td style="padding:6px 10px;font-weight:700;color:{navy};font-size:13px;">{_pct(float(_peIV) * 100) if _peIV != '?' else '?'}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">The &sigma; that satisfies BS = P<sub>market</sub></td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">BS(solved &sigma;)</td>
+              <td style="padding:6px 10px;font-family:monospace;">\u20B9{ceBSStr}</td>
+              <td style="padding:6px 10px;font-family:monospace;">\u20B9{peBSStr}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">Plug IV back into BS formula</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">|Error|</td>
+              <td style="padding:6px 10px;font-family:monospace;color:{green};">{ceErrStr}</td>
+              <td style="padding:6px 10px;font-family:monospace;color:{green};">{peErrStr}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">|BS(&sigma;) &minus; P<sub>market</sub>| &nbsp;(should be &lt; 0.001)</td>
+            </tr>
+          </table>
+
+          <!-- d1 / d2 intermediates -->
+          <div style="background:{grey_bg};border-left:4px solid {accent};padding:12px 16px;margin-bottom:14px;">
+            <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:{navy};">Step 2: Black-Scholes Intermediates (d1, d2)</p>
+            <p style="margin:0;font-size:12px;color:#555;line-height:1.6;font-family:monospace;">
+              d1 = [ln(S/K) + (r + &frac12;&sigma;&sup2;)T] / (&sigma;&radic;T)<br>
+              d2 = d1 &minus; &sigma;&radic;T
+            </p>
+          </div>
+
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Intermediate</td>
+              <td style="padding:6px 10px;font-weight:600;">CE</td>
+              <td style="padding:6px 10px;font-weight:600;">PE</td>
+              <td style="padding:6px 10px;font-weight:600;">What it means</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">d1</td>
+              <td style="padding:6px 10px;font-family:monospace;">{d1_ce_str}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{d1_pe_str}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">How many std devs the option is in-the-money (adjusted for drift). Drives delta and the pricing formula.</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">d2</td>
+              <td style="padding:6px 10px;font-family:monospace;">{d2_ce_str}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{d2_pe_str}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">d1 shifted by volatility over time. Determines the probability-weighted present value of paying the strike at expiry.</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">N(d1)</td>
+              <td style="padding:6px 10px;font-family:monospace;">{nd1_ce_str}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{nd1_pe_str}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">CDF of standard normal at d1. For a CE this equals delta &mdash; the probability-weighted hedge ratio. CE &delta; = N(d1), PE &delta; = N(d1) &minus; 1.</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">N(d2)</td>
+              <td style="padding:6px 10px;font-family:monospace;">{nd2_ce_str}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{nd2_pe_str}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">CDF at d2. Risk-neutral probability that the option finishes in-the-money. Used to discount the strike payment.</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">N&prime;(d1)</td>
+              <td style="padding:6px 10px;font-family:monospace;">{npd1_ce_str}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{npd1_pe_str}</td>
+              <td style="padding:6px 10px;color:#666;font-size:11px;">PDF of standard normal at d1. Measures how sensitive N(d1) is to small changes &mdash; directly feeds into gamma and vega.</td>
+            </tr>
+          </table>
+
+          <!-- Greeks Formulas -->
+          <div style="background:{grey_bg};border-left:4px solid {accent};padding:12px 16px;margin-bottom:14px;">
+            <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:{navy};">Step 3: Greeks Formulas (Black-Scholes, no dividends)</p>
+            <table style="border-collapse:collapse;font-size:11px;font-family:monospace;color:#555;">
+              <tr><td style="padding:3px 8px 3px 0;font-weight:600;color:#333;">Delta</td><td style="padding:3px 0;">CE: N(d1) &nbsp;|&nbsp; PE: N(d1) &minus; 1</td></tr>
+              <tr><td style="padding:3px 8px 3px 0;font-weight:600;color:#333;">Gamma</td><td style="padding:3px 0;">N'(d1) / (S &times; &sigma; &times; &radic;T)</td></tr>
+              <tr><td style="padding:3px 8px 3px 0;font-weight:600;color:#333;">Vega</td><td style="padding:3px 0;">S &times; N'(d1) &times; &radic;T &nbsp;(raw &part;V/&part;&sigma;)</td></tr>
+              <tr><td style="padding:3px 8px 3px 0;font-weight:600;color:#333;">Theta</td><td style="padding:3px 0;">CE: &minus;[S&middot;N'(d1)&middot;&sigma;/(2&radic;T)] &minus; r&middot;K&middot;e<sup>&minus;rT</sup>&middot;N(d2) &nbsp;/ 365</td></tr>
+              <tr><td style="padding:3px 0;"></td><td style="padding:3px 0;">PE: &minus;[S&middot;N'(d1)&middot;&sigma;/(2&radic;T)] + r&middot;K&middot;e<sup>&minus;rT</sup>&middot;N(&minus;d2) &nbsp;/ 365</td></tr>
+            </table>
+          </div>
+
+          <!-- Individual Greeks Results -->
+          <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Greek</td>
+              <td style="padding:6px 10px;font-weight:600;">CE</td>
+              <td style="padding:6px 10px;font-weight:600;">PE</td>
+              <td style="padding:6px 10px;font-weight:600;">Position (short: &minus;CE &minus; PE)</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">Delta</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(ceG.get('delta'), 6)}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(peG.get('delta'), 6)}</td>
+              <td style="padding:6px 10px;font-family:monospace;font-weight:600;">{_fmt(-(float(ceG.get('delta', 0)) + float(peG.get('delta', 0))), 6)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">Gamma</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(ceG.get('gamma'), 8)}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(peG.get('gamma'), 8)}</td>
+              <td style="padding:6px 10px;font-family:monospace;font-weight:600;">{_fmt(km.get('posGamma'), 8)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:6px 10px;font-weight:600;">Theta</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(ceG.get('theta'), 4)}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(peG.get('theta'), 4)}</td>
+              <td style="padding:6px 10px;font-family:monospace;font-weight:600;">{_fmt(km.get('posTheta'), 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px 10px;font-weight:600;">Vega</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(ceG.get('vega'), 4)}</td>
+              <td style="padding:6px 10px;font-family:monospace;">{_fmt(peG.get('vega'), 4)}</td>
+              <td style="padding:6px 10px;font-family:monospace;font-weight:600;">{_fmt(km.get('posVega'), 4)}</td>
+            </tr>
+          </table>
+
+          <!-- Position Greeks Interpretation -->
+          <div style="background:#FFF8E1;border-left:4px solid #FFC107;padding:12px 14px;font-size:11px;color:#555;line-height:1.7;">
+            <p style="margin:0 0 8px;font-weight:700;font-size:12px;color:#333;">How to read these (short straddle/strangle — you are the seller):</p>
+            <p style="margin:0 0 4px;">
+              <b>Delta ({_fmt(-(float(ceG.get('delta', 0)) + float(peG.get('delta', 0))), 4)})</b> &mdash;
+              P&amp;L change per 1-point move in the underlying. Near-zero for ATM straddles (CE and PE deltas roughly cancel).
+            </p>
+            <p style="margin:0 0 4px;">
+              <b>Gamma ({_fmt(km.get('posGamma'), 6)})</b> &mdash;
+              How fast delta changes per 1-point move. <b>Negative</b> means large moves hurt you &mdash; the bigger the move, the worse it gets (convexity working against you).
+            </p>
+            <p style="margin:0 0 4px;">
+              <b>Theta ({_fmt(km.get('posTheta'), 2)})</b> &mdash;
+              Premium you earn per calendar day from time decay. <b>Positive</b> because you sold the options &mdash; time passing makes them cheaper, which is your profit.
+            </p>
+            <p style="margin:0;">
+              <b>Vega ({_fmt(km.get('posVega'), 2)})</b> &mdash;
+              P&amp;L change if IV moves by 1.00 (100pp). In practice: <b>per 1 vol point (1pp) rise, you lose \u20B9{_fmt(abs(float(km.get('posVega', 0))) * 0.01, 2)}</b>.
+              Your crash scenario applies a {_fmt(km.get('ivShockApplied', 0), 0)}vp shock: {_fmt(abs(float(km.get('posVega', 0))), 2)} &times; {_fmt(float(km.get('ivShockApplied', 0)) / 100, 2)} = <b>\u20B9{_fmt(abs(float(km.get('posVega', 0))) * float(km.get('ivShockApplied', 0)) / 100, 2)} loss</b>.
+              Negative because as a seller, rising IV makes the options you sold more expensive.
+            </p>
+          </div>
         </div>"""
 
     # ── GTT Orders ──
@@ -1363,12 +1709,18 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
         "source": "dynamic",
         "staticK": staticK,
         **result,
+        "spot": round(spot, 2),
+        "ceStrike": ceStrike,
+        "peStrike": peStrike,
+        "sizingDte": sizingDte,
         "cePremiumUsed": round(cePremium, 2),
         "pePremiumUsed": round(pePremium, 2),
         "cePremiumSource": ceSource,
         "pePremiumSource": peSource,
         "ceIV": round(ceIV, 6),
         "peIV": round(peIV, 6),
+        "ceGreeks": {k: round(v, 8) for k, v in ceGreeks.items()},
+        "peGreeks": {k: round(v, 8) for k, v in peGreeks.items()},
         "timeToExpiryYears": round(T, 8),
         "quoteTimestamp": str(quoteTimestamp) if quoteTimestamp else None,
         "ceQuoteTimestamp": str(ceQuoteTimestamp) if hasattr(ceQuoteTimestamp, 'hour') else None,
@@ -1439,7 +1791,7 @@ STRATEGY_CONFIGS = {
         "phaseType": "early",
         "targetDteBucket": (3, 4),
         "exitDte": 2,              # exit when DTE drops to 2 (Fri for Tue expiry)
-        "maxLots": 5,
+        "maxLots": 6,
         "stopLossTriggerPercent": 30,
         "stopLossOrderPlacePercent": 45,
         "kTable": K_TABLE_STRADDLE,
