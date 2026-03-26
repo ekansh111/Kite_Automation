@@ -791,10 +791,107 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 """
 
         import html as _html
-        HtmlBody = f"""<html><body>
-<pre style="font-family: Consolas, 'Courier New', monospace; font-size: 14px; line-height: 1.4; color: #222; background: #f9f9f9; padding: 16px; border-radius: 6px;">
-{_html.escape(Body)}
-</pre></body></html>"""
+
+        # Helper for key-value rows
+        def _kv(label, value):
+            return f'<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">{_html.escape(str(label))}</td><td style="padding:4px 0;color:#222;">{_html.escape(str(value))}</td></tr>'
+
+        # Helper for section header
+        def _section(title):
+            return f'<tr><td colspan="2" style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">{_html.escape(title)}</td></tr>'
+
+        # Slippage color
+        SlipColor = "#2e7d32" if Slip is not None and Slip < 0 else "#c62828" if Slip is not None and Slip > 0 else "#555"
+        SlipHtml = f'<span style="color:{SlipColor};font-weight:bold;">{_html.escape(SlipLabel)}</span> vs LTP ({FillInfo.get("initial_ltp", "N/A")})'
+
+        # Outcome color
+        OutColor = "#2e7d32" if Outcome == "FILLED" else "#c62828"
+
+        # Build order book HTML table
+        DepthHtml = '<table style="width:100%;border-collapse:collapse;font-size:13px;margin:6px 0;">'
+        DepthHtml += '<tr style="background:#003366;color:white;"><th colspan="3" style="padding:4px 6px;text-align:center;">BID (Buy)</th><th colspan="3" style="padding:4px 6px;text-align:center;">ASK (Sell)</th></tr>'
+        DepthHtml += '<tr style="background:#e8e8e8;"><th style="padding:3px 6px;">Price</th><th style="padding:3px 6px;">Qty</th><th style="padding:3px 6px;">Ord</th><th style="padding:3px 6px;">Price</th><th style="padding:3px 6px;">Qty</th><th style="padding:3px 6px;">Ord</th></tr>'
+        for i in range(min(5, max(len(BuyDepth), len(SellDepth)))):
+            b = BuyDepth[i] if i < len(BuyDepth) else {}
+            s = SellDepth[i] if i < len(SellDepth) else {}
+            bg = "#f2f7fb" if i % 2 == 0 else "#ffffff"
+            DepthHtml += f'<tr style="background:{bg};">'
+            DepthHtml += f'<td style="padding:3px 6px;text-align:right;">{b.get("price", "-")}</td><td style="padding:3px 6px;text-align:right;">{b.get("quantity", "-")}</td><td style="padding:3px 6px;text-align:right;">{b.get("orders", "-")}</td>'
+            DepthHtml += f'<td style="padding:3px 6px;text-align:right;">{s.get("price", "-")}</td><td style="padding:3px 6px;text-align:right;">{s.get("quantity", "-")}</td><td style="padding:3px 6px;text-align:right;">{s.get("orders", "-")}</td>'
+            DepthHtml += '</tr>'
+        DepthHtml += '</table>'
+
+        # Build decision matrix HTML
+        def _mc(r, s, cr, cs):
+            CellMap = {("low","tight"):"C",("low","normal"):"C",("low","wide"):"C",("normal","tight"):"C",("normal","normal"):"C",("normal","wide"):"A",("high","tight"):"A",("high","normal"):"B",("high","wide"):"B"}
+            v = CellMap.get((r, s), "?")
+            if r == cr and s == cs:
+                return f'<td style="padding:4px 8px;text-align:center;background:#003366;color:white;font-weight:bold;">{v}</td>'
+            return f'<td style="padding:4px 8px;text-align:center;">{v}</td>'
+
+        MatrixHtml = '<table style="border-collapse:collapse;font-size:13px;margin:6px 0;">'
+        MatrixHtml += '<tr><th style="padding:4px 8px;"></th><th style="padding:4px 8px;background:#e8e8e8;">Tight</th><th style="padding:4px 8px;background:#e8e8e8;">Normal</th><th style="padding:4px 8px;background:#e8e8e8;">Wide</th></tr>'
+        for rng in ["low", "normal", "high"]:
+            MatrixHtml += f'<tr><th style="padding:4px 8px;background:#e8e8e8;text-align:left;">{rng.title()}</th>{_mc(rng,"tight",RangeLvl,SpreadLvl)}{_mc(rng,"normal",RangeLvl,SpreadLvl)}{_mc(rng,"wide",RangeLvl,SpreadLvl)}</tr>'
+        MatrixHtml += '</table>'
+        MatrixHtml += f'<div style="font-size:12px;color:#666;margin:4px 0;">Current: Range={RangeLvl}, Spread={SpreadLvl} → Mode {Mode}</div>'
+        MatrixHtml += f'<div style="font-size:11px;color:#999;margin:2px 0;">Range: low ≤ 0.4 | normal ≤ 0.8 | high &gt; 0.8</div>'
+        MatrixHtml += f'<div style="font-size:11px;color:#999;margin:2px 0;">Spread: tight ≤ 1.5 | normal ≤ 3.0 | wide &gt; 3.0</div>'
+
+        # Range calc HTML
+        if OhlcHigh != 'N/A' and OhlcLow != 'N/A':
+            IntraRange = OhlcHigh - OhlcLow
+            RangeHtml = _kv("Intraday High", OhlcHigh) + _kv("Intraday Low", OhlcLow) + _kv("Intraday Range", f"{IntraRange:.2f}") + _kv("ATR", AtrVal) + _kv("Range / ATR", f"{IntraRange:.2f} / {AtrVal} = {FillInfo.get('range_ratio', 'N/A')}")
+        else:
+            RangeHtml = _kv("OHLC", "N/A (defaulted to 0.5)") + _kv("ATR", AtrVal)
+
+        SpreadHtml = _kv("Spread", ActualSpread) + _kv("Baseline", BaselineSpread) + _kv("Spread Ratio", f"{ActualSpread} / {BaselineSpread} = {FillInfo.get('spread_ratio', 'N/A')}")
+
+        HtmlBody = f"""<html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:14px;color:#222;">
+<div style="max-width:600px;margin:0 auto;padding:12px;">
+
+<table style="width:100%;border-collapse:collapse;">
+{_section("Order Summary")}
+{_kv("Instrument", Instrument)}
+{_kv("Action", Action)}
+{_kv("Quantity", Qty)}
+{_kv("Fill Price", FillInfo.get('fill_price', 'N/A'))}
+<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">Slippage</td><td style="padding:4px 0;">{SlipHtml}</td></tr>
+{_kv("Execution Mode", f"{Mode} — {ModeExplain}")}
+<tr><td style="padding:4px 12px 4px 0;font-weight:bold;white-space:nowrap;vertical-align:top;color:#555;">Outcome</td><td style="padding:4px 0;color:{OutColor};font-weight:bold;">{_html.escape(Outcome)}</td></tr>
+
+{_section("Market Context")}
+{_kv("Initial LTP", FillInfo.get('initial_ltp', 'N/A'))}
+{_kv("Best Bid", FillInfo.get('initial_bid', 'N/A'))}
+{_kv("Best Ask", FillInfo.get('initial_ask', 'N/A'))}
+
+{_section("Range Calculation")}
+{RangeHtml}
+
+{_section("Spread Calculation")}
+{SpreadHtml}
+</table>
+
+<div style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">Order Book</div>
+{DepthHtml}
+
+<table style="width:100%;border-collapse:collapse;">
+{_section("Execution Details")}
+{_kv("Chase Iters", FillInfo.get('chase_iterations', 0))}
+{_kv("Duration", f"{FillInfo.get('chase_duration_seconds', 0)}s")}
+{_kv("Market Fallback", 'Yes' if FillInfo.get('market_fallback') else 'No')}
+{_kv("Settle Wait", f"{FillInfo.get('settle_wait_seconds', 0)}s")}
+</table>
+
+<div style="padding:14px 0 6px 0;font-weight:bold;font-size:15px;color:#003366;border-bottom:1px solid #ddd;">Decision Matrix</div>
+{MatrixHtml}
+
+<div style="margin-top:12px;padding:8px;background:#f5f5f5;border-radius:4px;font-size:12px;color:#888;">
+Broker Order ID: {_html.escape(str(OrderDetails.get('OrderId', 'N/A')))}
+</div>
+
+</div></body></html>"""
         Msg = MIMEText(HtmlBody, "html")
         Msg["Subject"] = Subject
         Msg["From"] = EmailCfg["sender"]
