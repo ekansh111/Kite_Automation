@@ -7,7 +7,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 from selenium.webdriver.common.keys import Keys
-import undetected_chromedriver.v2 as uc
+import distutils_compat  # noqa: F401
+
+try:
+    import undetected_chromedriver.v2 as uc
+except ModuleNotFoundError:
+    import undetected_chromedriver as uc
+
 #exec_path_chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe" #Do not use this path that is extracted from "chrome:\\version/"
 #exec_path_driver = "path/to/chromedriver"
 

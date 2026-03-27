@@ -16,10 +16,12 @@ accounts with minimal changes.
 
 import time
 import pyotp
+import distutils_compat  # noqa: F401
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from kiteconnect import KiteConnect
+from chrome_version import detect_chrome_major_version
 from Directories import KiteEkanshLogin,KiteRashmiLogin, KiteEkanshLoginAccessToken, KiteRashmiLoginAccessToken  # Example paths in "Directories.py"
 
 
@@ -30,7 +32,7 @@ class ZerodhaLogin:
     """
 
     def __init__(self, user_id, user_pwd, api_key, api_secret, totp_key,
-                 output_file, chrome_version):
+                 output_file, chrome_version=None):
         """
         :param user_id: Zerodha login user ID
         :param user_pwd: Zerodha login password
@@ -38,7 +40,7 @@ class ZerodhaLogin:
         :param api_secret: Kite API secret (from Zerodha developer portal)
         :param totp_key: TOTP secret key for 2FA
         :param output_file: Path to write the generated access token
-        :param chrome_version: The major version of Chrome installed on your system
+        :param chrome_version: Optional Chrome major version override
         """
         self.user_id = user_id
         self.user_pwd = user_pwd
@@ -46,7 +48,7 @@ class ZerodhaLogin:
         self.api_secret = api_secret
         self.totp_key = totp_key
         self.output_file = output_file
-        self.chrome_version = chrome_version
+        self.chrome_version = chrome_version or detect_chrome_major_version()
 
         # Prepare undetected Chrome options (headless by default)
         self.options = uc.ChromeOptions()
@@ -60,9 +62,22 @@ class ZerodhaLogin:
         using undetected_chromedriver.
         """
         try:
-            driver = uc.Chrome(version_main=self.chrome_version, options=self.options)
-            return driver
+            driver_kwargs = {"options": self.options}
+            if self.chrome_version is not None:
+                print(f"Using Chrome major version {self.chrome_version}")
+                driver_kwargs["version_main"] = self.chrome_version
+            else:
+                print("Chrome version detection failed; using undetected_chromedriver auto-detection")
+
+            return uc.Chrome(**driver_kwargs)
         except Exception as e:
+            if self.chrome_version is not None:
+                print("Version-pinned launch failed; retrying with undetected_chromedriver auto-detection...")
+                try:
+                    return uc.Chrome(options=self.options)
+                except Exception:
+                    pass
+
             print("Error initializing undetected_chromedriver:", e)
             raise e
 
@@ -197,8 +212,7 @@ def runZerodhaLogin(login_file,OPAccessTokenFile):
         api_key    = api_key,
         api_secret = api_secret,
         totp_key   = totp_key,
-        output_file= OPAccessTokenFile,  # example output path
-        chrome_version=133
+        output_file= OPAccessTokenFile  # example output path
     )
 
     kite_instance = zlogin.loginAndGenerateAccessToken()

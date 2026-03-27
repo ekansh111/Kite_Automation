@@ -1,15 +1,18 @@
 #from multiprocessing import Value
 from kiteconnect import KiteConnect
 from kiteconnect import KiteTicker
+import distutils_compat  # noqa: F401
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 import time, pyotp
+from chrome_version import detect_chrome_major_version
 from Directories import *
 
 
 options = uc.ChromeOptions()
 options.headless = True
+CHROME_VERSION = detect_chrome_major_version()
 
 #Headless argument is given so that the web brower runs in background and is not triggered in forefront
 #options.add_argument('--headless')
@@ -42,7 +45,21 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         #Python version not at 3.8,chrome version higher than 119..124,port number not accessible,
         #or the VS code terminal default profile not set to command prompt
         #modified script patcher.py and updated download url with a new url link, line 285
-        driver = uc.Chrome(version_main=131,options=options)#,port=49187)
+        driver_kwargs = {"options": options}
+        if CHROME_VERSION is not None:
+            print("Using Chrome major version -->" + str(CHROME_VERSION))
+            driver_kwargs["version_main"] = CHROME_VERSION
+        else:
+            print("Chrome version detection failed; using undetected_chromedriver auto-detection")
+
+        try:
+            driver = uc.Chrome(**driver_kwargs)#,port=49187)
+        except Exception:
+            if CHROME_VERSION is None:
+                raise
+
+            print("Version-pinned launch failed; retrying with undetected_chromedriver auto-detection...")
+            driver = uc.Chrome(options=options)
         webpagelink = f'https://kite.trade/connect/login?api_key={api_key}&v=3'
         driver.get(webpagelink)
 
