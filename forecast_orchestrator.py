@@ -173,6 +173,7 @@ class ForecastOrchestrator:
         Instrument = Payload["Instrument"]
         Netposition = int(Payload["Netposition"])
         ATR = float(Payload["ATR"])
+        Action = Payload.get("Action", "").lower().strip() or None  # "buy" or "sell" or None
 
         # Validate instrument is known
         if Instrument not in self.Instruments:
@@ -201,20 +202,20 @@ class ForecastOrchestrator:
             Forecast = 0.0
 
         # Log raw signal with original name (append-only, never overwritten)
-        db.LogTVSignal(Instrument, RawSystemName, Netposition, ATR)
+        db.LogTVSignal(Instrument, RawSystemName, Netposition, ATR, Action)
 
         # Upsert derived forecast using normalized config key
-        db.UpsertForecast(Instrument, SystemName, Forecast, ATR)
+        db.UpsertForecast(Instrument, SystemName, Forecast, ATR, Action)
 
         # Push to instrument queue (worker will process)
         self.Queues[Instrument].put(Instrument)
 
         Logger.info(
-            "Webhook: %s | %s (raw: %s) | netpos=%d → forecast=%.0f | ATR=%.2f",
-            Instrument, SystemName, RawSystemName, Netposition, Forecast, ATR
+            "Webhook: %s | %s (raw: %s) | netpos=%d → forecast=%.0f | ATR=%.2f | action=%s",
+            Instrument, SystemName, RawSystemName, Netposition, Forecast, ATR, Action
         )
         return {"status": "ok", "instrument": Instrument, "system": SystemName,
-                "raw_system_name": RawSystemName}
+                "raw_system_name": RawSystemName, "action": Action}
 
     # ─── Worker Loop ──────────────────────────────────────────────────
 
@@ -360,7 +361,45 @@ class ForecastOrchestrator:
             Target, Current, Delta
         )
 
-        # Step 11: Execute
+        # Step 11: Direction cross-check — halt if orchestrator delta conflicts
+        # with ALL subsystem actions from TradingView.
+        # e.g., all subsystems say "sell" but orchestrator wants to BUY → DB out of sync
+        SubsystemActions = [
+            r.get("action") for r in ForecastsDB if r.get("action")
+        ]
+        if SubsystemActions:
+            AllSell = all(a == "sell" for a in SubsystemActions)
+            AllBuy = all(a == "buy" for a in SubsystemActions)
+
+            if AllSell and Delta > 0:
+                # All subsystems say SELL but we're about to BUY — conflict!
+                ConflictMsg = (
+                    f"DIRECTION CONFLICT {Instrument}: All subsystems say SELL "
+                    f"but computed delta=+{Delta} (BUY). "
+                    f"DB confirmed_qty={Current}, target={Target}. "
+                    f"Likely DB out of sync with broker. TRADE HALTED."
+                )
+                Logger.error(ConflictMsg)
+                db.LogOrder(Instrument, "BUY", abs(Delta), "HALTED_CONFLICT",
+                            Reason=ConflictMsg)
+                self._SendDirectionConflictAlert(Instrument, "SELL", "BUY", Delta, Current, Target, SubsystemActions)
+                return
+
+            if AllBuy and Delta < 0:
+                # All subsystems say BUY but we're about to SELL — conflict!
+                ConflictMsg = (
+                    f"DIRECTION CONFLICT {Instrument}: All subsystems say BUY "
+                    f"but computed delta={Delta} (SELL). "
+                    f"DB confirmed_qty={Current}, target={Target}. "
+                    f"Likely DB out of sync with broker. TRADE HALTED."
+                )
+                Logger.error(ConflictMsg)
+                db.LogOrder(Instrument, "SELL", abs(Delta), "HALTED_CONFLICT",
+                            Reason=ConflictMsg)
+                self._SendDirectionConflictAlert(Instrument, "BUY", "SELL", Delta, Current, Target, SubsystemActions)
+                return
+
+        # Step 12: Execute
         if self.DryRun:
             Logger.info("[DRY RUN] %s: Would execute delta=%d (target=%d)", Instrument, Delta, Target)
             db.LogOrder(Instrument, "BUY" if Delta > 0 else "SELL", abs(Delta), "DRY_RUN",
@@ -772,6 +811,95 @@ class ForecastOrchestrator:
 
         except Exception as e:
             Logger.error("Failed to send recon alert email: %s", e)
+
+    def _SendDirectionConflictAlert(self, Instrument, SubsystemDir, OrchestratorDir, Delta, Current, Target, Actions):
+        """Send HTML email alert when direction cross-check fails. Trade is HALTED."""
+        try:
+            if not EMAIL_CONFIG_PATH.exists():
+                Logger.warning("No email config at %s, skipping conflict alert", EMAIL_CONFIG_PATH)
+                return
+
+            with open(EMAIL_CONFIG_PATH, "r") as f:
+                EmailCfg = json.load(f)
+
+            Timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            Subject = f"🚨 TRADE HALTED — Direction Conflict on {Instrument} — {Timestamp}"
+
+            Html = f"""
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="background: linear-gradient(135deg, #b71c1c, #880e0e); padding: 20px 24px; border-radius: 10px 10px 0 0;">
+                    <h2 style="color: white; margin: 0; font-size: 18px;">🚨 TRADE HALTED — Direction Conflict</h2>
+                    <p style="color: rgba(255,255,255,0.8); margin: 6px 0 0; font-size: 13px;">{Timestamp}</p>
+                </div>
+
+                <div style="background: #fff; border: 1px solid #e0e0e0; border-top: none; padding: 20px 24px;">
+                    <p style="font-size: 15px; color: #333; margin: 0 0 16px;">
+                        <strong>{Instrument}</strong> — All TradingView subsystems say
+                        <span style="color: {'#e74c3c' if SubsystemDir == 'SELL' else '#27ae60'}; font-weight: 700;">{SubsystemDir}</span>
+                        but the orchestrator computed a
+                        <span style="color: {'#e74c3c' if OrchestratorDir == 'SELL' else '#27ae60'}; font-weight: 700;">{OrchestratorDir}</span>
+                        delta of <strong>{Delta:+d}</strong>.
+                    </p>
+
+                    <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 16px;">
+                        <tr style="background: #f8f9fa;">
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6; font-weight: 600;">DB confirmed_qty</td>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6;">{Current}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6; font-weight: 600;">Computed target</td>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6;">{Target}</td>
+                        </tr>
+                        <tr style="background: #f8f9fa;">
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6; font-weight: 600;">Computed delta</td>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6; color: #e74c3c; font-weight: 700;">{Delta:+d} ({OrchestratorDir})</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6; font-weight: 600;">Subsystem actions</td>
+                            <td style="padding: 8px 12px; border: 1px solid #dee2e6;">{', '.join(Actions)} → all {SubsystemDir}</td>
+                        </tr>
+                    </table>
+
+                    <div style="background: #ffebee; border-left: 4px solid #e74c3c; padding: 12px 16px; border-radius: 4px;">
+                        <p style="margin: 0; font-size: 13px; color: #c62828;">
+                            <strong>Root cause:</strong> The system_positions DB is likely out of sync with the broker.
+                            The orchestrator halted this trade to prevent placing an order in the wrong direction.
+                        </p>
+                    </div>
+
+                    <div style="background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px 16px; border-radius: 4px; margin-top: 12px;">
+                        <p style="margin: 0; font-size: 13px; color: #666;">
+                            <strong>To fix:</strong> Check your broker positions, then correct the DB:<br>
+                            <code style="background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 12px;">
+                            sqlite3 forecast_store.db "UPDATE system_positions SET confirmed_qty=&lt;BROKER_QTY&gt;, target_qty=&lt;BROKER_QTY&gt; WHERE instrument='{Instrument}';"
+                            </code>
+                        </p>
+                    </div>
+                </div>
+
+                <div style="background: #f5f5f5; padding: 12px 24px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 10px 10px;">
+                    <p style="margin: 0; font-size: 11px; color: #999; text-align: center;">
+                        Forecast Orchestrator • Direction Safety Check • Do not reply
+                    </p>
+                </div>
+            </div>"""
+
+            Msg = MIMEText(Html, "html")
+            Msg["Subject"] = Subject
+            Msg["From"] = EmailCfg["sender"]
+            Msg["To"] = EmailCfg["recipient"]
+            Msg["X-Priority"] = "1"
+            Msg["X-MSMail-Priority"] = "High"
+            Msg["Importance"] = "High"
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as Server:
+                Server.login(EmailCfg["sender"], EmailCfg["app_password"])
+                Server.send_message(Msg)
+
+            Logger.info("Direction conflict alert sent for %s", Instrument)
+
+        except Exception as e:
+            Logger.error("Failed to send direction conflict alert: %s", e)
 
     # ─── Status ───────────────────────────────────────────────────────
 

@@ -44,6 +44,7 @@ def InitDB():
                 system_name TEXT NOT NULL,
                 forecast REAL NOT NULL,
                 atr REAL NOT NULL,
+                action TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (instrument, system_name)
             );
@@ -54,6 +55,7 @@ def InitDB():
                 system_name TEXT NOT NULL,
                 netposition INTEGER NOT NULL,
                 atr REAL NOT NULL,
+                action TEXT,
                 received_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -109,20 +111,41 @@ def InitDB():
             );
         """)
         Conn.commit()
+
+        # Migrations: add columns that may not exist in older DBs
+        _RunMigrations(Conn)
+
     Logger.info("Forecast database initialized at %s", DB_PATH)
+
+
+def _RunMigrations(Conn):
+    """Add new columns to existing tables if they don't exist yet."""
+    # Check if 'action' column exists in subsystem_forecasts
+    Cols = [row[1] for row in Conn.execute("PRAGMA table_info(subsystem_forecasts)").fetchall()]
+    if "action" not in Cols:
+        Conn.execute("ALTER TABLE subsystem_forecasts ADD COLUMN action TEXT")
+        Logger.info("Migration: added 'action' column to subsystem_forecasts")
+
+    # Check if 'action' column exists in tradingview_signals
+    Cols = [row[1] for row in Conn.execute("PRAGMA table_info(tradingview_signals)").fetchall()]
+    if "action" not in Cols:
+        Conn.execute("ALTER TABLE tradingview_signals ADD COLUMN action TEXT")
+        Logger.info("Migration: added 'action' column to tradingview_signals")
+
+    Conn.commit()
 
 
 # ─── Subsystem Forecasts ────────────────────────────────────────────
 
-def UpsertForecast(Instrument, SystemName, Forecast, ATR):
+def UpsertForecast(Instrument, SystemName, Forecast, ATR, Action=None):
     """INSERT OR REPLACE the current forecast for a subsystem."""
     Conn = _GetConn()
     with _DBLock:
         Conn.execute(
             """INSERT OR REPLACE INTO subsystem_forecasts
-               (instrument, system_name, forecast, atr, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'))""",
-            (Instrument, SystemName, Forecast, ATR)
+               (instrument, system_name, forecast, atr, action, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+            (Instrument, SystemName, Forecast, ATR, Action)
         )
         Conn.commit()
 
@@ -131,7 +154,7 @@ def GetForecastsForInstrument(Instrument):
     """Return all subsystem forecast rows for an instrument."""
     Conn = _GetConn()
     Rows = Conn.execute(
-        "SELECT system_name, forecast, atr, updated_at FROM subsystem_forecasts WHERE instrument = ?",
+        "SELECT system_name, forecast, atr, action, updated_at FROM subsystem_forecasts WHERE instrument = ?",
         (Instrument,)
     ).fetchall()
     return [dict(r) for r in Rows]
@@ -148,15 +171,15 @@ def GetAllForecasts():
 
 # ─── TradingView Signals (append-only log) ──────────────────────────
 
-def LogTVSignal(Instrument, SystemName, Netposition, ATR):
+def LogTVSignal(Instrument, SystemName, Netposition, ATR, Action=None):
     """Append a raw TradingView webhook signal. Never overwritten."""
     Conn = _GetConn()
     with _DBLock:
         Conn.execute(
             """INSERT INTO tradingview_signals
-               (instrument, system_name, netposition, atr, received_at)
-               VALUES (?, ?, ?, ?, datetime('now'))""",
-            (Instrument, SystemName, Netposition, ATR)
+               (instrument, system_name, netposition, atr, action, received_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+            (Instrument, SystemName, Netposition, ATR, Action)
         )
         Conn.commit()
 
