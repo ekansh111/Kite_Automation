@@ -89,6 +89,12 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         # ── Step 1: Assess volatility ─────────────────────────────
         OHLC = _FetchOHLC(BrokerSession, OrderDetails, Broker)
         Mode, SpreadLevel, RangeLevel = _AssessVolatility(Quote, OHLC, ATR, Config)
+
+        # Allow config to override execution mode (e.g., "D" for mid-price on options)
+        ModeOverride = Config.get("execution_mode_override", None)
+        if ModeOverride:
+            Mode = ModeOverride
+
         FillInfo["execution_mode"] = Mode
         FillInfo["spread_level"] = SpreadLevel
         FillInfo["range_level"] = RangeLevel
@@ -514,6 +520,9 @@ def _ComputeInitialPrice(Mode, Quote, Config, Direction, TickSize):
     elif Mode == "C":
         # Passive: BUY at best_bid (join your side), SELL at best_ask
         Price = Bid if Direction > 0 else Ask
+    elif Mode == "D":
+        # Mid-price: start at midpoint of bid/ask
+        Price = (Bid + Ask) / 2
     else:
         Price = Ask if Direction > 0 else Bid
 

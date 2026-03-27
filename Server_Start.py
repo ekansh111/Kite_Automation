@@ -11,6 +11,27 @@ from Server_Order_Handler import *
 from Kite_Server_Order_Handler import *
 from forecast_orchestrator import ForecastOrchestrator
 import os
+import logging
+import uuid
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+Logger = logging.getLogger(__name__)
+
+
+def _RequestLogPayload(payload):
+    if not isinstance(payload, dict):
+        return payload
+
+    keys = [
+        "User", "Broker", "Exchange", "Tradingsymbol", "Symboltoken",
+        "Tradetype", "Ordertype", "Variety", "Product", "Validity",
+        "Quantity", "Price", "Netposition", "UpdatedOrderRouting",
+        "ContractNameProvided", "InstrumentType",
+    ]
+    return {key: payload.get(key) for key in keys if key in payload}
 
 app = Flask(__name__)
 run_with_ngrok(app,subdomain="test111")#test111 subdomain for testing
@@ -29,44 +50,77 @@ orchestrator = ForecastOrchestrator()
 #If any value is sent it tried to be parsed in the format specified and forwarded to the order function where the kite API is called and order placed
 def webhook():
     if request.method == 'POST':
+        request_id = str(uuid.uuid4())[:8]
+        Logger.info(
+            "Webhook request received | request_id=%s remote_addr=%s content_type=%s",
+            request_id,
+            request.remote_addr,
+            request.content_type,
+        )
+        order_details_fetch = None
+        try:
+            order_details_fetch = request.get_json()
+            if(order_details_fetch == None):            
+                Logger.info("Webhook request had no JSON payload | request_id=%s", request_id)
+                return 'Server is Up,No values sent',200
+            else:
+                Logger.info(
+                    "Webhook payload parsed | request_id=%s payload=%s",
+                    request_id,
+                    _RequestLogPayload(order_details_fetch),
+                )
+                if order_details_fetch.get("UpdatedOrderRouting") == 'True':
+                    if order_details_fetch.get("Broker") == 'ZERODHA':
+                        Logger.info("Dispatching request to Zerodha flow | request_id=%s", request_id)
+                        ControlOrderFlowKite(order_details_fetch)
+                        Logger.info("Zerodha flow returned control | request_id=%s", request_id)
+                        return 'success',200
+                    else:
+                        Logger.info("Dispatching request to Angel flow | request_id=%s", request_id)
+                        Result = ControlOrderFlowAngel(order_details_fetch)
+                        Logger.info(
+                            "Angel flow returned | request_id=%s result=%s last_error=%s",
+                            request_id,
+                            Result,
+                            order_details_fetch.get("LastOrderError"),
+                        )
+                        return 'success',200
 
-        order_details_fetch = request.get_json()
-        if(order_details_fetch == None):            
-            return 'Server is Up,No values sent',200
-        else:
-            if order_details_fetch.get("UpdatedOrderRouting") == 'True':
-                if order_details_fetch.get("Broker") == 'ZERODHA':
-                    ControlOrderFlowKite(order_details_fetch)
+                elif order_details_fetch.get("Broker") == 'ANGEL':
+                    Broker = order_details_fetch['Broker']
+                    Logger.info("Dispatching legacy Angel login flow | request_id=%s", request_id)
+
+                #If the request is to place an option order through API
+                elif (order_details_fetch.get("Option") != None) and (order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION'):
+                    if order_details_fetch.get("Option").get("OptionType") == 'MonthlyOption':
+                        print(order_details_fetch)
+                        set_week_based_sl(order_details_fetch)
+                        
+                    LoopHashOrderRequest(order_details_fetch)
+                    Broker = 'null'
+                    Logger.info("Completed Zerodha option flow | request_id=%s", request_id)
+                    #Without the below return statement it causes the function to be called 4 times and the it causes order to be placed 4 times
                     return 'success',200
+
                 else:
-                    ControlOrderFlowAngel(order_details_fetch)          
-                    return 'success',200
+                    Broker = 'null'
+                #print(Tradetype+Exchange+Tradingsymbol+Quantity+Variety+Ordertype+Product+Validity)
 
-            elif order_details_fetch.get("Broker") == 'ANGEL':
-                Broker = order_details_fetch['Broker']
-
-            #If the request is to place an option order through API
-            elif (order_details_fetch.get("Option") != None) and (order_details_fetch.get("Option").get("Broker") == 'ZERODHA_OPTION'):
-                if order_details_fetch.get("Option").get("OptionType") == 'MonthlyOption':
-                    print(order_details_fetch)
-                    set_week_based_sl(order_details_fetch)
-                    
-                LoopHashOrderRequest(order_details_fetch)
-                Broker = 'null'
-                #Without the below return statement it causes the function to be called 4 times and the it causes order to be placed 4 times
+                if Broker == 'ANGEL':
+                    Login_Angel_Api(order_details_fetch)
+                else:
+                    order(order_details_fetch)#Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price)
+                
+                print("null")#DO NOT REMOVE,last line wasnt executed or some other error of same sort, thats why print statement is added
+                Logger.info("Webhook flow completed | request_id=%s broker=%s", request_id, Broker)
                 return 'success',200
-
-            else:
-                Broker = 'null'
-            #print(Tradetype+Exchange+Tradingsymbol+Quantity+Variety+Ordertype+Product+Validity)
-
-            if Broker == 'ANGEL':
-                Login_Angel_Api(order_details_fetch)
-            else:
-                order(order_details_fetch)#Tradetype,Exchange,Tradingsymbol,Quantity,Variety,Ordertype,Product,Validity,Price)
-            
-            print("null")#DO NOT REMOVE,last line wasnt executed or some other error of same sort, thats why print statement is added
-            return 'success',200
+        except Exception:
+            Logger.exception(
+                "Webhook request failed | request_id=%s payload=%s",
+                request_id,
+                _RequestLogPayload(order_details_fetch),
+            )
+            raise
     else:
         abort(400)
 
@@ -130,4 +184,3 @@ if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=80)
     app.run(port=5055)
     #2 ISSUE TIME IS CHAMGED TO 10 FOR STARTING AND AFTER CANCELLED ALSO ORDER PLACE
-

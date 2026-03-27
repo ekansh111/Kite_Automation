@@ -33,6 +33,8 @@ from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
 from Holidays import CheckForDateHoliday
 from Directories import WorkDirectory
+from smart_chase import SmartChaseExecute
+from forecast_db import LogOptionsSmartChaseOrder
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -153,6 +155,20 @@ STRESS_MOVE_MULTIPLIER = 1.5
 STATE_FILE_PATH = Path(WorkDirectory) / "v2_state.json"
 ENTRY_LOG_PATH = Path(WorkDirectory) / "v2_entry_log.csv"
 EXIT_LOG_PATH = Path(WorkDirectory) / "v2_exit_log.csv"
+
+# ---------------------------------------------------------------------------
+# Options Execution Config (smart chase params per underlying)
+# ---------------------------------------------------------------------------
+_OPTIONS_EXEC_CONFIG_PATH = Path(__file__).parent / "options_execution_config.json"
+try:
+    with open(_OPTIONS_EXEC_CONFIG_PATH) as _f:
+        OPTIONS_EXEC_CONFIG = json.load(_f)
+except FileNotFoundError:
+    logging.warning("options_execution_config.json not found at %s, smart chase disabled for options",
+                    _OPTIONS_EXEC_CONFIG_PATH)
+    OPTIONS_EXEC_CONFIG = {}
+
+UNDERLYING_TO_CONFIG_KEY = {"NIFTY": "NIFTY_OPT", "SENSEX": "SENSEX_OPT"}
 
 # ---------------------------------------------------------------------------
 # Email Notification Config
@@ -2237,9 +2253,14 @@ def fetchOptionPremiums(kite, ceContractName, peContractName, exchange):
 # SECTION 6: OrderDetails Builder
 # ---------------------------------------------------------------------------
 
-def buildOrderDetails(strategyName, config, quantity, tradeType="SELL"):
-    """Build an OrderDetails dict compatible with FetchContractName, order(), Set_Gtt()."""
+def buildOrderDetails(strategyName, config, quantity, tradeType="SELL", useSmartChase=False):
+    """Build an OrderDetails dict compatible with FetchContractName, order(), Set_Gtt().
+    When useSmartChase=True, sets Ordertype to LIMIT (smart chase computes its own price)
+    and populates Broker from options execution config.
+    """
     underlying = config["underlying"]
+    configKey = UNDERLYING_TO_CONFIG_KEY.get(underlying, "")
+    optExecCfg = OPTIONS_EXEC_CONFIG.get(configKey, {})
 
     return {
         "Tradetype": tradeType,
@@ -2247,14 +2268,14 @@ def buildOrderDetails(strategyName, config, quantity, tradeType="SELL"):
         "Tradingsymbol": underlying,
         "Quantity": str(quantity),
         "Variety": "REGULAR",
-        "Ordertype": "MARKET",
+        "Ordertype": "LIMIT" if useSmartChase else "MARKET",
         "Product": "NRML",
         "Validity": "DAY",
         "Price": 0.0,
         "Symboltoken": "",
         "Squareoff": "",
         "Stoploss": "",
-        "Broker": "",
+        "Broker": optExecCfg.get("broker", "") if useSmartChase else "",
         "Netposition": "",
         "OptionExpiryDay": EXPIRY_DAY_MAP[underlying],
         "OptionContractStrikeFromATMPercent": "0",
@@ -2266,7 +2287,7 @@ def buildOrderDetails(strategyName, config, quantity, tradeType="SELL"):
         "Hedge": "False",
         "OrderTag": config["orderTag"],
         "TradeFailExitRequired": "False",
-        "User": "OFS653",
+        "User": optExecCfg.get("user", "OFS653"),
     }
 
 
@@ -2386,34 +2407,55 @@ def executeTimeExit(underlying, state, kite, forceIdempotency=False):
 
     print(f"[EXIT] {underlying}: closing {len(contracts)} legs, qty={quantity}")
 
+    # Determine if smart chase is enabled for exits
+    configKey = UNDERLYING_TO_CONFIG_KEY.get(underlying, "")
+    optExecCfg = OPTIONS_EXEC_CONFIG.get(configKey, {})
+    execParams = optExecCfg.get("execution", {})
+    useSmartChase = execParams.get("use_smart_chase", False)
+    broker = optExecCfg.get("broker", "ZERODHA")
+
     # Phase 1: Submit all exit orders
     submittedOrders = []  # (contract, orderId, accepted)
 
     for contract in contracts:
+        leg = "CE" if "CE" in contract.upper() else "PE"
         exitOrderDetails = {
             "Tradetype": "BUY",
             "Exchange": exchange,
             "Tradingsymbol": contract,
             "Quantity": str(quantity),
             "Variety": "REGULAR",
-            "Ordertype": "MARKET",
+            "Ordertype": "LIMIT" if useSmartChase else "MARKET",
             "Product": "NRML",
             "Validity": "DAY",
             "Price": 0.0,
             "Symboltoken": "",
             "Squareoff": "",
             "Stoploss": "",
-            "Broker": "",
+            "Broker": broker if useSmartChase else "",
             "Netposition": "",
             "OrderTag": f"V2-EXIT-{underlying}",
             "TradeFailExitRequired": "False",
-            "User": "OFS653",
+            "User": optExecCfg.get("user", "OFS653"),
         }
         try:
-            orderId = order(exitOrderDetails)
-            accepted = orderId != 0
+            if useSmartChase:
+                exitSuccess, orderId, exitFillInfo = SmartChaseExecute(
+                    kite, exitOrderDetails, execParams, IsEntry=False, Broker=broker, ATR=0
+                )
+                if not exitSuccess:
+                    raise Exception(f"Smart chase exit failed for {contract}: "
+                                    f"mode={exitFillInfo.get('execution_mode')}")
+                accepted = True
+                LogOptionsSmartChaseOrder(underlying, strategyName, leg, contract, "BUY",
+                                         quantity, orderId, exitFillInfo)
+                print(f"[EXIT] {underlying}: BUY {contract} orderId={orderId} "
+                      f"filled via smart chase, price={exitFillInfo.get('fill_price')}")
+            else:
+                orderId = order(exitOrderDetails)
+                accepted = orderId != 0
+                print(f"[EXIT] {underlying}: BUY {contract} orderId={orderId} accepted={accepted}")
             submittedOrders.append((contract, orderId, accepted))
-            print(f"[EXIT] {underlying}: BUY {contract} orderId={orderId} accepted={accepted}")
         except Exception as e:
             submittedOrders.append((contract, None, False))
             print(f"[EXIT] {underlying}: FAILED to submit {contract}: {e}")
@@ -2431,14 +2473,17 @@ def executeTimeExit(underlying, state, kite, forceIdempotency=False):
         return {"success": False, "allOrdersFilled": False, "reason": f"rejected legs: {rejectedLegs}"}
 
     # Phase 2: Verify all accepted orders actually filled
-    # Uses the runner's kite client (Eshita account - same account orders are placed on)
+    # Smart chase orders are already verified filled by SmartChaseExecute, skip re-verification
     print(f"[EXIT] {underlying}: all orders accepted, verifying fills...")
     unfilledLegs = []
-    for contract, orderId, _ in submittedOrders:
-        isFilled, fillStatus = verifyOrderFill(kite, orderId)
-        print(f"[EXIT] {underlying}: {contract} orderId={orderId} fillStatus={fillStatus}")
-        if not isFilled:
-            unfilledLegs.append(contract)
+    if not useSmartChase:
+        for contract, orderId, _ in submittedOrders:
+            isFilled, fillStatus = verifyOrderFill(kite, orderId)
+            print(f"[EXIT] {underlying}: {contract} orderId={orderId} fillStatus={fillStatus}")
+            if not isFilled:
+                unfilledLegs.append(contract)
+    else:
+        print(f"[EXIT] {underlying}: smart chase exits already verified filled, skipping poll")
 
     if unfilledLegs:
         print(f"[EXIT] {underlying}: *** EXIT ORDERS NOT FILLED *** unfilled: {unfilledLegs}")
@@ -2627,14 +2672,33 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
 
     contracts = []
 
+    # Determine if smart chase is enabled for this underlying
+    configKey = UNDERLYING_TO_CONFIG_KEY.get(underlying, "")
+    optExecCfg = OPTIONS_EXEC_CONFIG.get(configKey, {})
+    execParams = optExecCfg.get("execution", {})
+    useSmartChase = execParams.get("use_smart_chase", False)
+    broker = optExecCfg.get("broker", "ZERODHA")
+
     # Step 6: Place CE order
-    ceOrderDetails = buildOrderDetails(strategyName, config, quantity=totalQuantity)
+    ceOrderDetails = buildOrderDetails(strategyName, config, quantity=totalQuantity,
+                                       useSmartChase=useSmartChase)
     ceOrderDetails["Tradingsymbol"] = ceSymbol
 
     try:
-        ceOrderId = order(ceOrderDetails)
+        if useSmartChase:
+            ceSuccess, ceOrderId, ceFillInfo = SmartChaseExecute(
+                kite, ceOrderDetails, execParams, IsEntry=True, Broker=broker, ATR=0
+            )
+            if not ceSuccess:
+                raise Exception(f"Smart chase failed for CE: mode={ceFillInfo.get('execution_mode')}, "
+                                f"iterations={ceFillInfo.get('chase_iterations')}")
+            LogOptionsSmartChaseOrder(underlying, strategyName, "CE", ceSymbol, "SELL",
+                                     totalQuantity, ceOrderId, ceFillInfo)
+        else:
+            ceOrderId = order(ceOrderDetails)
         contracts.append(ceSymbol)
-        print(f"[ENTRY] {strategyName}: CE {ceSymbol} placed, orderId={ceOrderId}")
+        print(f"[ENTRY] {strategyName}: CE {ceSymbol} placed, orderId={ceOrderId}"
+              f"{' (smart chase)' if useSmartChase else ''}")
     except Exception as e:
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,
                  sizeResult, expiryDate, ceSymbol, peSymbol, skipped=True,
@@ -2643,13 +2707,25 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
         return {"success": False, "reason": f"CE order failed: {e}"}
 
     # Step 7: Place PE order
-    peOrderDetails = buildOrderDetails(strategyName, config, quantity=totalQuantity)
+    peOrderDetails = buildOrderDetails(strategyName, config, quantity=totalQuantity,
+                                       useSmartChase=useSmartChase)
     peOrderDetails["Tradingsymbol"] = peSymbol
 
     try:
-        peOrderId = order(peOrderDetails)
+        if useSmartChase:
+            peSuccess, peOrderId, peFillInfo = SmartChaseExecute(
+                kite, peOrderDetails, execParams, IsEntry=True, Broker=broker, ATR=0
+            )
+            if not peSuccess:
+                raise Exception(f"Smart chase failed for PE: mode={peFillInfo.get('execution_mode')}, "
+                                f"iterations={peFillInfo.get('chase_iterations')}")
+            LogOptionsSmartChaseOrder(underlying, strategyName, "PE", peSymbol, "SELL",
+                                     totalQuantity, peOrderId, peFillInfo)
+        else:
+            peOrderId = order(peOrderDetails)
         contracts.append(peSymbol)
-        print(f"[ENTRY] {strategyName}: PE {peSymbol} placed, orderId={peOrderId}")
+        print(f"[ENTRY] {strategyName}: PE {peSymbol} placed, orderId={peOrderId}"
+              f"{' (smart chase)' if useSmartChase else ''}")
     except Exception as e:
         # Partial fill: CE placed but PE failed — DANGEROUS naked short position
         logEntry(strategyName, config, dte, kValue, callPremium, putPremium,

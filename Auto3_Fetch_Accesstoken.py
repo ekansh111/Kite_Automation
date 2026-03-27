@@ -22,7 +22,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from kiteconnect import KiteConnect
 from chrome_version import detect_chrome_major_version
-from Directories import KiteEkanshLogin,KiteRashmiLogin, KiteEkanshLoginAccessToken, KiteRashmiLoginAccessToken  # Example paths in "Directories.py"
+from Directories import KiteEshitaLogin,KiteRashmiLogin, KiteEshitaLoginAccessToken, KiteRashmiLoginAccessToken  # Example paths in "Directories.py"
 
 
 class ZerodhaLogin:
@@ -224,5 +224,6 @@ def runZerodhaLogin(login_file,OPAccessTokenFile):
 
 if __name__ == '__main__':
     # Pass KiteEkanshLogin as the file containing the user's credentials
-    runZerodhaLogin(KiteEkanshLogin,KiteEkanshLoginAccessToken)
+    #runZerodhaLogin(KiteEkanshLogin,KiteEkanshLoginAccessToken)
     runZerodhaLogin(KiteRashmiLogin,KiteRashmiLoginAccessToken)
+    runZerodhaLogin(KiteEshitaLogin,KiteEshitaLoginAccessToken)

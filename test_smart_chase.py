@@ -227,6 +227,40 @@ class TestPriceComputation(unittest.TestCase):
         p = _ComputeInitialPrice("C", q, cfg, Direction=-1, TickSize=1.0)
         self.assertEqual(p, 72451)
 
+    def test_mode_d_buy(self):
+        """Mode D BUY: mid-price of bid/ask, rounded up to tick."""
+        q = _make_quote(bid=72449, ask=72451)
+        cfg = _make_config()
+        p = _ComputeInitialPrice("D", q, cfg, Direction=1, TickSize=1.0)
+        self.assertEqual(p, 72450)  # (72449 + 72451) / 2 = 72450
+
+    def test_mode_d_sell(self):
+        """Mode D SELL: mid-price of bid/ask, rounded down to tick."""
+        q = _make_quote(bid=72449, ask=72451)
+        cfg = _make_config()
+        p = _ComputeInitialPrice("D", q, cfg, Direction=-1, TickSize=1.0)
+        self.assertEqual(p, 72450)  # (72449 + 72451) / 2 = 72450
+
+    def test_mode_d_options_tick_rounding(self):
+        """Mode D with 0.05 tick size: mid rounds to valid tick."""
+        # bid=150.10, ask=150.30 → mid=150.20 (already on tick)
+        q = _make_quote(bid=150.10, ask=150.30, ltp=150.20)
+        cfg = _make_config(tick_size=0.05)
+        p_sell = _ComputeInitialPrice("D", q, cfg, Direction=-1, TickSize=0.05)
+        p_buy = _ComputeInitialPrice("D", q, cfg, Direction=1, TickSize=0.05)
+        self.assertEqual(p_sell, 150.20)
+        self.assertEqual(p_buy, 150.20)
+
+    def test_mode_d_odd_mid_rounds_correctly(self):
+        """Mode D: odd mid-price rounds down for SELL, up for BUY."""
+        # bid=150.10, ask=150.25 → mid=150.175 → SELL floors to 150.15, BUY ceils to 150.20
+        q = _make_quote(bid=150.10, ask=150.25, ltp=150.15)
+        cfg = _make_config(tick_size=0.05)
+        p_sell = _ComputeInitialPrice("D", q, cfg, Direction=-1, TickSize=0.05)
+        p_buy = _ComputeInitialPrice("D", q, cfg, Direction=1, TickSize=0.05)
+        self.assertEqual(p_sell, 150.15)
+        self.assertEqual(p_buy, 150.20)
+
     def test_round_to_tick_buy_ceil(self):
         """BUY rounds up to nearest tick."""
         self.assertEqual(_RoundToTick(100.3, 0.05, Direction=1), 100.30)
@@ -995,6 +1029,142 @@ class TestMaxChaseCap(unittest.TestCase):
         # Prices should plateau, not keep climbing
         if modify_prices:
             self.assertLessEqual(max(modify_prices), 72451 + 3 + 1)  # +1 for rounding tolerance
+
+
+# ══════════════════════════════════════════════════════════════════
+# 12b. Passive Wait Phase
+# ══════════════════════════════════════════════════════════════════
+
+class TestPassiveWaitPhase(unittest.TestCase):
+    """Verify the order sits at its initial price for poll_interval_seconds
+    before any chase widening begins."""
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_no_modify_during_passive_phase(self, mock_open, mock_email):
+        """Order should NOT be modified while within the passive wait window."""
+        session = MagicMock()
+        session.VARIETY_REGULAR = "regular"
+        session.ORDER_TYPE_LIMIT = "LIMIT"
+
+        quote_data = {
+            "last_price": 72450,
+            "depth": {
+                "buy": [{"price": 72449, "quantity": 100}],
+                "sell": [{"price": 72451, "quantity": 100}],
+            },
+            "ohlc": {"high": 72500, "low": 72400},
+        }
+        session.ltp.return_value = {"INSTRUMENT": {"last_price": 72450}}
+        session.quote.return_value = {"INSTRUMENT": quote_data}
+        session.ohlc = MagicMock(return_value={"INSTRUMENT": quote_data})
+
+        # Order stays OPEN for 2 checks, then fills
+        call_count = [0]
+        def mock_status(sess, oid, broker):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return "COMPLETE", 1, 0, 72450
+            return "OPEN", 0, 1, None
+
+        # Use a long poll_interval so passive phase covers the full test
+        cfg = _make_config(poll_interval_seconds=10,
+                           max_chase_seconds_entry=20,
+                           chase_step_ticks=1, tick_size=1.0)
+
+        with patch("smart_chase._PlaceLimitOrder", return_value="ORD_PW"), \
+             patch("smart_chase._CheckOrderStatus", side_effect=mock_status), \
+             patch("smart_chase._FetchQuote", return_value=quote_data), \
+             patch("smart_chase.time.sleep"):  # skip real sleeps
+            success, oid, info = SmartChaseExecute(
+                session, _make_order_details(), cfg, True, "ZERODHA", 100
+            )
+
+        self.assertTrue(success)
+        # modify_order should NOT have been called — fills happened during passive phase
+        session.modify_order.assert_not_called()
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_widening_starts_after_passive_phase(self, mock_open, mock_email):
+        """Once elapsed > poll_interval, chase widening should begin."""
+        session = MagicMock()
+        session.VARIETY_REGULAR = "regular"
+        session.ORDER_TYPE_LIMIT = "LIMIT"
+
+        quote_data = {
+            "last_price": 72450,
+            "depth": {
+                "buy": [{"price": 72449, "quantity": 100}],
+                "sell": [{"price": 72451, "quantity": 100}],
+            },
+            "ohlc": {"high": 72500, "low": 72400},
+        }
+        # Normalized format as returned by _FetchQuote
+        normalized_quote = {
+            "ltp": 72450,
+            "best_bid": 72449,
+            "best_ask": 72451,
+            "upper_circuit_limit": None,
+            "lower_circuit_limit": None,
+            "depth": quote_data["depth"],
+        }
+        session.ltp.return_value = {"INSTRUMENT": {"last_price": 72450}}
+        session.quote.return_value = {"INSTRUMENT": quote_data}
+        session.ohlc = MagicMock(return_value={"INSTRUMENT": quote_data})
+
+        # Simulate time: first 2 calls within passive window, then past it
+        time_values = iter([
+            # ChaseStart
+            100.0,
+            # Iteration 1: loop condition check
+            100.0,
+            # Iteration 1: PassivePhase check — within poll_interval (0.5s)
+            100.3,
+            # Iteration 1: log elapsed
+            100.3,
+            # Iteration 2: loop condition check
+            100.3,
+            # Iteration 2: PassivePhase check — past poll_interval (0.5s)
+            100.6,
+            # Iteration 2: log elapsed
+            100.6,
+            # Iteration 3: loop condition check — fill happens
+            100.8,
+            # Elapsed calc for fill
+            100.8,
+            # log elapsed
+            100.8,
+        ])
+        def mock_time():
+            try:
+                return next(time_values)
+            except StopIteration:
+                return 200.0  # way past max chase to exit loop
+
+        call_count = [0]
+        def mock_status(sess, oid, broker):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return "COMPLETE", 1, 0, 72452
+            return "OPEN", 0, 1, None
+
+        cfg = _make_config(poll_interval_seconds=0.5,
+                           max_chase_seconds_entry=5,
+                           chase_step_ticks=1, tick_size=1.0)
+
+        with patch("smart_chase._PlaceLimitOrder", return_value="ORD_PW2"), \
+             patch("smart_chase._CheckOrderStatus", side_effect=mock_status), \
+             patch("smart_chase._FetchQuote", return_value=normalized_quote), \
+             patch("smart_chase.time.time", side_effect=mock_time), \
+             patch("smart_chase.time.sleep"):
+            success, oid, info = SmartChaseExecute(
+                session, _make_order_details(), cfg, True, "ZERODHA", 100
+            )
+
+        self.assertTrue(success)
+        # modify_order should have been called at least once (after passive phase ended)
+        self.assertGreaterEqual(session.modify_order.call_count, 1)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2146,6 +2316,82 @@ class TestSlippageCalculation(unittest.TestCase):
         self.assertEqual(info["slippage"], 5.0)
         self.assertEqual(info["initial_ltp"], 72450)
         self.assertEqual(info["fill_price"], 72455)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 26. Execution Mode Override
+# ══════════════════════════════════════════════════════════════════
+
+class TestExecutionModeOverride(unittest.TestCase):
+    """Verify that execution_mode_override in config bypasses volatility assessment."""
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase.time.sleep")
+    @patch("smart_chase._FetchOHLC")
+    @patch("smart_chase._WaitForSpreadToSettle")
+    @patch("smart_chase._WaitForCircuitRelease")
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._CheckOrderStatus")
+    @patch("smart_chase._PlaceLimitOrder")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_mode_override_forces_mode_d(self, mock_open, mock_place, mock_status,
+                                          mock_fetch, mock_circuit, mock_spread,
+                                          mock_ohlc, mock_sleep, mock_email):
+        """Config with execution_mode_override='D' should use mid-price regardless of volatility."""
+        q = _make_quote(bid=150.10, ask=150.30, ltp=150.20)
+        mock_fetch.return_value = q
+        mock_circuit.return_value = q
+        mock_spread.return_value = q
+        mock_ohlc.return_value = {"open": 148, "high": 152, "low": 147, "close": 150}
+        mock_place.return_value = "ORD123"
+        # Fill immediately
+        mock_status.return_value = ("COMPLETE", 65, 0, 150.20)
+
+        cfg = _make_config(tick_size=0.05, execution_mode_override="D")
+        od = {"Tradetype": "SELL", "Exchange": "NFO", "Tradingsymbol": "NIFTY2530524300CE",
+              "Quantity": "65", "Variety": "REGULAR", "Product": "NRML", "Validity": "DAY",
+              "Ordertype": "LIMIT", "Price": 0, "Broker": "ZERODHA", "User": "OFS653",
+              "OrderTag": "V2-TEST"}
+
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, IsEntry=True, Broker="ZERODHA", ATR=0)
+
+        self.assertTrue(success)
+        self.assertEqual(info["execution_mode"], "D")
+        # SELL mid-price: (150.10 + 150.30) / 2 = 150.20, floored to 0.05 tick = 150.20
+        self.assertEqual(info["limit_price"], 150.20)
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase.time.sleep")
+    @patch("smart_chase._FetchOHLC")
+    @patch("smart_chase._WaitForSpreadToSettle")
+    @patch("smart_chase._WaitForCircuitRelease")
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._CheckOrderStatus")
+    @patch("smart_chase._PlaceLimitOrder")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_no_override_uses_volatility_assessment(self, mock_open, mock_place, mock_status,
+                                                     mock_fetch, mock_circuit, mock_spread,
+                                                     mock_ohlc, mock_sleep, mock_email):
+        """Without execution_mode_override, normal volatility assessment decides the mode."""
+        q = _make_quote(bid=150.10, ask=150.30, ltp=150.20)
+        mock_fetch.return_value = q
+        mock_circuit.return_value = q
+        mock_spread.return_value = q
+        mock_ohlc.return_value = {"open": 148, "high": 152, "low": 147, "close": 150}
+        mock_place.return_value = "ORD456"
+        mock_status.return_value = ("COMPLETE", 65, 0, 150.15)
+
+        cfg = _make_config(tick_size=0.05)  # No override
+        od = {"Tradetype": "SELL", "Exchange": "NFO", "Tradingsymbol": "NIFTY2530524300PE",
+              "Quantity": "65", "Variety": "REGULAR", "Product": "NRML", "Validity": "DAY",
+              "Ordertype": "LIMIT", "Price": 0, "Broker": "ZERODHA", "User": "OFS653",
+              "OrderTag": "V2-TEST"}
+
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, IsEntry=True, Broker="ZERODHA", ATR=0)
+
+        self.assertTrue(success)
+        # Mode should be determined by volatility assessment, not "D"
+        self.assertIn(info["execution_mode"], ["A", "B", "C"])
 
 
 if __name__ == "__main__":

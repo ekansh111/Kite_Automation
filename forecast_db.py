@@ -94,6 +94,32 @@ def InitDB():
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS options_order_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                underlying TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+                leg TEXT NOT NULL,
+                contract TEXT NOT NULL,
+                action TEXT NOT NULL,
+                qty INTEGER NOT NULL,
+                broker_order_id TEXT,
+                execution_mode TEXT,
+                initial_ltp REAL,
+                initial_bid REAL,
+                initial_ask REAL,
+                initial_spread REAL,
+                limit_price REAL,
+                fill_price REAL,
+                slippage REAL,
+                chase_iterations INTEGER,
+                chase_duration_seconds REAL,
+                market_fallback INTEGER,
+                spread_ratio REAL,
+                range_ratio REAL,
+                settle_wait_seconds REAL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS overrides (
                 instrument TEXT PRIMARY KEY,
                 override_type TEXT NOT NULL,
@@ -304,6 +330,33 @@ def LogSmartChaseOrder(Instrument, Action, Qty, Status, BrokerOrderId=None,
              Info.get("range_ratio"), Info.get("settle_wait_seconds"))
         )
         Conn.commit()
+
+
+def LogOptionsSmartChaseOrder(Underlying, StrategyName, Leg, Contract, Action, Qty,
+                              BrokerOrderId=None, FillInfo=None):
+    """Log an options smart chase order with full execution details."""
+    Info = FillInfo or {}
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            """INSERT INTO options_order_log
+               (underlying, strategy_name, leg, contract, action, qty, broker_order_id,
+                execution_mode, initial_ltp, initial_bid, initial_ask,
+                initial_spread, limit_price, fill_price, slippage,
+                chase_iterations, chase_duration_seconds, market_fallback,
+                spread_ratio, range_ratio, settle_wait_seconds, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (Underlying, StrategyName, Leg, Contract, Action, Qty, BrokerOrderId,
+             Info.get("execution_mode"), Info.get("initial_ltp"),
+             Info.get("initial_bid"), Info.get("initial_ask"),
+             Info.get("initial_spread"), Info.get("limit_price"),
+             Info.get("fill_price"), Info.get("slippage"),
+             Info.get("chase_iterations"), Info.get("chase_duration_seconds"),
+             Info.get("market_fallback"), Info.get("spread_ratio"),
+             Info.get("range_ratio"), Info.get("settle_wait_seconds"))
+        )
+        Conn.commit()
+    Logger.info("Options order logged: %s %s %s %s qty=%s", Underlying, StrategyName, Leg, Action, Qty)
 
 
 def GetRecentOrders(limit=50):
