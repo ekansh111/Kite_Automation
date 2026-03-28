@@ -144,6 +144,20 @@ def _EstablishAngelSession(User):
     return SmartApi
 
 
+INDEX_NAMES = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY", "BANKEX"}
+
+
+def _IsIndexOption(TradingSymbol):
+    """Return True if the symbol is an index option (CE/PE). Stock options return False."""
+    SymUpper = TradingSymbol.upper()
+    if not (SymUpper.endswith("CE") or SymUpper.endswith("PE")):
+        return False
+    for Idx in INDEX_NAMES:
+        if SymUpper.startswith(Idx):
+            return True
+    return False
+
+
 # ─── Position Scanner ────────────────────────────────────────────────
 
 def ScanAllPositions(InstrumentConfig):
@@ -167,8 +181,11 @@ def ScanAllPositions(InstrumentConfig):
                 Qty = Pos.get("quantity", 0)
                 Product = Pos.get("product", "")
                 if Qty != 0 and Product == "NRML":
+                    Symbol = Pos.get("tradingsymbol", "")
+                    if _IsIndexOption(Symbol):
+                        continue
                     Positions.append({
-                        "tradingsymbol": Pos.get("tradingsymbol", ""),
+                        "tradingsymbol": Symbol,
                         "exchange": Pos.get("exchange", ""),
                         "quantity": Qty,
                         "last_price": Pos.get("last_price", 0),
@@ -193,8 +210,11 @@ def ScanAllPositions(InstrumentConfig):
                 Qty = int(Pos.get("netqty", 0))
                 ProdType = Pos.get("producttype", "")
                 if Qty != 0 and ProdType == "CARRYFORWARD":
+                    Symbol = Pos.get("tradingsymbol", "")
+                    if _IsIndexOption(Symbol):
+                        continue
                     Positions.append({
-                        "tradingsymbol": Pos.get("tradingsymbol", ""),
+                        "tradingsymbol": Symbol,
                         "exchange": Pos.get("exchange", ""),
                         "quantity": Qty,
                         "last_price": float(Pos.get("ltp", 0)),
