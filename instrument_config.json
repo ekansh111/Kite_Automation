@@ -53,6 +53,14 @@
         "max_chase_seconds_entry": 60,
         "max_chase_seconds_exit": 40,
         "tick_size": 1.0
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "SILVERMIC": {
@@ -103,6 +111,14 @@
         "max_chase_seconds_entry": 60,
         "max_chase_seconds_exit": 40,
         "tick_size": 1.0
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "ZINCMINI": {
@@ -150,6 +166,14 @@
         "max_chase_seconds_entry": 45,
         "max_chase_seconds_exit": 30,
         "tick_size": 0.05
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "ALUMINIUM": {
@@ -177,6 +201,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "NATURALGAS": {
@@ -224,6 +256,14 @@
         "max_chase_seconds_entry": 40,
         "max_chase_seconds_exit": 30,
         "tick_size": 0.10
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 3,
+        "execute_days_before_expiry": 2,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "CRUDEOIL": {
@@ -271,6 +311,14 @@
         "max_chase_seconds_entry": 50,
         "max_chase_seconds_exit": 35,
         "tick_size": 1.0
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "DHANIYA": {
@@ -300,6 +348,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "GUARSEED": {
@@ -329,6 +385,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "CASTOR": {
@@ -357,6 +421,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "COCUDAKL": {
@@ -386,6 +458,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 10
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "TURMERIC": {
@@ -413,6 +493,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 10
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "11:30",
+        "liquidity_urgency": "normal"
       }
     },
     "JEERA": {
@@ -440,6 +528,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 3
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "NIFTY": {
@@ -470,6 +566,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 65
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "14:00",
+        "liquidity_urgency": "normal"
       }
     },
     "BANKNIFTY": {
@@ -500,6 +604,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 25
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "10:00",
+        "preferred_window_end": "14:00",
+        "liquidity_urgency": "normal"
       }
     }
   }
