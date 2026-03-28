@@ -1070,11 +1070,16 @@ def PrintStatus(InstrumentConfig):
     else:
         print("  None.")
 
-    print("\n=== Upcoming Expiries ===")
+    print("\n=== Upcoming Expiries (positions held) ===")
     Today = datetime.now()
+    AllPositions = db.GetAllPositions()
+    HeldInstruments = {P["instrument"] for P in AllPositions if P.get("confirmed_qty", 0) != 0}
+
     for InstName, Cfg in InstrumentConfig.items():
         RollCfg = Cfg.get("rollover", {})
         if not RollCfg.get("enabled"):
+            continue
+        if InstName not in HeldInstruments:
             continue
         Exchange = Cfg["exchange"]
         Broker = Cfg["broker"]
