@@ -209,6 +209,9 @@ def ScanAllPositions(InstrumentConfig):
             for Pos in RawPositions:
                 Qty = int(Pos.get("netqty", 0))
                 ProdType = Pos.get("producttype", "")
+                if Qty != 0:
+                    Logger.info("Angel %s: symbol=%s qty=%s product=%s",
+                                User, Pos.get("tradingsymbol"), Qty, ProdType)
                 if Qty != 0 and ProdType == "CARRYFORWARD":
                     Symbol = Pos.get("tradingsymbol", "")
                     if _IsIndexOption(Symbol):
