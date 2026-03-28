@@ -151,16 +151,10 @@ def ScanAllPositions(InstrumentConfig):
 
     Returns list of dicts with unified schema.
     """
-    # Collect unique broker+user combos
-    ZerodhaUsers = set()
-    AngelUsers = set()
-    for InstName, Cfg in InstrumentConfig.items():
-        Broker = Cfg.get("broker", "").upper()
-        User = Cfg.get("user", "")
-        if Broker == "ZERODHA":
-            ZerodhaUsers.add(User)
-        elif Broker == "ANGEL":
-            AngelUsers.add(User)
+    # Hardcoded active accounts — do NOT derive from config
+    # OFS653 (Eshita) + YD6016 (Rashmi) on Zerodha, E51339915 (Ekansh) on Angel
+    ZerodhaUsers = {"OFS653", "YD6016"}
+    AngelUsers = {"E51339915"}
 
     Positions = []
 
@@ -278,26 +272,35 @@ def ResolveExpiryInfo(InstName, InstConfig, Position):
     Broker = Position["broker"]
     Today = datetime.now()
 
+    HeldSymbol = Position.get("tradingsymbol", "")
+
     if Broker == "ZERODHA":
         try:
             Df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=",")
             Df.rename(columns={"Unnamed: 0": "serialnumber"}, inplace=True)
             Df["expiry"] = pd.to_datetime(Df["expiry"], format="%Y-%m-%d", errors="coerce")
 
+            # Match the actual held contract by tradingsymbol
+            HeldMatch = Df[
+                (Df["symbol"] == HeldSymbol) &
+                (Df["exch_seg"] == Exchange)
+            ]
+            if HeldMatch.empty:
+                Logger.warning("%s: Could not find held contract %s in CSV", InstName, HeldSymbol)
+                return None
+
+            CurrentContract = HeldMatch.iloc[0]
+            HeldExpiry = CurrentContract["expiry"]
+
+            # Find next month contract (expiry strictly after held contract's expiry)
             FutContracts = Df[
                 (Df["name"] == InstName) &
                 (Df["exch_seg"] == Exchange) &
                 (Df["instrumenttype"] == "FUT") &
-                (Df["expiry"] >= Today)
+                (Df["expiry"] > HeldExpiry)
             ].sort_values(by="expiry", ascending=True)
 
-            if len(FutContracts) < 2:
-                Logger.warning("%s: Less than 2 future contracts found", InstName)
-                if FutContracts.empty:
-                    return None
-
-            CurrentContract = FutContracts.iloc[0]
-            NextContract = FutContracts.iloc[1] if len(FutContracts) >= 2 else None
+            NextContract = FutContracts.iloc[0] if not FutContracts.empty else None
 
             Result = {
                 "current_expiry": CurrentContract["expiry"].to_pydatetime(),
@@ -314,32 +317,30 @@ def ResolveExpiryInfo(InstName, InstConfig, Position):
 
     elif Broker == "ANGEL":
         try:
-            Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",")
+            Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",", low_memory=False)
             Df["expiry"] = pd.to_datetime(Df["expiry"], format="%d%b%Y", errors="coerce")
 
+            # Match the actual held contract by tradingsymbol
+            HeldMatch = Df[
+                (Df["symbol"] == HeldSymbol) &
+                (Df["exch_seg"] == Exchange)
+            ]
+            if HeldMatch.empty:
+                Logger.warning("%s: Could not find held contract %s in Angel CSV", InstName, HeldSymbol)
+                return None
+
+            CurrentContract = HeldMatch.iloc[0]
+            HeldExpiry = CurrentContract["expiry"]
+
+            # Find next month contract (expiry strictly after held contract's expiry)
             FutContracts = Df[
                 (Df["name"] == InstName) &
                 (Df["exch_seg"] == Exchange) &
-                (Df["instrumenttype"] == "FUTCOM") &
-                (Df["expiry"] >= Today)
+                (Df["instrumenttype"].isin(["FUTCOM", "FUTIDX"])) &
+                (Df["expiry"] > HeldExpiry)
             ].sort_values(by="expiry", ascending=True)
 
-            if FutContracts.empty:
-                # Try FUTIDX for NFO instruments
-                FutContracts = Df[
-                    (Df["name"] == InstName) &
-                    (Df["exch_seg"] == Exchange) &
-                    (Df["instrumenttype"] == "FUTIDX") &
-                    (Df["expiry"] >= Today)
-                ].sort_values(by="expiry", ascending=True)
-
-            if len(FutContracts) < 2:
-                Logger.warning("%s: Less than 2 future contracts found on Angel", InstName)
-                if FutContracts.empty:
-                    return None
-
-            CurrentContract = FutContracts.iloc[0]
-            NextContract = FutContracts.iloc[1] if len(FutContracts) >= 2 else None
+            NextContract = FutContracts.iloc[0] if not FutContracts.empty else None
 
             Result = {
                 "current_expiry": CurrentContract["expiry"].to_pydatetime(),
