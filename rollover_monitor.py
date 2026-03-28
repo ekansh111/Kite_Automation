@@ -132,12 +132,12 @@ def _EstablishAngelSession(User):
 
     with open(CredFile, "r") as f:
         Lines = f.readlines()
-        ClientCode = Lines[0].strip()
-        Password = Lines[1].strip()
-        ApiKey = Lines[2].strip()
+        ApiKey = Lines[0].strip()
+        ClientCode = Lines[1].strip()
+        Password = Lines[2].strip()
         TotpSecret = Lines[3].strip()
 
-    SmartApi = SmartConnect(api_key=ApiKey)
+    SmartApi = SmartConnect(ApiKey)
     Totp = pyotp.TOTP(TotpSecret).now()
     SmartApi.generateSession(ClientCode, Password, Totp)
     Logger.info("Angel session established for %s", User)
