@@ -1114,6 +1114,11 @@ def PrintStatus(InstrumentConfig):
         RollCfg = Cfg.get("rollover", {})
         ExpiryInfo = ResolveExpiryInfo(InstName, Cfg, Pos)
 
+        # Display qty in lots (units / QuantityMultiplier) for readability
+        RawQty = Pos["quantity"]
+        LotSize = Cfg.get("order_routing", {}).get("QuantityMultiplier", 1)
+        Lots = RawQty // LotSize if LotSize else RawQty
+
         if ExpiryInfo:
             DaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"])
             ExecDays = RollCfg.get("execute_days_before_expiry", 3)
@@ -1123,11 +1128,11 @@ def PrintStatus(InstrumentConfig):
                 Marker = " <<<< EXECUTE TODAY"
             elif DaysLeft <= AlertDays:
                 Marker = " << ALERT"
-            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Qty: {Pos['quantity']:>4d} | "
+            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Lots: {Lots:>4d} ({RawQty} units) | "
                   f"Expiry: {ExpiryInfo['current_expiry'].strftime('%Y-%m-%d')} | "
                   f"{DaysLeft} trading days left{Marker}")
         else:
-            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Qty: {Pos['quantity']:>4d} | "
+            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Lots: {Lots:>4d} ({RawQty} units) | "
                   f"Could not resolve expiry")
 
     print()
