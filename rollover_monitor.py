@@ -1070,49 +1070,44 @@ def PrintStatus(InstrumentConfig):
     else:
         print("  None.")
 
-    print("\n=== Upcoming Expiries (positions held) ===")
-    Today = datetime.now()
-    AllPositions = db.GetAllPositions()
-    HeldInstruments = {P["instrument"] for P in AllPositions if P.get("confirmed_qty", 0) != 0}
+    print("\n=== Upcoming Expiries (live positions) ===")
+    try:
+        LivePositions = ScanAllPositions(InstrumentConfig)
+    except Exception as e:
+        print(f"  Failed to fetch live positions: {e}")
+        print()
+        return
 
-    for InstName, Cfg in InstrumentConfig.items():
+    if not LivePositions:
+        print("  No open futures positions found.")
+        print()
+        return
+
+    for Pos in LivePositions:
+        InstName, Cfg = MatchPositionToInstrument(Pos, InstrumentConfig)
+        if not InstName:
+            print(f"  {Pos['tradingsymbol']:25s} | Qty: {Pos['quantity']:>4d} | "
+                  f"({Pos['broker']} {Pos['user']}) — not in config")
+            continue
+
         RollCfg = Cfg.get("rollover", {})
-        if not RollCfg.get("enabled"):
-            continue
-        if InstName not in HeldInstruments:
-            continue
-        Exchange = Cfg["exchange"]
-        Broker = Cfg["broker"]
+        ExpiryInfo = ResolveExpiryInfo(InstName, Cfg, Pos)
 
-        try:
-            if Broker == "ZERODHA":
-                Df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=",")
-                Df["expiry"] = pd.to_datetime(Df["expiry"], format="%Y-%m-%d", errors="coerce")
-                Contracts = Df[
-                    (Df["name"] == InstName) &
-                    (Df["exch_seg"] == Exchange) &
-                    (Df["instrumenttype"] == "FUT") &
-                    (Df["expiry"] >= Today)
-                ].sort_values("expiry").head(1)
-            else:
-                Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",", low_memory=False)
-                Df["expiry"] = pd.to_datetime(Df["expiry"], format="%d%b%Y", errors="coerce")
-                Contracts = Df[
-                    (Df["name"] == InstName) &
-                    (Df["exch_seg"] == Exchange) &
-                    (Df["instrumenttype"].isin(["FUTCOM", "FUTIDX"])) &
-                    (Df["expiry"] >= Today)
-                ].sort_values("expiry").head(1)
-
-            if not Contracts.empty:
-                Expiry = Contracts.iloc[0]["expiry"]
-                DaysLeft = CountTradingDaysUntilExpiry(Expiry)
-                ExecDays = RollCfg.get("execute_days_before_expiry", 3)
-                Marker = " <<<< EXECUTE TODAY" if DaysLeft <= ExecDays else ""
-                print(f"  {InstName:15s} | {Contracts.iloc[0]['symbol']:25s} | "
-                      f"Expiry: {Expiry.strftime('%Y-%m-%d')} | {DaysLeft} trading days left{Marker}")
-        except Exception:
-            pass
+        if ExpiryInfo:
+            DaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"])
+            ExecDays = RollCfg.get("execute_days_before_expiry", 3)
+            AlertDays = RollCfg.get("alert_days_before_expiry", 4)
+            Marker = ""
+            if DaysLeft <= ExecDays:
+                Marker = " <<<< EXECUTE TODAY"
+            elif DaysLeft <= AlertDays:
+                Marker = " << ALERT"
+            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Qty: {Pos['quantity']:>4d} | "
+                  f"Expiry: {ExpiryInfo['current_expiry'].strftime('%Y-%m-%d')} | "
+                  f"{DaysLeft} trading days left{Marker}")
+        else:
+            print(f"  {InstName:15s} | {Pos['tradingsymbol']:25s} | Qty: {Pos['quantity']:>4d} | "
+                  f"Could not resolve expiry")
 
     print()
 
