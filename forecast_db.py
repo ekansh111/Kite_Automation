@@ -135,6 +135,33 @@ def InitDB():
                 match INTEGER NOT NULL,
                 checked_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS rollover_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument TEXT NOT NULL,
+                expiry_date TEXT NOT NULL,
+                old_contract TEXT NOT NULL,
+                new_contract TEXT,
+                quantity INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                leg1_order_id TEXT,
+                leg1_fill_price REAL,
+                leg1_slippage REAL,
+                leg2_order_id TEXT,
+                leg2_fill_price REAL,
+                leg2_slippage REAL,
+                roll_spread REAL,
+                email_sent_at TEXT,
+                executed_at TEXT,
+                broker TEXT,
+                user_account TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rollover_lookup
+                ON rollover_log(instrument, expiry_date, status);
         """)
         Conn.commit()
 
@@ -433,6 +460,88 @@ def GetRecentReconciliations(limit=50):
     Conn = _GetConn()
     Rows = Conn.execute(
         "SELECT * FROM reconciliation_log ORDER BY checked_at DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+# ─── Rollover Log ─────────────────────────────────────────────────
+
+def LogRollover(Instrument, ExpiryDate, OldContract, Quantity, Direction,
+                Broker=None, UserAccount=None):
+    """Insert a PENDING rollover row. Returns the row id."""
+    Conn = _GetConn()
+    with _DBLock:
+        Cur = Conn.execute(
+            """INSERT INTO rollover_log
+               (instrument, expiry_date, old_contract, quantity, direction,
+                broker, user_account, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'), datetime('now'))""",
+            (Instrument, str(ExpiryDate), OldContract, Quantity, Direction,
+             Broker, UserAccount)
+        )
+        Conn.commit()
+        return Cur.lastrowid
+
+
+def UpdateRolloverStatus(RowId, Status, **kwargs):
+    """Update rollover status and any additional fields.
+
+    Accepted kwargs: new_contract, leg1_order_id, leg1_fill_price, leg1_slippage,
+    leg2_order_id, leg2_fill_price, leg2_slippage, roll_spread,
+    email_sent_at, executed_at.
+    """
+    AllowedFields = {
+        "new_contract", "leg1_order_id", "leg1_fill_price", "leg1_slippage",
+        "leg2_order_id", "leg2_fill_price", "leg2_slippage", "roll_spread",
+        "email_sent_at", "executed_at",
+    }
+    Sets = ["status = ?", "updated_at = datetime('now')"]
+    Vals = [Status]
+    for Key, Val in kwargs.items():
+        if Key in AllowedFields:
+            Sets.append(f"{Key} = ?")
+            Vals.append(Val)
+    Vals.append(RowId)
+
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            f"UPDATE rollover_log SET {', '.join(Sets)} WHERE id = ?",
+            tuple(Vals)
+        )
+        Conn.commit()
+
+
+def GetPendingRollovers(Instrument, ExpiryDate):
+    """Check if a rollover already exists for this instrument+expiry.
+
+    Returns list of dicts. Empty list means no prior rollover attempt.
+    """
+    Conn = _GetConn()
+    Rows = Conn.execute(
+        """SELECT * FROM rollover_log
+           WHERE instrument = ? AND expiry_date = ?
+           ORDER BY created_at DESC""",
+        (Instrument, str(ExpiryDate))
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetIncompleteRollovers():
+    """Return rows with status LEG1_DONE (leg 2 still needed) for crash recovery."""
+    Conn = _GetConn()
+    Rows = Conn.execute(
+        "SELECT * FROM rollover_log WHERE status = 'LEG1_DONE' ORDER BY created_at"
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetRecentRollovers(limit=20):
+    """Return recent rollover attempts (for status/debugging)."""
+    Conn = _GetConn()
+    Rows = Conn.execute(
+        "SELECT * FROM rollover_log ORDER BY created_at DESC LIMIT ?",
         (limit,)
     ).fetchall()
     return [dict(r) for r in Rows]
