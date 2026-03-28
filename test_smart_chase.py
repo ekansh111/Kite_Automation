@@ -62,11 +62,13 @@ for mod_name in ("Server_Order_Place", "Fetch_Positions_Data"):
 # Now safe to import
 import smart_chase
 from smart_chase import (
-    SmartChaseExecute, _AssessVolatility, _ComputeInitialPrice,
+    SmartChaseExecute, _AssessVolatility, _AssessMomentum,
+    _ComputeInitialPrice,
     _RoundToTick, _WaitForMarketOpen, _IsAtCircuit,
     _WaitForSpreadToSettle, _WaitForCircuitRelease, _FetchQuote,
     _FetchOHLC, _CheckOrderStatus, _ModifyOrderPrice,
     _ConvertToMarket, _PlaceLimitOrder,
+    SESSION_MINUTES,
 )
 import forecast_db as db
 
@@ -2392,6 +2394,388 @@ class TestExecutionModeOverride(unittest.TestCase):
         self.assertTrue(success)
         # Mode should be determined by volatility assessment, not "D"
         self.assertIn(info["execution_mode"], ["A", "B", "C"])
+
+
+# ══════════════════════════════════════════════════════════════════
+# 28. Momentum Assessment
+# ══════════════════════════════════════════════════════════════════
+
+class TestAssessMomentum(unittest.TestCase):
+    """Tests for _AssessMomentum function."""
+
+    def _mock_session(self, candles):
+        """Create a mock broker session returning given candle data."""
+        session = MagicMock()
+        session.historical_data.return_value = candles
+        return session
+
+    def _make_candle(self, o, h, l, c):
+        return {"open": o, "high": h, "low": l, "close": c}
+
+    # ATR=18078, MCX session=870 mins → expected 1-min = 18078/sqrt(870) ≈ 613.03
+    ATR = 18078.0
+
+    def test_calm_no_movement(self):
+        """Small candle range → calm."""
+        # With 2 candles, candles[-2] = candles[0] is the "last completed"
+        candles = [self._make_candle(100, 150, 100, 120),  # last completed: range=50
+                   self._make_candle(100, 200, 50, 150)]   # in-progress (ignored)
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+        self.assertLess(ratio, 2.0)
+        self.assertIsNotNone(candle)
+
+    def test_calm_at_boundary(self):
+        """Candle range = 2.0x expected → calm (boundary, no penalty)."""
+        exp = self.ATR / math.sqrt(870)  # ≈613
+        # Bearish candle (close < open), Direction=1 BUY → no direction penalty
+        candles = [self._make_candle(100 + 2.0 * exp, 100 + 2.0 * exp, 100, 100)]
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+
+    def test_moving_moderate(self):
+        """Candle range = 2.5x expected → moving (no penalty)."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish candle, SELL direction → no penalty (SELL + bearish = bearish moves
+        # in same direction as sell, which IS adverse, Direction=-1, CandleDir=-1)
+        # Use BUY + bearish to avoid penalty
+        candles = [self._make_candle(100 + 2.5 * exp, 100 + 2.5 * exp, 100, 100),  # last completed, bearish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        # BUY + bearish → no penalty → ratio = 2.5 → moving
+        self.assertEqual(level, "moving")
+
+    def test_moving_at_boundary(self):
+        """Candle range = 3.5x expected → moving (boundary, no penalty)."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish candle + BUY → no penalty → ratio = 3.5
+        candles = [self._make_candle(100 + 3.5 * exp, 100 + 3.5 * exp, 100, 100),  # last completed
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "moving")
+
+    def test_fast_high_momentum(self):
+        """Candle range = 5.0x expected → fast."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish candle + BUY → no penalty → ratio = 5.0
+        candles = [self._make_candle(100 + 5 * exp, 100 + 5 * exp, 100, 100),  # last completed
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "fast")
+        self.assertGreater(ratio, 3.5)
+
+    def test_direction_penalty_buy_bullish(self):
+        """BUY + bullish candle → 1.5× penalty applied."""
+        exp = self.ATR / math.sqrt(870)
+        # Bullish candle (close > open), BUY → penalty: 1.5*1.5 = 2.25 → moving
+        candles = [self._make_candle(100, 100 + 1.5 * exp, 100, 100 + 1.5 * exp),  # last completed, bullish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "moving")
+        self.assertAlmostEqual(ratio, 2.25, delta=0.05)
+
+    def test_direction_penalty_sell_bearish(self):
+        """SELL + bearish candle → 1.5× penalty applied."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish candle (close < open), SELL → penalty: 1.5*1.5 = 2.25 → moving
+        candles = [self._make_candle(100 + 1.5 * exp, 100 + 1.5 * exp, 100, 100),  # bearish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, -1, "MCX")
+        self.assertEqual(level, "moving")
+        self.assertAlmostEqual(ratio, 2.25, delta=0.05)
+
+    def test_no_penalty_buy_bearish(self):
+        """BUY + bearish candle → no penalty."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish (close < open) + BUY → no penalty → ratio = 1.5 → calm
+        candles = [self._make_candle(100 + 1.5 * exp, 100 + 1.5 * exp, 100, 100),  # bearish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+        self.assertAlmostEqual(ratio, 1.5, delta=0.05)
+
+    def test_no_penalty_sell_bullish(self):
+        """SELL + bullish candle → no penalty."""
+        exp = self.ATR / math.sqrt(870)
+        # Bullish (close > open) + SELL → no penalty
+        candles = [self._make_candle(100, 100 + 1.5 * exp, 100, 100 + 1.5 * exp),  # bullish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, -1, "MCX")
+        self.assertEqual(level, "calm")
+
+    def test_no_instrument_token_skips(self):
+        """None instrument token → calm default."""
+        session = MagicMock()
+        level, ratio, candle = _AssessMomentum(session, None, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+        self.assertEqual(ratio, 0.0)
+        self.assertIsNone(candle)
+        session.historical_data.assert_not_called()
+
+    def test_zero_atr_skips(self):
+        """ATR=0 → calm default."""
+        session = MagicMock()
+        level, ratio, candle = _AssessMomentum(session, 12345, 0, 1, "MCX")
+        self.assertEqual(level, "calm")
+        self.assertEqual(ratio, 0.0)
+
+    def test_negative_atr_skips(self):
+        """ATR<0 → calm default."""
+        session = MagicMock()
+        level, ratio, candle = _AssessMomentum(session, 12345, -100, 1, "MCX")
+        self.assertEqual(level, "calm")
+
+    def test_historical_data_exception(self):
+        """Exception in historical_data → calm default, no crash."""
+        session = MagicMock()
+        session.historical_data.side_effect = Exception("API error")
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+        self.assertEqual(ratio, 0.0)
+        self.assertIsNone(candle)
+
+    def test_empty_candles(self):
+        """Empty candle list → calm default."""
+        session = self._mock_session([])
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "calm")
+
+    def test_single_candle_used(self):
+        """Single candle returned → uses that candle (no second-to-last available)."""
+        exp = self.ATR / math.sqrt(870)
+        # Bearish, range=3*exp, BUY → no penalty → ratio=3.0 → moving
+        candles = [self._make_candle(100 + 3 * exp, 100 + 3 * exp, 100, 100)]
+        session = self._mock_session(candles)
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertEqual(level, "moving")
+        self.assertAlmostEqual(ratio, 3.0, delta=0.05)
+
+    def test_multiple_candles_uses_second_to_last(self):
+        """Three candles → uses candles[-2] (second-to-last = last completed)."""
+        exp = self.ATR / math.sqrt(870)
+        candles = [
+            self._make_candle(100, 200, 50, 150),                       # oldest
+            self._make_candle(100 + 4 * exp, 100 + 4 * exp, 100, 100),  # candles[-2]: range=4*exp, bearish
+            self._make_candle(100, 100 + 10 * exp, 100, 100),           # in-progress (ignored)
+        ]
+        session = self._mock_session(candles)
+        # BUY + bearish → no penalty → ratio=4.0
+        level, ratio, candle = _AssessMomentum(session, 12345, self.ATR, 1, "MCX")
+        self.assertAlmostEqual(ratio, 4.0, delta=0.05)
+
+    def test_nfo_session_minutes(self):
+        """NFO uses 375 session minutes."""
+        # range=100 → 100 / (18078/sqrt(375)) ≈ 100/934 ≈ 0.11 → calm
+        candles = [self._make_candle(200, 200, 100, 100),  # last completed: range=100, bearish
+                   self._make_candle(100, 200, 100, 100)]  # in-progress
+        session = self._mock_session(candles)
+        level, ratio, _ = _AssessMomentum(session, 12345, self.ATR, 1, "NFO")
+        self.assertEqual(level, "calm")
+
+
+class TestMomentumOverride(unittest.TestCase):
+    """Tests for momentum override integration in SmartChaseExecute."""
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 110, "low": 90})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_mode_c_escalated_to_a_on_moving(self, mock_open, mock_mom, mock_quote,
+                                               mock_ohlc, mock_place, mock_status,
+                                               mock_email):
+        """Mode C + moving momentum → Mode A."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        # _AssessVolatility will return C (low range, tight spread with baseline=2)
+        mock_mom.return_value = ("moving", 2.5, {"open": 100, "high": 115, "low": 100, "close": 115})
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+        self.assertTrue(success)
+        self.assertEqual(info["execution_mode"], "A")
+        self.assertEqual(info["original_mode"], "C")
+        self.assertTrue(info["momentum_override"])
+        self.assertEqual(info["momentum_level"], "moving")
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 110, "low": 90})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_mode_c_escalated_to_a_on_fast(self, mock_open, mock_mom, mock_quote,
+                                             mock_ohlc, mock_place, mock_status,
+                                             mock_email):
+        """Mode C + fast momentum → Mode A."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        mock_mom.return_value = ("fast", 4.5, {"open": 100, "high": 150, "low": 100, "close": 150})
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+        self.assertEqual(info["execution_mode"], "A")
+        self.assertTrue(info["momentum_override"])
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 200, "low": 50})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_mode_a_unchanged_on_moving(self, mock_open, mock_mom, mock_quote,
+                                         mock_ohlc, mock_place, mock_status,
+                                         mock_email):
+        """Mode A (from high range) + moving momentum → stays A."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        mock_mom.return_value = ("moving", 2.5, {"open": 100, "high": 115, "low": 100, "close": 115})
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        # ATR=100, range=150, ratio=1.5 → high → tight spread → Mode A from matrix
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 100)
+        self.assertEqual(info["execution_mode"], "A")
+        self.assertFalse(info["momentum_override"])
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 200, "low": 50})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_mode_b_escalated_to_a_on_fast(self, mock_open, mock_mom, mock_quote,
+                                             mock_ohlc, mock_place, mock_status,
+                                             mock_email):
+        """Mode B + fast momentum → Mode A."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 95, "best_ask": 110,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 95, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 110, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        mock_mom.return_value = ("fast", 4.5, {"open": 100, "high": 150, "low": 100, "close": 150})
+
+        # High range + normal spread → Mode B from matrix
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 100)
+        self.assertEqual(info["execution_mode"], "A")
+        self.assertEqual(info["original_mode"], "B")
+        self.assertTrue(info["momentum_override"])
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 110, "low": 90})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_config_override_takes_priority(self, mock_open, mock_mom, mock_quote,
+                                              mock_ohlc, mock_place, mock_status,
+                                              mock_email):
+        """Config execution_mode_override takes priority over momentum."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        mock_mom.return_value = ("fast", 5.0, {"open": 100, "high": 200, "low": 100, "close": 200})
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0, execution_mode_override="D")
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+        self.assertEqual(info["execution_mode"], "D")
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 110, "low": 90})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_fillinfo_contains_momentum_fields(self, mock_open, mock_mom, mock_quote,
+                                                 mock_ohlc, mock_place, mock_status,
+                                                 mock_email):
+        """FillInfo dict has all momentum fields populated."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        candle = {"open": 100, "high": 110, "low": 100, "close": 105}
+        mock_mom.return_value = ("calm", 0.5, candle)
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+        self.assertEqual(info["momentum_level"], "calm")
+        self.assertEqual(info["momentum_ratio"], 0.5)
+        self.assertEqual(info["momentum_candle"], candle)
+        self.assertFalse(info["momentum_override"])
+        self.assertIn(info["original_mode"], ["A", "B", "C"])
+
+    @patch("smart_chase._SendOrderEmail")
+    @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
+    @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
+    @patch("smart_chase._FetchOHLC", return_value={"high": 110, "low": 90})
+    @patch("smart_chase._FetchQuote")
+    @patch("smart_chase._AssessMomentum")
+    @patch("smart_chase._WaitForMarketOpen")
+    def test_calm_momentum_no_override(self, mock_open, mock_mom, mock_quote,
+                                        mock_ohlc, mock_place, mock_status,
+                                        mock_email):
+        """Calm momentum does not override Mode C."""
+        mock_quote.return_value = {
+            "ltp": 100, "best_bid": 99, "best_ask": 101,
+            "upper_circuit_limit": 120, "lower_circuit_limit": 80,
+            "depth": {"buy": [{"price": 99, "quantity": 5, "orders": 1}],
+                      "sell": [{"price": 101, "quantity": 5, "orders": 1}]},
+            "instrument_token": 12345,
+        }
+        mock_mom.return_value = ("calm", 1.2, {"open": 100, "high": 105, "low": 100, "close": 103})
+
+        cfg = _make_config(baseline_spread_ticks=2, tick_size=1.0)
+        od = _make_order_details()
+        success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+        self.assertEqual(info["execution_mode"], "C")
+        self.assertFalse(info["momentum_override"])
 
 
 if __name__ == "__main__":

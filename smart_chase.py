@@ -36,6 +36,14 @@ EXCHANGE_OPEN_TIMES = {
     "NCDEX": "10:00",
 }
 
+SESSION_MINUTES = {
+    "MCX":   870,   # 09:00–23:30 (full session including evening)
+    "NFO":   375,   # 09:15–15:30
+    "NSE":   375,   # 09:15–15:30
+    "BFO":   375,   # 09:15–15:30
+    "NCDEX": 420,   # 10:00–17:00
+}
+
 EMAIL_CONFIG_PATH = Path(workInputRoot) / "email_config.json"
 
 
@@ -54,13 +62,16 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
     Instrument = OrderDetails.get("Tradingsymbol", "UNKNOWN")
 
     FillInfo = {
-        "execution_mode": None, "initial_ltp": None,
+        "execution_mode": None, "original_mode": None,
+        "initial_ltp": None,
         "initial_bid": None, "initial_ask": None,
         "initial_spread": None, "limit_price": None,
         "fill_price": None, "slippage": None,
         "chase_iterations": 0, "chase_duration_seconds": 0.0,
         "market_fallback": 0, "spread_ratio": None,
         "range_ratio": None, "settle_wait_seconds": 0.0,
+        "momentum_level": None, "momentum_ratio": None,
+        "momentum_candle": None, "momentum_override": False,
     }
 
     try:
@@ -90,14 +101,36 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         OHLC = _FetchOHLC(BrokerSession, OrderDetails, Broker)
         Mode, SpreadLevel, RangeLevel = _AssessVolatility(Quote, OHLC, ATR, Config)
 
+        # ── Step 1b: Assess momentum (1-min candle) ─────────────
+        InstrumentToken = Quote.get("instrument_token")
+        MomentumLevel, MomentumRatio, MomentumCandle = _AssessMomentum(
+            BrokerSession, InstrumentToken, ATR, Direction, Exchange
+        )
+
+        # Momentum override: escalate passive mode when market is moving
+        OriginalMode = Mode
+        if MomentumLevel == "moving" and Mode == "C":
+            Mode = "A"
+            Logger.info("%s: Momentum override C→A (momentum=%s ratio=%.2f)",
+                        Instrument, MomentumLevel, MomentumRatio)
+        elif MomentumLevel == "fast" and Mode in ("C", "B"):
+            Mode = "A"
+            Logger.info("%s: Momentum override %s→A (momentum=%s ratio=%.2f)",
+                        Instrument, OriginalMode, MomentumLevel, MomentumRatio)
+
         # Allow config to override execution mode (e.g., "D" for mid-price on options)
         ModeOverride = Config.get("execution_mode_override", None)
         if ModeOverride:
             Mode = ModeOverride
 
         FillInfo["execution_mode"] = Mode
+        FillInfo["original_mode"] = OriginalMode
         FillInfo["spread_level"] = SpreadLevel
         FillInfo["range_level"] = RangeLevel
+        FillInfo["momentum_level"] = MomentumLevel
+        FillInfo["momentum_ratio"] = MomentumRatio
+        FillInfo["momentum_candle"] = MomentumCandle
+        FillInfo["momentum_override"] = (OriginalMode != Mode and MomentumLevel != "calm")
 
         Bid = Quote.get("best_bid", Quote.get("ltp", 0))
         Ask = Quote.get("best_ask", Quote.get("ltp", 0))
@@ -115,9 +148,11 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         FillInfo["depth"] = Quote.get("depth", {})
 
         Logger.info(
-            "%s: Volatility assessment | spread=%.2f ratio=%.1f | range_ratio=%.2f → Mode %s",
+            "%s: Volatility assessment | spread=%.2f ratio=%.1f | range_ratio=%.2f | momentum=%s (%.2f) → Mode %s%s",
             Instrument, Ask - Bid if Ask and Bid else 0,
-            Quote.get("spread_ratio", 0), Quote.get("range_ratio", 0), Mode
+            Quote.get("spread_ratio", 0), Quote.get("range_ratio", 0),
+            MomentumLevel, MomentumRatio, Mode,
+            " (momentum override)" if FillInfo.get("momentum_override") else ""
         )
 
         # ── Step 2: Compute initial limit price ──────────────────
@@ -437,6 +472,85 @@ def _AssessVolatility(Quote, OHLC, ATR, Config):
     return Mode, SpreadLevel, RangeLevel
 
 
+# ─── Momentum Assessment ──────────────────────────────────────────────
+
+def _AssessMomentum(BrokerSession, InstrumentToken, ATR, Direction, Exchange):
+    """Assess recent price momentum from the last completed 1-min candle.
+
+    Uses the square-root-of-time rule: expected_1min = ATR / sqrt(session_minutes).
+    Compares actual 1-min candle range to this baseline.
+
+    Applies a 1.5× direction penalty when the candle moved against the order
+    (e.g., BUY + bullish candle = adverse momentum).
+
+    Returns: (level: str, ratio: float, candle: dict|None)
+        level:  "calm" (≤2.0), "moving" (≤3.5), or "fast" (>3.5)
+        ratio:  momentum_ratio (actual / expected, with direction penalty)
+        candle: {"open", "high", "low", "close"} of the last completed 1-min candle
+    """
+    try:
+        # Guard: skip if no instrument token (Angel broker) or invalid ATR
+        if InstrumentToken is None or not ATR or ATR <= 0:
+            return ("calm", 0.0, None)
+
+        SessionMins = SESSION_MINUTES.get(Exchange, 375)
+        Expected1MinRange = ATR / math.sqrt(SessionMins)
+
+        if Expected1MinRange <= 0:
+            return ("calm", 0.0, None)
+
+        # Fetch last 3 minutes of candle data to get at least one completed candle
+        Now = datetime.now()
+        FromTime = Now - timedelta(minutes=3)
+        Candles = BrokerSession.historical_data(
+            InstrumentToken, FromTime, Now, interval="minute"
+        )
+
+        if not Candles or len(Candles) < 1:
+            return ("calm", 0.0, None)
+
+        # Use second-to-last candle (last completed), not the in-progress one
+        if len(Candles) >= 2:
+            Candle = Candles[-2]
+        else:
+            Candle = Candles[0]
+
+        CandleHigh = Candle.get("high", Candle.get("High", 0))
+        CandleLow = Candle.get("low", Candle.get("Low", 0))
+        CandleOpen = Candle.get("open", Candle.get("Open", 0))
+        CandleClose = Candle.get("close", Candle.get("Close", 0))
+
+        CandleRange = CandleHigh - CandleLow if CandleHigh > CandleLow else 0
+        MomentumRatio = CandleRange / Expected1MinRange
+
+        # Direction penalty: if candle moved against order direction, multiply by 1.5
+        # BUY (Direction=1) + bullish candle (close > open) = adverse
+        # SELL (Direction=-1) + bearish candle (close < open) = adverse
+        CandleDirection = 1 if CandleClose >= CandleOpen else -1
+        if CandleDirection == Direction:
+            MomentumRatio *= 1.5
+
+        MomentumRatio = round(MomentumRatio, 2)
+
+        # Classify
+        if MomentumRatio <= 2.0:
+            Level = "calm"
+        elif MomentumRatio <= 3.5:
+            Level = "moving"
+        else:
+            Level = "fast"
+
+        CandleInfo = {
+            "open": CandleOpen, "high": CandleHigh,
+            "low": CandleLow, "close": CandleClose,
+        }
+        return (Level, MomentumRatio, CandleInfo)
+
+    except Exception as e:
+        Logger.warning("Momentum assessment failed: %s — defaulting to calm", e)
+        return ("calm", 0.0, None)
+
+
 # ─── Quote & OHLC Fetching ────────────────────────────────────────────
 
 def _FetchQuote(BrokerSession, OrderDetails, Broker):
@@ -459,6 +573,7 @@ def _FetchQuote(BrokerSession, OrderDetails, Broker):
                 "upper_circuit_limit": Data.get("upper_circuit_limit"),
                 "lower_circuit_limit": Data.get("lower_circuit_limit"),
                 "depth": Depth,
+                "instrument_token": Data.get("instrument_token"),
             }
 
         elif Broker == "ANGEL":
@@ -820,6 +935,7 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
         ALT_ROW = "#f7f9fc"
         INSTRUMENT_BG = "#d9f1ff"
         INSTRUMENT_TEXT = "#0f2f57"
+        ACCENT_ORANGE = "#ff9800"
 
         # Action badge color
         ActionColor = ACCENT_GREEN if Action == "BUY" else ACCENT_RED
@@ -872,6 +988,10 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
                 return f'<td style="padding:8px 12px;text-align:center;background:{NAVY};color:white;font-weight:700;font-size:15px;border-radius:6px;">{v}</td>'
             return f'<td style="padding:8px 12px;text-align:center;color:{VALUE_CLR};font-size:14px;border:1px solid {BORDER};">{v}</td>'
 
+        # Precompute momentum override info (needed by matrix and momentum cards)
+        MomOverride = FillInfo.get("momentum_override", False)
+        OrigMode = FillInfo.get("original_mode") or Mode
+
         MatrixHtml = f'<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;overflow:hidden;border:1px solid {BORDER};">'
         MatrixHtml += f'<div style="background:{SECTION_BG};padding:12px 16px;border-bottom:1px solid {BORDER};"><span style="font-size:14px;font-weight:700;color:{NAVY};letter-spacing:0.3px;">🎯 Decision Matrix</span></div>'
         MatrixHtml += f'<div style="padding:16px;"><table style="width:100%;border-collapse:separate;border-spacing:3px;font-size:13px;">'
@@ -880,7 +1000,8 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
             MatrixHtml += f'<tr><th style="padding:8px;background:{SECTION_BG};border-radius:6px;text-align:left;color:{MUTED};font-size:11px;font-weight:600;letter-spacing:0.5px;">{rng.upper()}</th>{_mc(rng,"tight",RangeLvl,SpreadLvl)}{_mc(rng,"normal",RangeLvl,SpreadLvl)}{_mc(rng,"wide",RangeLvl,SpreadLvl)}</tr>'
         MatrixHtml += '</table>'
         MatrixHtml += f'<div style="margin-top:12px;padding:10px;background:{SECTION_BG};border-radius:8px;font-size:12px;color:{LABEL_CLR};">'
-        MatrixHtml += f'<strong>Selected:</strong> Range=<strong>{RangeLvl}</strong>, Spread=<strong>{SpreadLvl}</strong> → Mode <strong style="color:{NAVY};">{Mode}</strong><br>'
+        MomOverrideText = f' → <span style="color:{ACCENT_ORANGE};font-weight:700;">Momentum override</span> → Mode <strong style="color:{NAVY};">{Mode}</strong>' if MomOverride else ""
+        MatrixHtml += f'<strong>Selected:</strong> Range=<strong>{RangeLvl}</strong>, Spread=<strong>{SpreadLvl}</strong> → Mode <strong style="color:{NAVY};">{OrigMode}</strong>{MomOverrideText}<br>' if MomOverride else f'<strong>Selected:</strong> Range=<strong>{RangeLvl}</strong>, Spread=<strong>{SpreadLvl}</strong> → Mode <strong style="color:{NAVY};">{Mode}</strong><br>'
         MatrixHtml += f'<span style="font-size:11px;color:{MUTED};">Range: low ≤ 0.4 · normal ≤ 0.8 · high &gt; 0.8 &nbsp;|&nbsp; Spread: tight ≤ 1.5 · normal ≤ 3.0 · wide &gt; 3.0</span>'
         MatrixHtml += '</div></div></div>'
 
@@ -904,6 +1025,50 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
             f'<div style="margin-top:8px;"><span style="display:inline-block;padding:3px 12px;border-radius:10px;background:{SlipColor};color:white;font-size:11px;font-weight:600;letter-spacing:0.5px;">{SlipBadge}</span></div>'
             if Slip is not None else ""
         )
+
+        # ── Momentum card ──
+        MomLevel = FillInfo.get("momentum_level") or "N/A"
+        MomRatio = FillInfo.get("momentum_ratio") or 0.0
+        MomCandle = FillInfo.get("momentum_candle")
+        # MomOverride and OrigMode already computed above (before matrix)
+        MomColor = {"calm": ACCENT_GREEN, "moving": ACCENT_ORANGE, "fast": ACCENT_RED}.get(MomLevel, MUTED)
+
+        MomOverrideBadge = ""
+        if MomOverride:
+            MomOverrideBadge = f'<div style="margin-top:8px;"><span style="display:inline-block;padding:3px 12px;border-radius:10px;background:{ACCENT_ORANGE};color:white;font-size:11px;font-weight:600;letter-spacing:0.5px;">OVERRIDE {_html.escape(OrigMode)}→{_html.escape(Mode)}</span></div>'
+
+        MomentumCardHtml = f"""<!-- Momentum Card -->
+<div style="background:{CARD_BG};border-radius:12px;margin:12px 0;padding:16px;border:1px solid {BORDER};text-align:center;">
+<div style="font-size:11px;color:{MUTED};font-weight:600;letter-spacing:1px;margin-bottom:8px;">MOMENTUM</div>
+<div style="font-size:22px;font-weight:700;color:{MomColor};">{_html.escape(MomLevel.upper())}</div>
+<div style="font-size:13px;color:{LABEL_CLR};margin-top:4px;">ratio: {MomRatio:.2f}</div>
+{MomOverrideBadge}
+</div>"""
+
+        # Momentum calculation detail card
+        MomentumDetailHtml = ""
+        if MomCandle:
+            CdlOpen = MomCandle.get("open", 0)
+            CdlHigh = MomCandle.get("high", 0)
+            CdlLow = MomCandle.get("low", 0)
+            CdlClose = MomCandle.get("close", 0)
+            CdlRange = CdlHigh - CdlLow
+            EmailExchange = OrderDetails.get("Exchange", "MCX")
+            EmailATR = FillInfo.get("atr", 0)
+            EmailDirection = 1 if OrderDetails.get("Tradetype", "buy").lower() == "buy" else -1
+            SessionMins = SESSION_MINUTES.get(EmailExchange, 375)
+            Exp1Min = EmailATR / math.sqrt(SessionMins) if EmailATR and EmailATR > 0 else 0
+            RawRatio = CdlRange / Exp1Min if Exp1Min > 0 else 0
+            CdlDir = 1 if CdlClose >= CdlOpen else -1
+            HasPenalty = CdlDir == EmailDirection
+            MomentumDetailHtml = _card_start("Momentum Calculation", "🔥")
+            MomentumDetailHtml += _kv("1-min Candle", f"O={CdlOpen} H={CdlHigh} L={CdlLow} C={CdlClose}")
+            MomentumDetailHtml += _kv("Candle Range", f"{CdlRange:.2f}")
+            MomentumDetailHtml += _kv("Expected 1-min", f"{Exp1Min:.2f}")
+            MomentumDetailHtml += _kv("Raw Ratio", f"{RawRatio:.2f}")
+            MomentumDetailHtml += _kv("Direction Penalty", "Yes (adverse) ×1.5" if HasPenalty else "No")
+            MomentumDetailHtml += _kv("Final Ratio", f"{MomRatio:.2f}", val_color=MomColor, val_bold=True)
+            MomentumDetailHtml += _card_end()
 
         HtmlBody = f"""<html><head><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
@@ -940,6 +1105,9 @@ Broker Order ID: {OrderDetails.get('OrderId', 'N/A')}
 <div style="display:inline-block;width:40px;height:40px;line-height:40px;border-radius:50%;background:{NAVY};color:white;font-size:20px;font-weight:700;">{_html.escape(Mode)}</div>
 <div style="font-size:13px;color:{LABEL_CLR};margin-top:8px;">{_html.escape(ModeExplain)}</div>
 </div>
+
+{MomentumCardHtml}
+{MomentumDetailHtml}
 
 <!-- Market Context -->
 {_card_start("Market Context", "📈")}
