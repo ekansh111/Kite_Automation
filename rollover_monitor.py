@@ -152,9 +152,9 @@ def ScanAllPositions(InstrumentConfig):
     Returns list of dicts with unified schema.
     """
     # Hardcoded active accounts — do NOT derive from config
-    # OFS653 (Eshita) + YD6016 (Rashmi) on Zerodha, E51339915 (Ekansh) on Angel
+    # OFS653 (Eshita) + YD6016 (Rashmi) on Zerodha, AABM826021 (Eshita) on Angel
     ZerodhaUsers = {"OFS653", "YD6016"}
-    AngelUsers = {"E51339915"}
+    AngelUsers = {"AABM826021"}
 
     Positions = []
 
