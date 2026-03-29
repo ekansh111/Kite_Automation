@@ -33,6 +33,14 @@ def _RequestLogPayload(payload):
     ]
     return {key: payload.get(key) for key in keys if key in payload}
 
+
+def _IsTruthy(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
 app = Flask(__name__)
 run_with_ngrok(app,subdomain="test111")#test111 subdomain for testing
 json = ""
@@ -69,14 +77,24 @@ def webhook():
                     request_id,
                     _RequestLogPayload(order_details_fetch),
                 )
-                if order_details_fetch.get("UpdatedOrderRouting") == 'True':
+                UseUpdatedRouting = _IsTruthy(order_details_fetch.get("UpdatedOrderRouting"))
+                ForceAngelNcdexRoute = (
+                    str(order_details_fetch.get("Broker", "")).strip().upper() == "ANGEL" and
+                    str(order_details_fetch.get("Exchange", "")).strip().upper() == "NCDEX"
+                )
+
+                if UseUpdatedRouting or ForceAngelNcdexRoute:
                     if order_details_fetch.get("Broker") == 'ZERODHA':
                         Logger.info("Dispatching request to Zerodha flow | request_id=%s", request_id)
                         ControlOrderFlowKite(order_details_fetch)
                         Logger.info("Zerodha flow returned control | request_id=%s", request_id)
                         return 'success',200
-                    else:
-                        Logger.info("Dispatching request to Angel flow | request_id=%s", request_id)
+                    elif order_details_fetch.get("Broker") == 'ANGEL':
+                        Logger.info(
+                            "Dispatching request to Angel flow | request_id=%s reason=%s",
+                            request_id,
+                            "forced_ncdex_route" if ForceAngelNcdexRoute and not UseUpdatedRouting else "updated_routing",
+                        )
                         Result = ControlOrderFlowAngel(order_details_fetch)
                         Logger.info(
                             "Angel flow returned | request_id=%s result=%s last_error=%s",
@@ -85,6 +103,12 @@ def webhook():
                             order_details_fetch.get("LastOrderError"),
                         )
                         return 'success',200
+                    else:
+                        Logger.info(
+                            "Updated routing requested for unsupported broker | request_id=%s broker=%s",
+                            request_id,
+                            order_details_fetch.get("Broker"),
+                        )
 
                 elif order_details_fetch.get("Broker") == 'ANGEL':
                     Broker = order_details_fetch['Broker']

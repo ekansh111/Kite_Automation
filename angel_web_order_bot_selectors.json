@@ -1,0 +1,316 @@
+{
+  "page_ready": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@placeholder, 'Search') or contains(@aria-label, 'Search')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'watchlist')]"
+    }
+  ],
+  "search_input": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@placeholder, 'Search') or contains(@aria-label, 'Search') or @type='search']"
+    }
+  ],
+  "login_identifier_input": [
+    {
+      "by": "id",
+      "value": "login|input|phone_number"
+    },
+    {
+      "by": "xpath",
+      "value": "//input[@type='email' or @type='tel' or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'client') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mobile') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'email') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'client') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mobile') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'email') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'client') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mobile') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'email') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'client') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mobile') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'email')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//form//input[not(@type='hidden')][1]"
+    }
+  ],
+  "login_mobile_number_tab": [
+    {
+      "by": "xpath",
+      "value": "//*[normalize-space()='Login with Mobile Number']"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login with mobile number')]"
+    }
+  ],
+  "login_client_id_tab": [
+    {
+      "by": "xpath",
+      "value": "//*[normalize-space()='Login with Client ID']"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login with client id')]"
+    }
+  ],
+  "login_continue_button": [
+    {
+      "by": "id",
+      "value": "login|proceed|phone_number"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'next')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'generate')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'proceed')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//button[@type='submit']"
+    }
+  ],
+  "mpin_input": [
+    {
+      "by": "xpath",
+      "value": "//input[(contains(@type, 'password') or @inputmode='numeric' or @type='tel') and (contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mpin') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pin') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mpin') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pin') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mpin') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pin') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mpin') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pin'))]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'mpin') or contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pin')]/following::input[1]"
+    }
+  ],
+  "mpin_submit_button": [
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'submit')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//button[@type='submit']"
+    }
+  ],
+  "otp_input": [
+    {
+      "by": "xpath",
+      "value": "//input[@autocomplete='one-time-code' or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verification') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verification') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verification') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp') or contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verification')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'otp') or contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verification code')]/following::input[1]"
+    }
+  ],
+  "otp_submit_button": [
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verify')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'submit')]"
+    }
+  ],
+  "auth_submit_button": [
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verify')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'submit')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]"
+    }
+  ],
+  "search_result_exact_exchange": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(normalize-space(.), '{symbol}') and contains(normalize-space(.), '{exchange}')]"
+    }
+  ],
+  "search_result_exact_symbol": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(normalize-space(.), '{symbol}')]"
+    }
+  ],
+  "row_buy_button": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(normalize-space(.), '{symbol}')]/ancestor::*[self::div or self::li][1]//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'buy')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'buy')]"
+    }
+  ],
+  "row_sell_button": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(normalize-space(.), '{symbol}')]/ancestor::*[self::div or self::li][1]//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sell')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sell')]"
+    }
+  ],
+  "order_pad_ready": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@name, 'quantity') or contains(@placeholder, 'Qty') or contains(@aria-label, 'Quantity')]"
+    }
+  ],
+  "quantity_input": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@name, 'quantity') or contains(@placeholder, 'Qty') or contains(@aria-label, 'Quantity')]"
+    }
+  ],
+  "product_dropdown": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'product')]/following::*[self::button or @role='button'][1]"
+    }
+  ],
+  "order_type_dropdown": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'order type')]/following::*[self::button or @role='button'][1]"
+    }
+  ],
+  "validity_dropdown": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'validity')]/following::*[self::button or @role='button'][1]"
+    }
+  ],
+  "dropdown_option": [
+    {
+      "by": "xpath",
+      "value": "//*[self::li or self::div or self::button][normalize-space(.)='{option}']"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::li or self::div or self::button][contains(normalize-space(.), '{option}')]"
+    }
+  ],
+  "price_input": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@name, 'price') or contains(@placeholder, 'Price') or contains(@aria-label, 'Price')]"
+    }
+  ],
+  "trigger_price_input": [
+    {
+      "by": "xpath",
+      "value": "//input[contains(@name, 'trigger') or contains(@placeholder, 'Trigger') or contains(@aria-label, 'Trigger')]"
+    }
+  ],
+  "submit_button": [
+    {
+      "by": "id",
+      "value": "payNow"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'submit')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'place order')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'place buy order')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'place sell order')]"
+    }
+  ],
+  "confirm_button": [
+    {
+      "by": "id",
+      "value": "go_back|button|confirm_screen|confirm"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirm')]"
+    }
+  ],
+  "review_edit_button": [
+    {
+      "by": "id",
+      "value": "go_back|button|confirm_screen|edit"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[@id='order_pad_container']//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'edit')]"
+    }
+  ],
+  "scheduled_order_title": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'order scheduled')]"
+    }
+  ],
+  "scheduled_order_message": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'next trading window')]"
+    }
+  ],
+  "scheduled_order_ok_button": [
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'okay')]"
+    }
+  ],
+  "inline_order_pad_message": [
+    {
+      "by": "xpath",
+      "value": "//*[@id='order_pad_container']//*[contains(@class, 'bg-warning-default') or contains(@class, 'bg-error-default')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[@id='order_pad_container']//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'insufficient margin')]"
+    }
+  ],
+  "post_submit_message": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(@class, 'toast') or contains(@class, 'snackbar') or @role='alert']"
+    }
+  ]
+}

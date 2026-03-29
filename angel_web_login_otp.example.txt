@@ -1,0 +1,4 @@
+# When Angel asks for OTP, write the latest code here.
+# The bot reads this file only after the OTP screen appears.
+
+123456

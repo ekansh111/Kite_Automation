@@ -10,6 +10,7 @@ It includes functionality for:
 # package import statement
 from SmartApi import SmartConnect
 import SmartApi
+from contextlib import contextmanager
 import pyotp
 import time
 from datetime import date, datetime
@@ -21,11 +22,87 @@ from Directories import *
 from datetime import datetime,timedelta
 import json
 import logging
+import os
+import pathlib
+import threading
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix fallback
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows fallback
+    msvcrt = None
+from angel_browser_guard import inspect_browser_session as InspectAngelBrowserSession
+from angel_web_order_bot import (
+    APP_URL as ANGEL_WEB_APP_URL,
+    DEFAULT_DEBUGGER_ADDRESS as ANGEL_WEB_DEFAULT_DEBUGGER_ADDRESS,
+    DEFAULT_INSTRUMENT_FILE as ANGEL_WEB_DEFAULT_INSTRUMENT_FILE,
+    DEFAULT_LOGIN_CREDENTIALS_FILE as ANGEL_WEB_DEFAULT_LOGIN_CREDENTIALS_FILE,
+    DEFAULT_LOGIN_OTP_FILE as ANGEL_WEB_DEFAULT_LOGIN_OTP_FILE,
+    DEFAULT_LOG_DIR as ANGEL_WEB_DEFAULT_LOG_DIR,
+    DEFAULT_PROFILE_DIR as ANGEL_WEB_DEFAULT_PROFILE_DIR,
+    DEFAULT_SELECTORS_PATH as ANGEL_WEB_DEFAULT_SELECTORS_PATH,
+    AngelWebOrderBot,
+    load_json_file as LoadAngelWebJson,
+    normalize_order_payload as NormalizeAngelWebOrderPayload,
+    resolve_watchlist_candidate as ResolveAngelWatchlistCandidate,
+)
 
 #Types of Orders
 LimitOrder = 'LIMIT'
 MarketOrder = 'MARKET'
 Logger = logging.getLogger(__name__)
+_ANGEL_BROWSER_FIFO_CONDITION = threading.Condition()
+_ANGEL_BROWSER_FIFO_NEXT_TICKET = 0
+_ANGEL_BROWSER_FIFO_SERVING_TICKET = 0
+
+
+def _SupportsOsFileLock():
+    return fcntl is not None or msvcrt is not None
+
+
+def _TryAcquireOsFileLock(LockFile):
+    if fcntl is not None:
+        fcntl.flock(LockFile.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+
+    if msvcrt is not None:
+        LockFile.seek(0, os.SEEK_END)
+        if LockFile.tell() == 0:
+            LockFile.write('\0')
+            LockFile.flush()
+        LockFile.seek(0)
+        msvcrt.locking(LockFile.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+
+    raise RuntimeError('Angel browser execution lock is not supported on this platform.')
+
+
+def _ReleaseOsFileLock(LockFile):
+    if fcntl is not None:
+        fcntl.flock(LockFile.fileno(), fcntl.LOCK_UN)
+        return
+
+    if msvcrt is not None:
+        LockFile.seek(0)
+        msvcrt.locking(LockFile.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    raise RuntimeError('Angel browser execution lock is not supported on this platform.')
+
+
+def _WriteAngelBrowserLockMetadata(LockFile, Payload):
+    Serialized = json.dumps(Payload, default=str, sort_keys=True)
+    if msvcrt is not None and fcntl is None:
+        LockFile.seek(1)
+        LockFile.truncate()
+        LockFile.write('\n' + Serialized)
+    else:
+        LockFile.seek(0)
+        LockFile.truncate()
+        LockFile.write(Serialized)
+    LockFile.flush()
 
 
 def _OrderLogContext(OrderDetails):
@@ -35,7 +112,7 @@ def _OrderLogContext(OrderDetails):
         'Tradetype', 'Ordertype', 'Variety', 'Product', 'Validity',
         'Quantity', 'Price', 'Netposition', 'ContractNameProvided',
         'InstrumentType', 'UpdatedOrderRouting', 'ReEnterOrderLoop',
-        'OrderId', 'LastOrderError',
+        'OrderId', 'LastOrderError', 'LastOrderWarning', 'ExecutionRoute',
     ]
     return {Key: OrderDetails.get(Key) for Key in Keys if Key in OrderDetails}
 
@@ -80,6 +157,274 @@ def _FormatAngelApiError(Response, DefaultMessage='Angel API request failed'):
         return str(Response)
 
     return DefaultMessage
+
+
+def _GetAngelWebExecutionConfig():
+    DefaultLockPath = ANGEL_WEB_DEFAULT_LOG_DIR / 'angel_web_order.lock'
+    return {
+        'selectors_path': pathlib.Path(
+            os.environ.get('ANGEL_WEB_SELECTORS_PATH', str(ANGEL_WEB_DEFAULT_SELECTORS_PATH))
+        ).expanduser().resolve(),
+        'profile_dir': pathlib.Path(
+            os.environ.get('ANGEL_WEB_PROFILE_DIR', str(ANGEL_WEB_DEFAULT_PROFILE_DIR))
+        ).expanduser().resolve(),
+        'log_dir': pathlib.Path(
+            os.environ.get('ANGEL_WEB_LOG_DIR', str(ANGEL_WEB_DEFAULT_LOG_DIR))
+        ).expanduser().resolve(),
+        'instrument_file': pathlib.Path(
+            os.environ.get('ANGEL_WEB_INSTRUMENT_FILE', str(ANGEL_WEB_DEFAULT_INSTRUMENT_FILE))
+        ).expanduser().resolve(),
+        'login_credentials_file': pathlib.Path(
+            os.environ.get('ANGEL_WEB_LOGIN_CREDENTIALS_PATH', str(ANGEL_WEB_DEFAULT_LOGIN_CREDENTIALS_FILE))
+        ).expanduser().resolve(),
+        'otp_file': pathlib.Path(
+            os.environ.get('ANGEL_WEB_LOGIN_OTP_PATH', str(ANGEL_WEB_DEFAULT_LOGIN_OTP_FILE))
+        ).expanduser().resolve(),
+        'otp_timeout_seconds': int(os.environ.get('ANGEL_WEB_OTP_TIMEOUT_SECONDS', '120')),
+        'otp_poll_interval': float(os.environ.get('ANGEL_WEB_OTP_POLL_INTERVAL', '1.0')),
+        'debugger_address': (os.environ.get('ANGEL_WEB_DEBUGGER_ADDRESS', ANGEL_WEB_DEFAULT_DEBUGGER_ADDRESS) or '').strip() or None,
+        'url': os.environ.get('ANGEL_WEB_URL', ANGEL_WEB_APP_URL),
+        'watchlist_index': int(os.environ.get('ANGEL_WEB_WATCHLIST_INDEX', '4')),
+        'lock_path': pathlib.Path(
+            os.environ.get('ANGEL_WEB_LOCK_PATH', str(DefaultLockPath))
+        ).expanduser().resolve(),
+        'lock_timeout_seconds': float(os.environ.get('ANGEL_WEB_LOCK_TIMEOUT_SECONDS', '30')),
+    }
+
+
+@contextmanager
+def _AcquireAngelBrowserExecutionLock(OrderDetails, Config):
+    LockPath = pathlib.Path(Config['lock_path'])
+    TimeoutSeconds = max(float(Config.get('lock_timeout_seconds', 0) or 0), 0.0)
+
+    if not _SupportsOsFileLock():
+        raise RuntimeError('Angel browser execution lock is not supported on this platform.')
+
+    LockPath.parent.mkdir(parents=True, exist_ok=True)
+    LockFile = LockPath.open('a+', encoding='utf-8')
+    StartTime = time.time()
+    Acquired = False
+
+    try:
+        while True:
+            try:
+                _TryAcquireOsFileLock(LockFile)
+                Acquired = True
+                _WriteAngelBrowserLockMetadata(
+                    LockFile,
+                    {
+                        'pid': os.getpid(),
+                        'user': OrderDetails.get('User'),
+                        'symbol': OrderDetails.get('Tradingsymbol'),
+                        'exchange': OrderDetails.get('Exchange'),
+                        'acquired_at': datetime.now().isoformat(),
+                    },
+                )
+                _LogAngelStep(
+                    "Acquired Angel browser execution lock",
+                    OrderDetails,
+                    lock_path=str(LockPath),
+                    timeout_seconds=TimeoutSeconds,
+                )
+                break
+            except (BlockingIOError, OSError):
+                if (time.time() - StartTime) >= TimeoutSeconds:
+                    raise TimeoutError(
+                        f"Angel browser execution is busy. lock_path={LockPath} timeout={TimeoutSeconds:.1f}s"
+                    )
+                time.sleep(0.25)
+
+        yield
+    finally:
+        if Acquired:
+            try:
+                if msvcrt is not None and fcntl is None:
+                    LockFile.seek(1)
+                    LockFile.truncate()
+                else:
+                    LockFile.seek(0)
+                    LockFile.truncate()
+                _ReleaseOsFileLock(LockFile)
+                _LogAngelStep("Released Angel browser execution lock", OrderDetails, lock_path=str(LockPath))
+            except Exception:
+                Logger.exception("Failed to release Angel browser execution lock")
+        LockFile.close()
+
+
+def _BuildAngelWebOrderPayload(OrderDetails):
+    Payload = {
+        'exchange': str(OrderDetails['Exchange']).upper(),
+        'symbol': str(OrderDetails['Tradingsymbol']).replace(' ', '').upper(),
+        'side': str(OrderDetails['Tradetype']).upper(),
+        'quantity': int(OrderDetails['Quantity']),
+        'product': str(OrderDetails['Product']).upper(),
+        'order_type': str(OrderDetails['Ordertype']).upper(),
+        'validity': str(OrderDetails.get('Validity', 'DAY')).upper(),
+        'price': None,
+        'trigger_price': None,
+        'submit_live': True,
+        'allow_manual_login': False,
+    }
+
+    if Payload['order_type'] != 'MARKET':
+        Price = OrderDetails.get('Price')
+        if Price not in (None, '', '0'):
+            Payload['price'] = float(Price)
+
+    return Payload
+
+
+def _ShouldUseAngelBrowserRoute(OrderDetails):
+    return str(OrderDetails.get('Exchange', '')).strip().upper() == 'NCDEX'
+
+
+@contextmanager
+def _AcquireAngelBrowserFifoTurn(OrderDetails):
+    global _ANGEL_BROWSER_FIFO_NEXT_TICKET
+    global _ANGEL_BROWSER_FIFO_SERVING_TICKET
+
+    with _ANGEL_BROWSER_FIFO_CONDITION:
+        Ticket = _ANGEL_BROWSER_FIFO_NEXT_TICKET
+        _ANGEL_BROWSER_FIFO_NEXT_TICKET += 1
+        PendingAhead = max(Ticket - _ANGEL_BROWSER_FIFO_SERVING_TICKET, 0)
+        _LogAngelStep(
+            "Queued Angel browser request for FIFO execution",
+            OrderDetails,
+            fifo_ticket=Ticket,
+            pending_ahead=PendingAhead,
+        )
+
+        while Ticket != _ANGEL_BROWSER_FIFO_SERVING_TICKET:
+            _ANGEL_BROWSER_FIFO_CONDITION.wait()
+
+        _LogAngelStep("Starting Angel browser FIFO turn", OrderDetails, fifo_ticket=Ticket)
+
+    try:
+        yield
+    finally:
+        with _ANGEL_BROWSER_FIFO_CONDITION:
+            if Ticket == _ANGEL_BROWSER_FIFO_SERVING_TICKET:
+                _ANGEL_BROWSER_FIFO_SERVING_TICKET += 1
+            _ANGEL_BROWSER_FIFO_CONDITION.notify_all()
+            _LogAngelStep(
+                "Completed Angel browser FIFO turn",
+                OrderDetails,
+                fifo_ticket=Ticket,
+                next_ticket=_ANGEL_BROWSER_FIFO_SERVING_TICKET,
+            )
+
+
+def PlaceOrderAngelBrowser(OrderDetails):
+    Config = _GetAngelWebExecutionConfig()
+    _LogAngelStep(
+        "Routing Angel order to browser execution",
+        OrderDetails,
+        debugger_address=Config['debugger_address'],
+        lock_path=str(Config['lock_path']),
+        lock_timeout_seconds=Config['lock_timeout_seconds'],
+        watchlist_index=Config['watchlist_index'],
+        selectors_path=str(Config['selectors_path']),
+    )
+
+    try:
+        with _AcquireAngelBrowserExecutionLock(OrderDetails, Config):
+            SelectorConfig = LoadAngelWebJson(Config['selectors_path'])
+            GuardResult = InspectAngelBrowserSession(
+                selector_config=SelectorConfig,
+                debugger_address=Config['debugger_address'],
+                profile_dir=Config['profile_dir'],
+                log_dir=Config['log_dir'],
+                url=Config['url'],
+                chrome_binary=None,
+                headless=False,
+                attach_only=True,
+                seed_watchlist=False,
+                attempt_login=True,
+                login_credentials_file=Config['login_credentials_file'],
+                otp_file=Config['otp_file'],
+                otp_timeout_seconds=Config['otp_timeout_seconds'],
+                otp_poll_interval=Config['otp_poll_interval'],
+                instrument_file=Config['instrument_file'],
+                watchlist_index=Config['watchlist_index'],
+                min_days_to_expiry=6,
+                max_items=50,
+            )
+            if GuardResult.get('status') == 'BROWSER_UNAVAILABLE':
+                OrderDetails['LastOrderError'] = (
+                    f"Angel browser session is not ready: {GuardResult.get('status')}"
+                )
+                _LogAngelStep(
+                    "Angel browser session unavailable",
+                    OrderDetails,
+                    Level='error',
+                    guard=GuardResult,
+                )
+                return None
+
+            Payload = _BuildAngelWebOrderPayload(OrderDetails)
+            OrderRequest = NormalizeAngelWebOrderPayload(Payload, submit_live_override=True)
+            Candidate = ResolveAngelWatchlistCandidate(
+                Config['instrument_file'],
+                OrderRequest.symbol,
+                exchange=OrderRequest.exchange,
+            )
+
+            Bot = AngelWebOrderBot(
+                SelectorConfig,
+                url=Config['url'],
+                profile_dir=Config['profile_dir'],
+                log_dir=Config['log_dir'],
+                debugger_address=Config['debugger_address'],
+                attach_only=True,
+                keep_open=True,
+                login_credentials_file=Config['login_credentials_file'],
+                otp_file=Config['otp_file'],
+                otp_timeout_seconds=Config['otp_timeout_seconds'],
+                otp_poll_interval=Config['otp_poll_interval'],
+            )
+            with Bot:
+                Result = Bot.place_order(
+                    OrderRequest,
+                    candidate=Candidate,
+                    watchlist_index=Config['watchlist_index'],
+                )
+
+        if Result.get('status') != 'submitted':
+            FailureMessage = Result.get('message') or f"Status={Result.get('status')}"
+            OrderDetails['LastOrderError'] = (
+                f"Angel browser order was not submitted. {FailureMessage}"
+            )
+            _LogAngelStep(
+                "Angel browser order did not submit",
+                OrderDetails,
+                Level='error',
+                result=Result,
+            )
+            return None
+
+        OrderDetails['ExecutionRoute'] = 'ANGEL_WEB'
+        ResultMessage = Result.get('message') or ''
+        if 'order scheduled' in ResultMessage.lower():
+            OrderDetails['OrderId'] = 'ANGEL_WEB_SCHEDULED'
+        else:
+            OrderDetails['OrderId'] = 'ANGEL_WEB_SUBMITTED'
+        OrderDetails['BrowserOrderArtifacts'] = Result.get('artifacts')
+        _LogAngelStep("Angel browser order submitted", OrderDetails, browser_result=Result)
+        return Result
+    except TimeoutError as Exc:
+        OrderDetails['LastOrderError'] = str(Exc)
+        _LogAngelStep(
+            "Angel browser execution lock unavailable",
+            OrderDetails,
+            Level='error',
+            lock_path=str(Config['lock_path']),
+            lock_timeout_seconds=Config['lock_timeout_seconds'],
+        )
+        return None
+    except Exception as Exc:
+        OrderDetails['LastOrderError'] = str(Exc)
+        Logger.exception("Unhandled exception during Angel browser order placement")
+        return None
 
 def ConfigureNetDirectionOfTrade(OrderDetails):
     if OrderDetails['Tradetype'].strip().upper() == 'BUY':
@@ -600,9 +945,133 @@ def ModifyAngeOrder(smartAPI, OrderDetails):
     _LogAngelStep("Received Angel modify order response", OrderDetails, modify_response=response)
 
 
-def ControlOrderFlowAngel(OrderDetails):
-    # This function orchestrates the entire order flow for Angel, from contract selection to order placement
-    _LogAngelStep("Starting Angel order flow", OrderDetails)
+def _ExecuteAngelBrowserOrderFlow(smartAPI, OrderDetails):
+    BrowserPlacements = []
+    BrowserResult = PlaceOrderAngelBrowser(OrderDetails)
+    if not BrowserResult:
+        _LogAngelStep("Stopping Angel flow after browser order placement failure", OrderDetails, Level='error')
+        return None
+    BrowserPlacements.append(BrowserResult)
+
+    if OrderDetails.get('ReEnterOrderLoop') == 'True':
+        PrepareInstrumentContractName(smartAPI,OrderDetails)
+        if OrderDetails.get('LastOrderError'):
+            _LogAngelStep("Stopping Angel browser re-entry flow after contract resolution failure", OrderDetails, Level='error')
+            return {
+                'status': 'partial_failure',
+                'placements': BrowserPlacements,
+                'error': OrderDetails.get('LastOrderError'),
+            }
+        
+        OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
+        if OrderDetails.get('LastOrderError'):
+            _LogAngelStep("Stopping Angel browser re-entry flow after LTP failure", OrderDetails, Level='error')
+            return {
+                'status': 'partial_failure',
+                'placements': BrowserPlacements,
+                'error': OrderDetails.get('LastOrderError'),
+            }
+        BrowserReEntryResult = PlaceOrderAngelBrowser(OrderDetails)
+        if not BrowserReEntryResult:
+            _LogAngelStep("Stopping Angel browser re-entry flow after order placement failure", OrderDetails, Level='error')
+            return {
+                'status': 'partial_failure',
+                'placements': BrowserPlacements,
+                'error': OrderDetails.get('LastOrderError'),
+            }
+        BrowserPlacements.append(BrowserReEntryResult)
+
+    WarningMessage = None
+    if str(OrderDetails.get('ConvertToMarketOrder', '')).upper() == 'TRUE' and str(OrderDetails['Ordertype']).upper() != 'MARKET':
+        WarningMessage = (
+            'Angel browser routing submitted the initial limit order only; '
+            'post-submit limit-to-market conversion is not supported in this route.'
+        )
+        OrderDetails['LastOrderWarning'] = WarningMessage
+        _LogAngelStep("Angel browser route skipped post-submit limit conversion", OrderDetails, Level='warning')
+
+    ResultPayload = {
+        'status': 'submitted',
+        'placements': BrowserPlacements,
+    }
+    if WarningMessage:
+        ResultPayload['warning'] = WarningMessage
+
+    _LogAngelStep("Completed Angel browser order flow", OrderDetails, placements=len(BrowserPlacements))
+    return ResultPayload
+
+
+def _ExecuteAngelSmartApiOrderFlow(smartAPI, OrderDetails):
+    OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
+    if not OrderIdDetails:
+        _LogAngelStep("Stopping Angel flow after SmartAPI order placement failure", OrderDetails, Level='error')
+        return None
+
+    OrderDetails['OrderId'] = OrderIdDetails
+    _LogAngelStep("Angel SmartAPI order id assigned to request", OrderDetails)
+
+    if OrderDetails['Ordertype'] == 'MARKET':
+        if OrderDetails.get('ReEnterOrderLoop') == 'True':
+            PrepareInstrumentContractName(smartAPI,OrderDetails)
+            if OrderDetails.get('LastOrderError'):
+                _LogAngelStep("Stopping Angel SmartAPI re-entry flow after contract resolution failure", OrderDetails, Level='error')
+                return None
+            
+            OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
+            if OrderDetails.get('LastOrderError'):
+                _LogAngelStep("Stopping Angel SmartAPI re-entry flow after LTP failure", OrderDetails, Level='error')
+                return None
+            OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
+            if not OrderIdDetails:
+                _LogAngelStep("Stopping Angel SmartAPI re-entry flow after order placement failure", OrderDetails, Level='error')
+                return None
+            OrderDetails['OrderId'] = OrderIdDetails
+            _LogAngelStep("Completed Angel SmartAPI re-entry flow", OrderDetails)
+            return OrderDetails  
+        _LogAngelStep("Completed Angel SmartAPI market order flow", OrderDetails)
+        return OrderIdDetails
+    else:
+        if OrderDetails['ConvertToMarketOrder'] == 'True':
+            if int(OrderDetails['Netposition']) != 0:
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+            else:
+                print(f'Waiting for {OrderDetails["ExitSleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['ExitSleepDuration']))
+            _LogAngelStep("Finished Angel SmartAPI wait before market conversion", OrderDetails)
+            
+            OrderDetails['Ordertype'] = 'MARKET'
+            OrderDetails['Price'] = '0'
+            ModifyAngeOrder(smartAPI,OrderDetails)
+
+            if OrderDetails.get('ReEnterOrderLoop') == 'True':
+                OrderDetails['Ordertype'] = 'LIMIT'
+                PrepareInstrumentContractName(smartAPI, OrderDetails)                
+                if OrderDetails.get('LastOrderError'):
+                    _LogAngelStep("Stopping Angel SmartAPI rollover flow after contract resolution failure", OrderDetails, Level='error')
+                    return None
+                OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
+                if OrderDetails.get('LastOrderError'):
+                    _LogAngelStep("Stopping Angel SmartAPI rollover flow after LTP failure", OrderDetails, Level='error')
+                    return None
+                OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
+                if not OrderIdDetails:
+                    _LogAngelStep("Stopping Angel SmartAPI rollover flow after order placement failure", OrderDetails, Level='error')
+                    return None
+                OrderDetails['OrderId'] = OrderIdDetails
+                
+                OrderDetails['Ordertype'] = 'MARKET'
+                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
+                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
+                ModifyAngeOrder(smartAPI,OrderDetails)
+                
+                _LogAngelStep("Completed Angel SmartAPI rollover flow", OrderDetails)
+                return OrderDetails
+        _LogAngelStep("Completed Angel SmartAPI limit order flow", OrderDetails)
+        return OrderIdDetails
+
+
+def _ControlOrderFlowAngelCore(OrderDetails):
     smartAPI = EstablishConnectionAngelAPI(OrderDetails)
     OrderDetails.pop('LastOrderError', None)
 
@@ -622,74 +1091,20 @@ def ControlOrderFlowAngel(OrderDetails):
         _LogAngelStep("Stopping Angel flow after LTP failure", OrderDetails, Level='error')
         return None
 
-    OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
-    if not OrderIdDetails:
-        _LogAngelStep("Stopping Angel flow after order placement failure", OrderDetails, Level='error')
-        return None
+    if _ShouldUseAngelBrowserRoute(OrderDetails):
+        _LogAngelStep("Selected Angel browser execution route", OrderDetails)
+        return _ExecuteAngelBrowserOrderFlow(smartAPI, OrderDetails)
 
-    OrderDetails['OrderId'] = OrderIdDetails
-    _LogAngelStep("Angel order id assigned to request", OrderDetails)
+    _LogAngelStep("Selected Angel SmartAPI execution route", OrderDetails)
+    return _ExecuteAngelSmartApiOrderFlow(smartAPI, OrderDetails)
 
-    #IF few orders remain to be placed due to difference in contract name, then reenter the loop with updated quantity
 
-    if OrderDetails['Ordertype'] == 'MARKET':
-        if OrderDetails.get('ReEnterOrderLoop') == 'True':
-            PrepareInstrumentContractName(smartAPI,OrderDetails)
-            if OrderDetails.get('LastOrderError'):
-                _LogAngelStep("Stopping Angel re-entry flow after contract resolution failure", OrderDetails, Level='error')
-                return None
-            
-            OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
-            if OrderDetails.get('LastOrderError'):
-                _LogAngelStep("Stopping Angel re-entry flow after LTP failure", OrderDetails, Level='error')
-                return None
-            OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
-            if not OrderIdDetails:
-                _LogAngelStep("Stopping Angel re-entry flow after order placement failure", OrderDetails, Level='error')
-                return None
-            OrderDetails['OrderId'] = OrderIdDetails
-            _LogAngelStep("Completed Angel re-entry flow", OrderDetails)
-            return OrderDetails  
-        _LogAngelStep("Completed Angel market order flow", OrderDetails)
-        return OrderIdDetails
-    else:
-        if OrderDetails['ConvertToMarketOrder'] == 'True':
-            if int(OrderDetails['Netposition']) != 0:
-                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
-                #Sleep for the designated time
-                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
-            else:
-                print(f'Waiting for {OrderDetails["ExitSleepDuration"]} seconds')
-                #Sleep for the designated time
-                SleepForRequiredTime(int(OrderDetails['ExitSleepDuration']))
-            _LogAngelStep("Finished Angel wait before market conversion", OrderDetails)
-            
-            OrderDetails['Ordertype'] = 'MARKET'
-            OrderDetails['Price'] = '0'
-            ModifyAngeOrder(smartAPI,OrderDetails)
+def ControlOrderFlowAngel(OrderDetails):
+    # This function orchestrates the entire order flow for Angel, from contract selection to order placement
+    _LogAngelStep("Starting Angel order flow", OrderDetails)
 
-            if OrderDetails.get('ReEnterOrderLoop') == 'True':
-                OrderDetails['Ordertype'] = 'LIMIT'
-                PrepareInstrumentContractName(smartAPI, OrderDetails)                
-                if OrderDetails.get('LastOrderError'):
-                    _LogAngelStep("Stopping Angel rollover flow after contract resolution failure", OrderDetails, Level='error')
-                    return None
-                OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
-                if OrderDetails.get('LastOrderError'):
-                    _LogAngelStep("Stopping Angel rollover flow after LTP failure", OrderDetails, Level='error')
-                    return None
-                OrderIdDetails = PlaceOrderAngelAPI(smartAPI, OrderDetails)
-                if not OrderIdDetails:
-                    _LogAngelStep("Stopping Angel rollover flow after order placement failure", OrderDetails, Level='error')
-                    return None
-                OrderDetails['OrderId'] = OrderIdDetails
-                
-                OrderDetails['Ordertype'] = 'MARKET'
-                print(f'Waiting for {OrderDetails["EntrySleepDuration"]} seconds')
-                SleepForRequiredTime(int(OrderDetails['EntrySleepDuration']))
-                ModifyAngeOrder(smartAPI,OrderDetails)
-                
-                _LogAngelStep("Completed Angel rollover flow", OrderDetails)
-                return OrderDetails  
-        _LogAngelStep("Completed Angel limit order flow", OrderDetails)
-        return OrderIdDetails
+    if _ShouldUseAngelBrowserRoute(OrderDetails):
+        with _AcquireAngelBrowserFifoTurn(OrderDetails):
+            return _ControlOrderFlowAngelCore(OrderDetails)
+
+    return _ControlOrderFlowAngelCore(OrderDetails)
