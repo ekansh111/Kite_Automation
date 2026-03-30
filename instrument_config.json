@@ -177,11 +177,11 @@
       }
     },
     "ALUMINIUM": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "MCX",
       "broker": "ZERODHA",
       "user": "YD6016",
-      "point_value": 1,
+      "point_value": 5000,
       "daily_vol_target": 40219,
 
       "FDM": 1.1,
@@ -189,6 +189,11 @@
       "position_inertia_pct": 0.10,
       "subsystems": {
         "S60A": 1.00
+      },
+      "system_name_map": {
+        "S60A_Aluminium": "S60A",
+        "AUTO_S60A_Aluminium": "S60A",
+        "AUTO2_S60A_ALUMINIUM": "S60A"
       },
       "order_routing": {
         "InstrumentType": "FUT",
@@ -322,23 +327,34 @@
       }
     },
     "DHANIYA": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
-      "point_value": 200,
+      "point_value": 50,
       "daily_vol_target": 36465,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S60B": 0.34,
-        "S30A": 0.33,
-        "S45A": 0.33
+        "S45A": 0.34,
+        "S30C": 0.33,
+        "S30A": 0.33
+      },
+      "system_name_map": {
+        "S45A_Dhaniya": "S45A",
+        "S30C_Dhaniya": "S30C",
+        "S30A_Dhaniya": "S30A",
+        "AUTO_S45A_Dhaniya": "S45A",
+        "AUTO_S30C_Dhaniya": "S30C",
+        "AUTO_S30A_Dhaniya": "S30A",
+        "AUTO2_DHANIA_S45A": "S45A",
+        "AUTO2_DHANIYA_S30C": "S30C",
+        "AUTO2_DHANIYA_S30A": "S30A"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -359,23 +375,38 @@
       }
     },
     "GUARSEED": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
-      "point_value": 100,
+      "point_value": 50,
       "daily_vol_target": 36465,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S60B": 0.34,
-        "S30A": 0.33,
-        "S45A": 0.33
+        "S75A": 0.25,
+        "S60C": 0.25,
+        "S30C": 0.25,
+        "S30A": 0.25
+      },
+      "system_name_map": {
+        "S75A_GuarGum": "S75A",
+        "S60C_GuarGum": "S60C",
+        "S30C_GuarGum": "S30C",
+        "S30A_GuarGum": "S30A",
+        "AUTO_S75A_GuarGum": "S75A",
+        "AUTO_S60C_GuarGum": "S60C",
+        "AUTO_S30C_GuarGum": "S30C",
+        "AUTO_S30A_GuarGum": "S30A",
+        "AUTO2_GUARGUM_S75A": "S75A",
+        "AUTO2_GUARSEED_S60C": "S60C",
+        "AUTO2_GUARSEED_S30C": "S30C",
+        "AUTO2_GUARSEED_S30A": "S30A"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -396,22 +427,34 @@
       }
     },
     "CASTOR": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
-      "point_value": 100,
+      "point_value": 50,
       "daily_vol_target": 36465,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S60B": 0.50,
-        "S30A": 0.50
+        "S60E": 0.34,
+        "S30C": 0.33,
+        "S30A": 0.33
+      },
+      "system_name_map": {
+        "S60E_Castor": "S60E",
+        "S30C_Castor": "S30C",
+        "S30A_Castor": "S30A",
+        "AUTO_S60E_Castor": "S60E",
+        "AUTO_S30C_Castor": "S30C",
+        "AUTO_S30A_Castor": "S30A",
+        "AUTO2_CASTOR_S60E": "S60E",
+        "AUTO2_CASTOR_S30C": "S30C",
+        "AUTO2_CASTOR_S30A": "S30A"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -432,7 +475,7 @@
       }
     },
     "COCUDAKL": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
@@ -443,12 +486,23 @@
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S60B": 0.34,
-        "S30A": 0.33,
-        "S45A": 0.33
+        "S60A": 0.34,
+        "S30C": 0.33,
+        "S30A": 0.33
+      },
+      "system_name_map": {
+        "S60A_Cocudakl": "S60A",
+        "S30C_Cocudakl": "S30C",
+        "S30A_Cocudakl": "S30A",
+        "AUTO_S60A_Cocudakl": "S60A",
+        "AUTO_S30C_Cocudakl": "S30C",
+        "AUTO_S30A_Cocudakl": "S30A",
+        "AUTO2_COCUDAKL_S60A": "S60A",
+        "AUTO2_COCUDAKL_S30C": "S30C",
+        "AUTO2_COCUDAKL_S30A": "S30A"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -469,21 +523,27 @@
       }
     },
     "TURMERIC": {
-      "enabled": false,
-      "exchange": "MCX",
+      "enabled": true,
+      "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
-      "point_value": 100,
+      "point_value": 50,
       "daily_vol_target": 36465,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "SA": 1.00
+        "S60C": 1.00
+      },
+      "system_name_map": {
+        "S60C_TMC": "S60C",
+        "S60C_Turmeric": "S60C",
+        "AUTO_S60C_TMC": "S60C",
+        "AUTO2_TMC_S60C": "S60C"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -492,7 +552,7 @@
         "ExitSleepDuration": "45",
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
-        "QuantityMultiplier": 10
+        "QuantityMultiplier": 5
       },
       "rollover": {
         "enabled": true,
@@ -504,21 +564,30 @@
       }
     },
     "JEERA": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
       "user": "E51339915",
-      "point_value": 500,
+      "point_value": 30,
       "daily_vol_target": 36465,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S60A": 1.00
+        "S90A": 0.50,
+        "S60B": 0.50
+      },
+      "system_name_map": {
+        "S90A_Jeera": "S90A",
+        "S60B_Jeera": "S60B",
+        "AUTO_S90A_Jeera": "S90A",
+        "AUTO_S60B_Jeera": "S60B",
+        "AUTO2_JEERA_S90A": "S90A",
+        "AUTO2_JEERA_S60B": "S60B"
       },
       "order_routing": {
-        "InstrumentType": "FUT",
+        "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
         "Validity": "DAY",
@@ -528,6 +597,14 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 3
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
       }
     },
     "NIFTY": {
