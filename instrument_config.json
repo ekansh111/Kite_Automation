@@ -354,6 +354,8 @@
         "AUTO2_DHANIYA_S30A": "S30A"
       },
       "order_routing": {
+        "ContractLookupName": "DHANIYA",
+        "ReconciliationPrefixes": ["DHANIYA"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
@@ -380,32 +382,72 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 36465,
+      "daily_vol_target": 24126,
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S75A": 0.25,
-        "S60C": 0.25,
-        "S30C": 0.25,
-        "S30A": 0.25
+        "S60C": 0.34,
+        "S30C": 0.33,
+        "S30A": 0.33
       },
       "system_name_map": {
-        "S75A_GuarGum": "S75A",
-        "S60C_GuarGum": "S60C",
-        "S30C_GuarGum": "S30C",
-        "S30A_GuarGum": "S30A",
-        "AUTO_S75A_GuarGum": "S75A",
-        "AUTO_S60C_GuarGum": "S60C",
-        "AUTO_S30C_GuarGum": "S30C",
-        "AUTO_S30A_GuarGum": "S30A",
-        "AUTO2_GUARGUM_S75A": "S75A",
+        "S60C_Guarseed": "S60C",
+        "S30C_Guarseed": "S30C",
+        "S30A_Guarseed": "S30A",
+        "AUTO_S60C_Guarseed": "S60C",
+        "AUTO_S30C_Guarseed": "S30C",
+        "AUTO_S30A_Guarseed": "S30A",
         "AUTO2_GUARSEED_S60C": "S60C",
         "AUTO2_GUARSEED_S30C": "S30C",
         "AUTO2_GUARSEED_S30A": "S30A"
       },
       "order_routing": {
+        "ContractLookupName": "GUARSEED10",
+        "ReconciliationPrefixes": ["GUARSEED10"],
+        "InstrumentType": "FUTCOM",
+        "Variety": "NORMAL",
+        "Product": "CARRYFORWARD",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "9",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 5
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 5,
+        "execute_days_before_expiry": 4,
+        "preferred_window_start": "10:30",
+        "preferred_window_end": "13:00",
+        "liquidity_urgency": "high"
+      }
+    },
+    "GUARGUM": {
+      "enabled": true,
+      "exchange": "NCDEX",
+      "broker": "ANGEL",
+      "user": "E51339915",
+      "point_value": 50,
+      "daily_vol_target": 14000,
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S75A": 1.00
+      },
+      "system_name_map": {
+        "S75A_GuarGum": "S75A",
+        "AUTO_S75A_GuarGum": "S75A",
+        "AUTO2_GUARGUM_S75A": "S75A"
+      },
+      "order_routing": {
+        "ContractLookupName": "GUARGUM5",
+        "ReconciliationPrefixes": ["GUARGUM5"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
@@ -454,6 +496,8 @@
         "AUTO2_CASTOR_S30A": "S30A"
       },
       "order_routing": {
+        "ContractLookupName": "CASTOR",
+        "ReconciliationPrefixes": ["CASTOR"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
@@ -502,6 +546,8 @@
         "AUTO2_COCUDAKL_S30A": "S30A"
       },
       "order_routing": {
+        "ContractLookupName": "COCUDAKL",
+        "ReconciliationPrefixes": ["COCUDAKL"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
@@ -543,6 +589,8 @@
         "AUTO2_TMC_S60C": "S60C"
       },
       "order_routing": {
+        "ContractLookupName": "TMCFGRNZM",
+        "ReconciliationPrefixes": ["TMCFGRNZM"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
@@ -587,6 +635,8 @@
         "AUTO2_JEERA_S60B": "S60B"
       },
       "order_routing": {
+        "ContractLookupName": "JEERAUNJHA",
+        "ReconciliationPrefixes": ["JEERAUNJHA"],
         "InstrumentType": "FUTCOM",
         "Variety": "NORMAL",
         "Product": "CARRYFORWARD",
