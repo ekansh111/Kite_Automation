@@ -34,7 +34,8 @@ from Set_Gtt_Exit import Set_Gtt
 from Holidays import CheckForDateHoliday
 from Directories import WorkDirectory
 from smart_chase import SmartChaseExecute
-from forecast_db import LogOptionsSmartChaseOrder
+from forecast_db import LogOptionsSmartChaseOrder, UpdateCostBasis, RealizePnl, GetCumulativeRealizedPnl
+from vol_target import compute_daily_vol_target
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -1869,15 +1870,30 @@ STRATEGY_CONFIGS = {
     },
 }
 
-# Daily vol budgets per underlying (INR) - configurable
-DAILY_VOL_BUDGETS = {
-    "NIFTY": 63984,
-    "SENSEX": 63984,
-}
+# Daily vol budgets per underlying (INR) — computed from instrument_config.json
+_INSTRUMENT_CONFIG_PATH = Path(__file__).parent / "instrument_config.json"
 
-# Portfolio-level cap across all underlyings (INR)
-# Set to sum of individual budgets by default. Lower this for tighter control.
-PORTFOLIO_DAILY_VOL_CAP = 127968
+
+def _load_vol_budgets():
+    """Compute options daily vol budgets from effective capital (base + realized P&L)."""
+    with open(_INSTRUMENT_CONFIG_PATH) as f:
+        cfg = json.load(f)
+    acct = cfg["account"]
+    base_capital = acct["base_capital"]
+    cumulative_pnl = GetCumulativeRealizedPnl()
+    effective_capital = base_capital + cumulative_pnl
+    logger.info("Options effective capital: base=%d + pnl=%.0f = %.0f",
+                base_capital, cumulative_pnl, effective_capital)
+    budgets = {}
+    for underlying, opt_cfg in cfg.get("options_allocation", {}).items():
+        budgets[underlying] = compute_daily_vol_target(
+            effective_capital, acct["annual_vol_target_pct"],
+            opt_cfg["vol_weights"]
+        )
+    return budgets, sum(budgets.values())
+
+
+DAILY_VOL_BUDGETS, PORTFOLIO_DAILY_VOL_CAP = _load_vol_budgets()
 
 
 # ---------------------------------------------------------------------------
@@ -2032,6 +2048,11 @@ def resetCompletedCycleIfNewExpiry(state, underlying, nextExpiryDate):
                 print(f"[V2 RUNNER] {underlying}: letExpire safety net - expiry {positionExpiryStr} "
                       f"has passed, auto-transitioning to completedCycle")
                 currentLots = state[underlying].get("activeLots", 0)
+                # Realize P&L at exit_price=0 (expired worthless)
+                activeQty = state[underlying].get("activeQuantity", 0)
+                if activeQty > 0:
+                    RealizePnl(f"{underlying}_OPT_CE", 0, activeQty, 1.0, "options", WasLong=False)
+                    RealizePnl(f"{underlying}_OPT_PE", 0, activeQty, 1.0, "options", WasLong=False)
                 logExit(activeStrat, currentState, "letExpire_autoReset",
                         currentLots, 0, exitStatus="expired_late", failedLegs=[])
                 transitionToExit(state, underlying, "letExpire_autoReset")
@@ -2449,6 +2470,10 @@ def executeTimeExit(underlying, state, kite, forceIdempotency=False):
                 accepted = True
                 LogOptionsSmartChaseOrder(underlying, strategyName, leg, contract, "BUY",
                                          quantity, orderId, exitFillInfo)
+                # Realize P&L for this leg (options are always short — WasLong=False)
+                exitFillPrice = exitFillInfo.get("fill_price", 0)
+                if exitFillPrice > 0:
+                    RealizePnl(f"{underlying}_OPT_{leg}", exitFillPrice, quantity, 1.0, "options", WasLong=False)
                 print(f"[EXIT] {underlying}: BUY {contract} orderId={orderId} "
                       f"filled via smart chase, price={exitFillInfo.get('fill_price')}")
             else:
@@ -2694,6 +2719,10 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
                                 f"iterations={ceFillInfo.get('chase_iterations')}")
             LogOptionsSmartChaseOrder(underlying, strategyName, "CE", ceSymbol, "SELL",
                                      totalQuantity, ceOrderId, ceFillInfo)
+            # Track cost basis for CE leg
+            ceFillPrice = ceFillInfo.get("fill_price", 0)
+            if ceFillPrice > 0:
+                UpdateCostBasis(f"{underlying}_OPT_CE", ceFillPrice, totalQuantity, 1.0)
         else:
             ceOrderId = order(ceOrderDetails)
         contracts.append(ceSymbol)
@@ -2721,6 +2750,10 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
                                 f"iterations={peFillInfo.get('chase_iterations')}")
             LogOptionsSmartChaseOrder(underlying, strategyName, "PE", peSymbol, "SELL",
                                      totalQuantity, peOrderId, peFillInfo)
+            # Track cost basis for PE leg
+            peFillPrice = peFillInfo.get("fill_price", 0)
+            if peFillPrice > 0:
+                UpdateCostBasis(f"{underlying}_OPT_PE", peFillPrice, totalQuantity, 1.0)
         else:
             peOrderId = order(peOrderDetails)
         contracts.append(peSymbol)
@@ -3083,6 +3116,11 @@ def runV2(overrideArg=None, exitArg=None, stateOnly=False, dryRun=False):
                             currentLots = state[underlying].get("activeLots", 0)
                             print(f"[V2 RUNNER] {underlying}: LET EXPIRE - {activeStratName} "
                                   f"DTE={positionDte}, skipping exit orders (saving commission)")
+                            # Realize P&L at exit_price=0 (expired worthless = full premium kept)
+                            activeQty = state[underlying].get("activeQuantity", 0)
+                            if activeQty > 0:
+                                RealizePnl(f"{underlying}_OPT_CE", 0, activeQty, 1.0, "options", WasLong=False)
+                                RealizePnl(f"{underlying}_OPT_PE", 0, activeQty, 1.0, "options", WasLong=False)
                             logExit(activeStratName, currentStateName, "letExpire",
                                     currentLots, 0, exitStatus="expired", failedLegs=[])
                             transitionToExit(state, underlying, "letExpire")

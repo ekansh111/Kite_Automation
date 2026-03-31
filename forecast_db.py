@@ -162,6 +162,21 @@ def InitDB():
 
             CREATE INDEX IF NOT EXISTS idx_rollover_lookup
                 ON rollover_log(instrument, expiry_date, status);
+
+            CREATE TABLE IF NOT EXISTS realized_pnl (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument TEXT NOT NULL,
+                category TEXT NOT NULL,
+                close_qty INTEGER NOT NULL,
+                entry_price REAL NOT NULL,
+                exit_price REAL NOT NULL,
+                point_value REAL NOT NULL,
+                pnl_inr REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_realized_pnl_instrument
+                ON realized_pnl(instrument, created_at DESC);
         """)
         Conn.commit()
 
@@ -184,6 +199,15 @@ def _RunMigrations(Conn):
     if "action" not in Cols:
         Conn.execute("ALTER TABLE tradingview_signals ADD COLUMN action TEXT")
         Logger.info("Migration: added 'action' column to tradingview_signals")
+
+    # Add cost basis columns to system_positions for P&L tracking
+    Cols = [row[1] for row in Conn.execute("PRAGMA table_info(system_positions)").fetchall()]
+    if "avg_entry_price" not in Cols:
+        Conn.execute("ALTER TABLE system_positions ADD COLUMN avg_entry_price REAL DEFAULT 0")
+        Logger.info("Migration: added 'avg_entry_price' column to system_positions")
+    if "point_value" not in Cols:
+        Conn.execute("ALTER TABLE system_positions ADD COLUMN point_value REAL DEFAULT 1")
+        Logger.info("Migration: added 'point_value' column to system_positions")
 
     Conn.commit()
 
@@ -269,25 +293,29 @@ def GetLatestATR(Instrument):
 # ─── System Positions ───────────────────────────────────────────────
 
 def GetSystemPosition(Instrument):
-    """Return target_qty and confirmed_qty for an instrument. Returns defaults if not found."""
+    """Return target_qty, confirmed_qty, avg_entry_price, point_value for an instrument."""
     Conn = _GetConn()
     Row = Conn.execute(
-        "SELECT target_qty, confirmed_qty, updated_at FROM system_positions WHERE instrument = ?",
+        "SELECT target_qty, confirmed_qty, avg_entry_price, point_value, updated_at FROM system_positions WHERE instrument = ?",
         (Instrument,)
     ).fetchone()
     if Row:
         return dict(Row)
-    return {"target_qty": 0, "confirmed_qty": 0, "updated_at": None}
+    return {"target_qty": 0, "confirmed_qty": 0, "avg_entry_price": 0, "point_value": 1, "updated_at": None}
 
 
 def UpdateSystemPosition(Instrument, TargetQty, ConfirmedQty):
-    """Upsert system position for an instrument."""
+    """Upsert system position for an instrument (preserves cost basis columns)."""
     Conn = _GetConn()
     with _DBLock:
         Conn.execute(
-            """INSERT OR REPLACE INTO system_positions
+            """INSERT INTO system_positions
                (instrument, target_qty, confirmed_qty, updated_at)
-               VALUES (?, ?, ?, datetime('now'))""",
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(instrument) DO UPDATE SET
+                   target_qty = excluded.target_qty,
+                   confirmed_qty = excluded.confirmed_qty,
+                   updated_at = excluded.updated_at""",
             (Instrument, TargetQty, ConfirmedQty)
         )
         Conn.commit()
@@ -545,3 +573,130 @@ def GetRecentRollovers(limit=20):
         (limit,)
     ).fetchall()
     return [dict(r) for r in Rows]
+
+
+# ─── Realized P&L ─────────────────────────────────────────────────
+
+
+def _UpdateAvgEntry(Instrument, AvgPrice, PointValue):
+    """Upsert avg_entry_price and point_value on system_positions row.
+
+    Creates the row if it doesn't exist (needed for options instruments
+    like NIFTY_OPT_CE which aren't tracked in the futures position table).
+    """
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            """INSERT INTO system_positions (instrument, target_qty, confirmed_qty, avg_entry_price, point_value, updated_at)
+               VALUES (?, 0, 0, ?, ?, datetime('now'))
+               ON CONFLICT(instrument) DO UPDATE SET
+                   avg_entry_price = excluded.avg_entry_price,
+                   point_value = excluded.point_value""",
+            (Instrument, AvgPrice, PointValue)
+        )
+        Conn.commit()
+
+
+def ResetCostBasis(Instrument):
+    """Clear avg_entry_price (used before opening opposite direction on a flip)."""
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            "UPDATE system_positions SET avg_entry_price = 0 WHERE instrument = ?",
+            (Instrument,)
+        )
+        Conn.commit()
+
+
+def UpdateCostBasis(Instrument, FillPrice, FillQty, PointValue, OldQty=None):
+    """Weighted-average update of cost basis when position size increases.
+
+    Parameters
+    ----------
+    Instrument : str
+        e.g. "GOLDM", "NIFTY_OPT_CE"
+    FillPrice : float
+        Price at which the new quantity was filled.
+    FillQty : int
+        Number of lots/units added (always positive).
+    PointValue : float
+        Rupees per point move (e.g. 100 for GOLDM, 1.0 for options).
+    OldQty : int or None
+        Previous position size (before this fill). If None, reads from DB.
+        Pass explicitly when confirmed_qty has already been updated.
+    """
+    Pos = GetSystemPosition(Instrument)
+    if OldQty is None:
+        OldQty = abs(Pos["confirmed_qty"])
+    OldAvg = Pos.get("avg_entry_price", 0)
+
+    if OldQty == 0 or OldAvg == 0:
+        NewAvg = FillPrice
+    else:
+        NewAvg = (OldAvg * OldQty + FillPrice * FillQty) / (OldQty + FillQty)
+
+    _UpdateAvgEntry(Instrument, NewAvg, PointValue)
+    Logger.info("CostBasis %s: old_avg=%.2f old_qty=%d + fill=%.2f×%d → new_avg=%.2f",
+                Instrument, OldAvg, OldQty, FillPrice, FillQty, NewAvg)
+
+
+def RealizePnl(Instrument, FillPrice, CloseQty, PointValue, Category, WasLong=None):
+    """Compute and log realized P&L when position size decreases.
+
+    Parameters
+    ----------
+    Instrument : str
+        e.g. "GOLDM", "NIFTY_OPT_CE"
+    FillPrice : float
+        Exit price (0 if expired worthless).
+    CloseQty : int
+        Number of lots/units closed (always positive).
+    PointValue : float
+        Rupees per point move.
+    Category : str
+        "futures" or "options".
+    WasLong : bool or None
+        If provided, overrides direction check from DB. Use when confirmed_qty
+        has already been updated before this call.
+    """
+    Pos = GetSystemPosition(Instrument)
+    AvgEntry = Pos.get("avg_entry_price", 0)
+
+    # Determine direction: explicit override or read from DB
+    if WasLong is not None:
+        IsLong = WasLong
+    else:
+        IsLong = Pos["confirmed_qty"] > 0
+
+    # Long: pnl = (exit - entry) × qty × point_value
+    # Short: pnl = (entry - exit) × qty × point_value
+    if IsLong:
+        Pnl = (FillPrice - AvgEntry) * CloseQty * PointValue
+    else:
+        Pnl = (AvgEntry - FillPrice) * CloseQty * PointValue
+
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            """INSERT INTO realized_pnl
+               (instrument, category, close_qty, entry_price, exit_price, point_value, pnl_inr)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (Instrument, Category, CloseQty, AvgEntry, FillPrice, PointValue, Pnl)
+        )
+        Conn.commit()
+    Logger.info("RealizePnl %s [%s]: entry=%.2f exit=%.2f qty=%d pv=%.2f → pnl=%.2f",
+                Instrument, Category, AvgEntry, FillPrice, CloseQty, PointValue, Pnl)
+    return Pnl
+
+
+def GetCumulativeRealizedPnl():
+    """Return the sum of all realized P&L in INR. Returns 0.0 if no rows."""
+    Conn = _GetConn()
+    Row = Conn.execute("SELECT COALESCE(SUM(pnl_inr), 0) FROM realized_pnl").fetchone()
+    return float(Row[0])
+
+
+def GetAvgEntryPrice(Instrument):
+    """Return the current average entry price for an instrument."""
+    Pos = GetSystemPosition(Instrument)
+    return Pos.get("avg_entry_price", 0)

@@ -1850,7 +1850,7 @@ class TestBuildOrderDict(unittest.TestCase):
         # Need a real orchestrator with stubbed config
         import json, tempfile
         self.cfg = {
-            "account": {"total_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
+            "account": {"base_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
             "instruments": {
                 "GOLDM": {
                     "enabled": True, "exchange": "MCX", "broker": "ZERODHA",
@@ -1947,7 +1947,7 @@ class TestSystemNameResolution(unittest.TestCase):
 
         import json, tempfile
         self.cfg = {
-            "account": {"total_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
+            "account": {"base_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
             "instruments": {
                 "GOLDM": {
                     "enabled": True, "exchange": "MCX", "broker": "ZERODHA",
@@ -2008,7 +2008,7 @@ class TestComputeAndExecute(unittest.TestCase):
 
         import json, tempfile
         self.cfg = {
-            "account": {"total_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
+            "account": {"base_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
             "instruments": {
                 "GOLDM": {
                     "enabled": True, "exchange": "MCX", "broker": "ZERODHA",
@@ -2127,7 +2127,7 @@ class TestHandleWebhook(unittest.TestCase):
 
         import json, tempfile
         self.cfg = {
-            "account": {"total_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
+            "account": {"base_capital": 10000000, "annual_vol_target_pct": 0.50, "dry_run": True},
             "instruments": {
                 "GOLDM": {
                     "enabled": True, "exchange": "MCX", "broker": "ZERODHA",

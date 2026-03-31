@@ -13,6 +13,7 @@ Architecture:
 
 import json
 import math
+import time
 import queue
 import threading
 import logging
@@ -26,8 +27,9 @@ import Kite_Server_Order_Handler as KiteHandler
 import Server_Order_Handler as AngelHandler
 from Kite_Server_Order_Handler import ControlOrderFlowKite
 from Server_Order_Handler import ControlOrderFlowAngel
-from smart_chase import SmartChaseExecute
+from smart_chase import SmartChaseExecute, _CheckOrderStatus
 from Directories import workInputRoot
+from vol_target import compute_daily_vol_target
 
 Logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -57,6 +59,22 @@ class ForecastOrchestrator:
 
         # DryRun from config JSON: if present and true → dry run, otherwise live
         self.DryRun = self.Account.get("dry_run", False)
+
+        # Compute effective capital = base_capital + cumulative realized P&L
+        BaseCapital = self.Account["base_capital"]
+        CumulativePnl = db.GetCumulativeRealizedPnl()
+        EffectiveCapital = BaseCapital + CumulativePnl
+        Logger.info("Effective capital: base=%d + pnl=%.0f = %.0f",
+                     BaseCapital, CumulativePnl, EffectiveCapital)
+
+        # Compute daily vol targets from effective capital + allocation weights
+        VolPct = self.Account["annual_vol_target_pct"]
+        for InstName, Config in self.Instruments.items():
+            VolWeights = Config.get("vol_weights")
+            if VolWeights:
+                Config["daily_vol_target"] = compute_daily_vol_target(
+                    EffectiveCapital, VolPct, VolWeights
+                )
 
         # Build reverse lookup: webhook SystemName → config subsystem key
         # e.g. "S30A_GoldM" → ("GOLDM", "S30A"), "AUTO_S30A_GoldM" → ("GOLDM", "S30A")
@@ -470,6 +488,20 @@ class ForecastOrchestrator:
                 )
 
                 if Success:
+                    # P&L tracking BEFORE position update (needs old confirmed_qty for direction)
+                    FillPrice = FillInfo.get("fill_price", 0)
+                    PointValue = Config.get("point_value", 1)
+                    if FillPrice > 0:
+                        IsFlip = Current != 0 and Target != 0 and (Current > 0) != (Target > 0)
+                        if IsFlip:
+                            db.RealizePnl(Instrument, FillPrice, abs(Current), PointValue, "futures")
+                            db.ResetCostBasis(Instrument)
+                            db.UpdateCostBasis(Instrument, FillPrice, abs(Target), PointValue)
+                        elif IsEntry:
+                            db.UpdateCostBasis(Instrument, FillPrice, abs(Delta), PointValue)
+                        else:
+                            db.RealizePnl(Instrument, FillPrice, abs(Delta), PointValue, "futures")
+
                     db.UpdateConfirmedQty(Instrument, Target)
                     db.UpdateSystemPosition(Instrument, Target, Target)
                     db.LogSmartChaseOrder(
@@ -511,6 +543,39 @@ class ForecastOrchestrator:
                         Reason=f"target={Target}, prev={Current}")
             Logger.info("%s: Order placed successfully (id=%s), confirmed_qty → %d",
                         Instrument, Result, Target)
+
+            # P&L tracking for legacy orders — fetch fill price after brief wait
+            # Current/Target captured before position update, safe to use for direction
+            PointValue = Config.get("point_value", 1)
+            IsEntry = abs(Target) > abs(Current)
+            WasLong = Current > 0
+            try:
+                time.sleep(3)
+                if Broker == "ZERODHA":
+                    LegacySession = KiteHandler.EstablishConnectionKiteAPI(OrderDict)
+                elif Broker == "ANGEL":
+                    LegacySession = AngelHandler.EstablishConnectionAngelAPI(OrderDict)
+                else:
+                    LegacySession = None
+
+                if LegacySession and Result:
+                    Status, FilledQty, _, AvgPrice = _CheckOrderStatus(LegacySession, str(Result), Broker)
+                    if Status == "COMPLETE" and AvgPrice > 0:
+                        IsFlip = Current != 0 and Target != 0 and (Current > 0) != (Target > 0)
+                        if IsFlip:
+                            db.RealizePnl(Instrument, AvgPrice, abs(Current), PointValue, "futures", WasLong=WasLong)
+                            db.ResetCostBasis(Instrument)
+                            db.UpdateCostBasis(Instrument, AvgPrice, abs(Target), PointValue)
+                        elif IsEntry:
+                            db.UpdateCostBasis(Instrument, AvgPrice, abs(Delta), PointValue,
+                                               OldQty=abs(Current))
+                        else:
+                            db.RealizePnl(Instrument, AvgPrice, abs(Delta), PointValue, "futures", WasLong=WasLong)
+                    else:
+                        Logger.warning("%s: Legacy order status=%s avg_price=%.2f, skipping P&L",
+                                       Instrument, Status, AvgPrice)
+            except Exception as PnlErr:
+                Logger.warning("%s: Failed to track P&L for legacy order: %s", Instrument, PnlErr)
 
         except Exception as e:
             # Failure: confirmed_qty stays at current value (will retry on next signal)

@@ -1,6 +1,6 @@
 {
   "account": {
-    "total_capital": 10000000,
+    "base_capital": 9999999,
     "annual_vol_target_pct": 0.50,
     "dry_run": false
   },
@@ -11,7 +11,14 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 10,
-      "daily_vol_target": 40219,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 0.5,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -69,7 +76,14 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 1,
-      "daily_vol_target": 40219,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 0.5,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -127,7 +141,14 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 1000,
-      "daily_vol_target": 40219,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 0.5,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -182,7 +203,14 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 5000,
-      "daily_vol_target": 40219,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 0.5,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -222,7 +250,13 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 1250,
-      "daily_vol_target": 73125,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 1.0,
+        "asset_DM": 3.9
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -277,7 +311,13 @@
       "broker": "ZERODHA",
       "user": "YD6016",
       "point_value": 100,
-      "daily_vol_target": 73125,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.3,
+        "sub_class_weight": 0.5,
+        "asset_weight": 1.0,
+        "asset_DM": 3.9
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -332,7 +372,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 36465,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -382,7 +428,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 24126,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.1124755357,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -432,7 +484,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 14000,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.0652680718,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -474,7 +532,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 36465,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -524,7 +588,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 100,
-      "daily_vol_target": 36465,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -574,7 +644,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 50,
-      "daily_vol_target": 36465,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -617,7 +693,13 @@
       "broker": "ANGEL",
       "user": "E51339915",
       "point_value": 30,
-      "daily_vol_target": 36465,
+      "vol_weights": {
+        "sector_weight": 0.4,
+        "sub_sector_weight": 0.4,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9,
+        "instrument_DM": 1.1
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
@@ -715,6 +797,24 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 25
+      }
+    }
+  },
+  "options_allocation": {
+    "NIFTY": {
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.35,
+        "asset_DM": 3.9,
+        "neg_skew_discount": 0.5
+      }
+    },
+    "SENSEX": {
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.35,
+        "asset_DM": 3.9,
+        "neg_skew_discount": 0.5
       }
     }
   }
