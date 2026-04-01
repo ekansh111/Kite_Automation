@@ -27,9 +27,8 @@ from collections import defaultdict
 import pandas as pd
 
 import forecast_db as db
-from Kite_Server_Order_Handler import EstablishConnectionKiteAPI
 from Server_Order_Handler import EstablishConnectionAngelAPI
-from rollover_monitor import _LoadEmailConfig, _SendEmail
+from rollover_monitor import _LoadEmailConfig, _SendEmail, _EstablishKiteSession
 from Directories import workInputRoot, ZerodhaInstrumentDirectory, AngelInstrumentDirectory
 
 Logger = logging.getLogger("daily_pnl_report")
@@ -176,7 +175,7 @@ def _FetchBrokerPositions(FullConfig):
 
     # ── Kite (Zerodha) — MCX futures ──
     try:
-        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
+        Kite = _EstablishKiteSession("YD6016")
         RawPositions = Kite.positions().get("net", [])
         for Pos in RawPositions:
             Qty = Pos.get("quantity", 0)
@@ -271,9 +270,9 @@ def _FetchBrokerPositions(FullConfig):
     except Exception as e:
         Logger.error("Angel positions fetch failed: %s", e)
 
-    # ── Options from Kite (NFO/BFO) ──
+    # ── Options from Kite OFS653 (NFO/BFO) ──
     try:
-        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
+        Kite = _EstablishKiteSession("OFS653")
         RawPositions = Kite.positions().get("net", [])
         for Pos in RawPositions:
             Qty = Pos.get("quantity", 0)
@@ -337,62 +336,63 @@ def _FetchBrokerOrders(FullConfig):
     FuturesOrders = []
     OptionsOrders = []
 
-    # ── Kite orders ──
-    try:
-        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
-        AllOrders = Kite.orders()
-        for O in AllOrders:
-            if O.get("status") != "COMPLETE":
-                continue
-            if O.get("product") != "NRML":
-                continue
-            Symbol = O.get("tradingsymbol", "")
-            Exchange = O.get("exchange", "")
-            Qty = O.get("filled_quantity", 0) or O.get("quantity", 0)
-            AvgPrice = float(O.get("average_price", 0))
-            Action = O.get("transaction_type", "")  # BUY/SELL
-            OrderTime = O.get("order_timestamp", "")
-            if isinstance(OrderTime, datetime):
-                OrderTime = OrderTime.strftime("%H:%M")
-            else:
-                OrderTime = str(OrderTime)[-8:-3] if len(str(OrderTime)) > 8 else ""
-
-            if _IsIndexOption(Symbol):
-                # Options order
-                S = Symbol.upper()
-                if S.startswith("NIFTY"):
-                    Underlying = "NIFTY"
-                elif S.startswith("SENSEX"):
-                    Underlying = "SENSEX"
-                elif S.startswith("BANKNIFTY"):
-                    Underlying = "BANKNIFTY"
+    # ── Kite orders — YD6016 (MCX futures) + OFS653 (options) ──
+    for KiteUser in ["YD6016", "OFS653"]:
+        try:
+            Kite = _EstablishKiteSession(KiteUser)
+            AllOrders = Kite.orders()
+            CompletedCount = 0
+            for O in AllOrders:
+                if O.get("status") != "COMPLETE":
+                    continue
+                if O.get("product") != "NRML":
+                    continue
+                CompletedCount += 1
+                Symbol = O.get("tradingsymbol", "")
+                Exchange = O.get("exchange", "")
+                Qty = O.get("filled_quantity", 0) or O.get("quantity", 0)
+                AvgPrice = float(O.get("average_price", 0))
+                Action = O.get("transaction_type", "")  # BUY/SELL
+                OrderTime = O.get("order_timestamp", "")
+                if isinstance(OrderTime, datetime):
+                    OrderTime = OrderTime.strftime("%H:%M")
                 else:
-                    Underlying = Symbol[:6]
-                Leg = "CE" if S.endswith("CE") else "PE"
-                OptionsOrders.append({
-                    "underlying": Underlying,
-                    "leg": Leg,
-                    "contract": Symbol,
-                    "action": Action,
-                    "qty": Qty,
-                    "fill_price": AvgPrice,
-                    "time": OrderTime,
-                    "broker": "ZERODHA",
-                })
-            else:
-                # Futures order — match to instrument name
-                InstName, _ = _MatchPositionToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
-                FuturesOrders.append({
-                    "instrument": InstName or Symbol,
-                    "action": Action,
-                    "qty": Qty,
-                    "fill_price": AvgPrice,
-                    "time": OrderTime,
-                    "broker": "ZERODHA",
-                })
-        Logger.info("Kite: fetched %d completed orders", len([o for o in AllOrders if o.get("status") == "COMPLETE"]))
-    except Exception as e:
-        Logger.error("Kite orders fetch failed: %s", e)
+                    OrderTime = str(OrderTime)[-8:-3] if len(str(OrderTime)) > 8 else ""
+
+                if _IsIndexOption(Symbol):
+                    S = Symbol.upper()
+                    if S.startswith("NIFTY"):
+                        Underlying = "NIFTY"
+                    elif S.startswith("SENSEX"):
+                        Underlying = "SENSEX"
+                    elif S.startswith("BANKNIFTY"):
+                        Underlying = "BANKNIFTY"
+                    else:
+                        Underlying = Symbol[:6]
+                    Leg = "CE" if S.endswith("CE") else "PE"
+                    OptionsOrders.append({
+                        "underlying": Underlying,
+                        "leg": Leg,
+                        "contract": Symbol,
+                        "action": Action,
+                        "qty": Qty,
+                        "fill_price": AvgPrice,
+                        "time": OrderTime,
+                        "broker": "ZERODHA",
+                    })
+                else:
+                    InstName, _ = _MatchPositionToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
+                    FuturesOrders.append({
+                        "instrument": InstName or Symbol,
+                        "action": Action,
+                        "qty": Qty,
+                        "fill_price": AvgPrice,
+                        "time": OrderTime,
+                        "broker": "ZERODHA",
+                    })
+            Logger.info("Kite %s: %d completed orders", KiteUser, CompletedCount)
+        except Exception as e:
+            Logger.error("Kite %s orders fetch failed: %s", KiteUser, e)
 
     # ── Angel orders ──
     try:
@@ -402,7 +402,7 @@ def _FetchBrokerOrders(FullConfig):
         if RawOrders is None:
             RawOrders = []
         for O in RawOrders:
-            if O.get("status") != "complete":
+            if str(O.get("status", "")).lower() != "complete":
                 continue
             if O.get("producttype") != "CARRYFORWARD":
                 continue
@@ -424,7 +424,7 @@ def _FetchBrokerOrders(FullConfig):
                 "time": OrderTime,
                 "broker": "ANGEL",
             })
-        Logger.info("Angel: fetched %d completed orders", len([o for o in RawOrders if o.get("status") == "complete"]))
+        Logger.info("Angel: fetched %d completed orders", len([o for o in RawOrders if str(o.get("status", "")).lower() == "complete"]))
     except Exception as e:
         Logger.error("Angel orders fetch failed: %s", e)
 
