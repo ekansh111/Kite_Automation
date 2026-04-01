@@ -26,6 +26,29 @@ from datetime import datetime, timedelta
 
 # ── Make project root importable ──────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
+_MISSING = object()
+
+
+def _snapshot_modules(names):
+    return {name: sys.modules.get(name, _MISSING) for name in names}
+
+
+def _restore_modules(snapshot):
+    for name, module in snapshot.items():
+        if module is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+_DEPENDENCY_MODULE_NAMES = [
+    "Directories",
+    "kiteconnect",
+    "Kite_Server_Order_Handler",
+    "Server_Order_Handler",
+    "Server_Order_Place",
+    "Fetch_Positions_Data",
+]
+_MODULE_SNAPSHOT = _snapshot_modules(_DEPENDENCY_MODULE_NAMES + ["smart_chase", "forecast_db"])
 
 # Stub Directories module before any project import
 import types
@@ -71,6 +94,11 @@ from smart_chase import (
     SESSION_MINUTES,
 )
 import forecast_db as db
+_restore_modules({name: _MODULE_SNAPSHOT[name] for name in _DEPENDENCY_MODULE_NAMES})
+
+
+def tearDownModule():
+    _restore_modules(_MODULE_SNAPSHOT)
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -762,6 +790,23 @@ class TestDBLogging(unittest.TestCase):
         """GetLatestATR returns None if no signals for instrument."""
         atr = db.GetLatestATR("NOSUCHINSTRUMENT")
         self.assertIsNone(atr)
+
+    def test_get_latest_ltp(self):
+        """GetLatestLTP returns the latest signal LTP for an instrument."""
+        conn = db._GetConn()
+        conn.execute(
+            "INSERT INTO tradingview_signals (instrument, system_name, netposition, atr, ltp, received_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("TESTGOLD", "S30A", 1, 1200.5, 72455.0, "2026-03-25 09:00:00")
+        )
+        conn.execute(
+            "INSERT INTO tradingview_signals (instrument, system_name, netposition, atr, ltp, received_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("TESTGOLD", "S30E", 1, 1250.0, 72510.5, "2026-03-25 09:01:00")
+        )
+        conn.commit()
+        ltp = db.GetLatestLTP("TESTGOLD")
+        self.assertEqual(ltp, 72510.5)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2176,6 +2221,21 @@ class TestHandleWebhook(unittest.TestCase):
         forecasts = db.GetForecastsForInstrument("GOLDM")
         self.assertEqual(len(forecasts), 1)
         self.assertEqual(forecasts[0]["forecast"], 10.0)
+
+    def test_valid_webhook_stores_optional_ltp(self):
+        """Webhook LTP is logged and returned when provided."""
+        result = self.orch.HandleWebhook({
+            "SystemName": "S30A_GoldM",
+            "Instrument": "GOLDM",
+            "Netposition": 1,
+            "ATR": 1200.5,
+            "LTP": 72555.0,
+        })
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["ltp"], 72555.0)
+
+        signals = db.GetRecentTVSignals("GOLDM")
+        self.assertEqual(signals[0]["ltp"], 72555.0)
 
     def test_negative_netposition(self):
         """Netposition -1 → forecast -10."""

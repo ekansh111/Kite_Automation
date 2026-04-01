@@ -55,6 +55,7 @@ def InitDB():
                 system_name TEXT NOT NULL,
                 netposition INTEGER NOT NULL,
                 atr REAL NOT NULL,
+                ltp REAL,
                 action TEXT,
                 received_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -199,6 +200,9 @@ def _RunMigrations(Conn):
     if "action" not in Cols:
         Conn.execute("ALTER TABLE tradingview_signals ADD COLUMN action TEXT")
         Logger.info("Migration: added 'action' column to tradingview_signals")
+    if "ltp" not in Cols:
+        Conn.execute("ALTER TABLE tradingview_signals ADD COLUMN ltp REAL")
+        Logger.info("Migration: added 'ltp' column to tradingview_signals")
 
     # Add cost basis columns to system_positions for P&L tracking
     Cols = [row[1] for row in Conn.execute("PRAGMA table_info(system_positions)").fetchall()]
@@ -248,15 +252,15 @@ def GetAllForecasts():
 
 # ─── TradingView Signals (append-only log) ──────────────────────────
 
-def LogTVSignal(Instrument, SystemName, Netposition, ATR, Action=None):
+def LogTVSignal(Instrument, SystemName, Netposition, ATR, Action=None, Ltp=None):
     """Append a raw TradingView webhook signal. Never overwritten."""
     Conn = _GetConn()
     with _DBLock:
         Conn.execute(
             """INSERT INTO tradingview_signals
-               (instrument, system_name, netposition, atr, action, received_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
-            (Instrument, SystemName, Netposition, ATR, Action)
+               (instrument, system_name, netposition, atr, ltp, action, received_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (Instrument, SystemName, Netposition, ATR, Ltp, Action)
         )
         Conn.commit()
 
@@ -287,6 +291,19 @@ def GetLatestATR(Instrument):
     ).fetchone()
     if Row:
         return Row["atr"]
+    return None
+
+
+def GetLatestLTP(Instrument):
+    """Return the latest webhook LTP for an instrument, if the newest signal included one."""
+    Conn = _GetConn()
+    Row = Conn.execute(
+        """SELECT ltp FROM tradingview_signals
+           WHERE instrument = ? ORDER BY received_at DESC LIMIT 1""",
+        (Instrument,)
+    ).fetchone()
+    if Row:
+        return Row["ltp"]
     return None
 
 

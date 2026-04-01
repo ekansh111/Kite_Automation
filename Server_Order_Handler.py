@@ -56,6 +56,8 @@ Logger = logging.getLogger(__name__)
 _ANGEL_BROWSER_FIFO_CONDITION = threading.Condition()
 _ANGEL_BROWSER_FIFO_NEXT_TICKET = 0
 _ANGEL_BROWSER_FIFO_SERVING_TICKET = 0
+_ANGEL_INSTRUMENT_MASTER_CACHE = {}
+_ANGEL_INSTRUMENT_MASTER_CACHE_LOCK = threading.Lock()
 
 
 def _SupportsOsFileLock():
@@ -132,6 +134,39 @@ def _LogAngelStep(Message, OrderDetails=None, Level='info', **Extra):
         LogFn("%s", Message)
 
 
+def _LoadAngelInstrumentMaster(instrument_file):
+    instrument_path = pathlib.Path(instrument_file).expanduser().resolve()
+    cache_key = str(instrument_path)
+    mtime_ns = instrument_path.stat().st_mtime_ns
+
+    with _ANGEL_INSTRUMENT_MASTER_CACHE_LOCK:
+        cached_entry = _ANGEL_INSTRUMENT_MASTER_CACHE.get(cache_key)
+        if cached_entry and cached_entry['mtime_ns'] == mtime_ns:
+            return cached_entry['dataframe'], True, cache_key
+
+    instrument_master = pd.read_csv(
+        instrument_path,
+        delimiter=',',
+        low_memory=False,
+        dtype={'token': 'string'},
+    )
+    instrument_master.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
+    if 'expiry' in instrument_master.columns:
+        instrument_master['expiry'] = pd.to_datetime(
+            instrument_master['expiry'].astype('string').str.title(),
+            format='%d%b%Y',
+            errors='coerce',
+        )
+
+    with _ANGEL_INSTRUMENT_MASTER_CACHE_LOCK:
+        _ANGEL_INSTRUMENT_MASTER_CACHE[cache_key] = {
+            'mtime_ns': mtime_ns,
+            'dataframe': instrument_master,
+        }
+
+    return instrument_master, False, cache_key
+
+
 def _FormatAngelApiError(Response, DefaultMessage='Angel API request failed'):
     """Normalize Angel SDK/API errors into a single readable string."""
     if isinstance(Response, dict):
@@ -183,6 +218,9 @@ def _GetAngelWebExecutionConfig():
         'otp_timeout_seconds': int(os.environ.get('ANGEL_WEB_OTP_TIMEOUT_SECONDS', '120')),
         'otp_poll_interval': float(os.environ.get('ANGEL_WEB_OTP_POLL_INTERVAL', '1.0')),
         'debugger_address': (os.environ.get('ANGEL_WEB_DEBUGGER_ADDRESS', ANGEL_WEB_DEFAULT_DEBUGGER_ADDRESS) or '').strip() or None,
+        'chrome_binary': (os.environ.get('ANGEL_WEB_CHROME_BINARY', '') or '').strip() or None,
+        'headless': str(os.environ.get('ANGEL_WEB_HEADLESS', 'false')).strip().lower() in {'1', 'true', 'yes', 'y'},
+        'attach_only': str(os.environ.get('ANGEL_WEB_ATTACH_ONLY', 'false')).strip().lower() in {'1', 'true', 'yes', 'y'},
         'url': os.environ.get('ANGEL_WEB_URL', ANGEL_WEB_APP_URL),
         'watchlist_index': int(os.environ.get('ANGEL_WEB_WATCHLIST_INDEX', '4')),
         'lock_path': pathlib.Path(
@@ -252,11 +290,16 @@ def _AcquireAngelBrowserExecutionLock(OrderDetails, Config):
 
 
 def _BuildAngelWebOrderPayload(OrderDetails):
+    QuantityForUi = OrderDetails.get('UiQuantityLots', OrderDetails.get('Quantity'))
+    QuantityText = str(QuantityForUi).strip()
+    if '*' in QuantityText:
+        QuantityText = QuantityText.split('*', 1)[0].strip()
+
     Payload = {
         'exchange': str(OrderDetails['Exchange']).upper(),
         'symbol': str(OrderDetails['Tradingsymbol']).replace(' ', '').upper(),
         'side': str(OrderDetails['Tradetype']).upper(),
-        'quantity': int(OrderDetails['Quantity']),
+        'quantity': int(QuantityText),
         'product': str(OrderDetails['Product']).upper(),
         'order_type': str(OrderDetails['Ordertype']).upper(),
         'validity': str(OrderDetails.get('Validity', 'DAY')).upper(),
@@ -276,6 +319,36 @@ def _BuildAngelWebOrderPayload(OrderDetails):
 
 def _ShouldUseAngelBrowserRoute(OrderDetails):
     return str(OrderDetails.get('Exchange', '')).strip().upper() == 'NCDEX'
+
+
+def _GetAngelBrowserSmartApiPreflightReason(OrderDetails):
+    if not _ShouldUseAngelBrowserRoute(OrderDetails):
+        return "not_browser_route"
+
+    if str(OrderDetails.get('ReEnterOrderLoop', '')).strip().upper() == 'TRUE':
+        return "reentry_requires_smartapi"
+
+    OrderType = str(OrderDetails.get('Ordertype', '')).strip().upper()
+    Price = OrderDetails.get('Price')
+    if OrderType != 'MARKET' and Price in (None, '', '0', 0, 0.0):
+        return "missing_limit_price"
+
+    ContractProvided = str(OrderDetails.get('ContractNameProvided', '')).strip().upper() == 'TRUE'
+    if ContractProvided:
+        return None
+
+    try:
+        if int(OrderDetails.get('Netposition', 0)) != int(OrderDetails.get('Quantity', 0)):
+            return "contract_lookup_requires_positions"
+    except Exception:
+        return "quantity_parse_failed"
+
+    return None
+
+
+def _CanUseAngelBrowserRouteWithoutSmartApi(OrderDetails):
+    """Return True when NCDEX browser flow can skip SmartAPI preflight safely."""
+    return _GetAngelBrowserSmartApiPreflightReason(OrderDetails) is None
 
 
 @contextmanager
@@ -320,6 +393,9 @@ def PlaceOrderAngelBrowser(OrderDetails):
         "Routing Angel order to browser execution",
         OrderDetails,
         debugger_address=Config['debugger_address'],
+        chrome_binary=Config.get('chrome_binary'),
+        headless=Config.get('headless', False),
+        attach_only=Config.get('attach_only', False),
         lock_path=str(Config['lock_path']),
         lock_timeout_seconds=Config['lock_timeout_seconds'],
         watchlist_index=Config['watchlist_index'],
@@ -335,9 +411,9 @@ def PlaceOrderAngelBrowser(OrderDetails):
                 profile_dir=Config['profile_dir'],
                 log_dir=Config['log_dir'],
                 url=Config['url'],
-                chrome_binary=None,
-                headless=False,
-                attach_only=True,
+                chrome_binary=Config.get('chrome_binary'),
+                headless=Config.get('headless', False),
+                attach_only=Config.get('attach_only', False),
                 seed_watchlist=False,
                 attempt_login=True,
                 login_credentials_file=Config['login_credentials_file'],
@@ -375,7 +451,9 @@ def PlaceOrderAngelBrowser(OrderDetails):
                 profile_dir=Config['profile_dir'],
                 log_dir=Config['log_dir'],
                 debugger_address=Config['debugger_address'],
-                attach_only=True,
+                headless=Config.get('headless', False),
+                chrome_binary=Config.get('chrome_binary'),
+                attach_only=Config.get('attach_only', False),
                 keep_open=True,
                 login_credentials_file=Config['login_credentials_file'],
                 otp_file=Config['otp_file'],
@@ -468,18 +546,14 @@ def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
     the filtered DataFrame.
     """
 
-    # Read the CSV file into a DataFrame
-    AngelInstrumentDetails = pd.read_csv(AngelInstrumentDirectory, delimiter=',')
+    AngelInstrumentDetails, CacheHit, CachePath = _LoadAngelInstrumentMaster(AngelInstrumentDirectory)
     _LogAngelStep(
         "Loaded Angel instrument master",
         OrderDetails,
-        path=AngelInstrumentDirectory,
+        path=CachePath,
         rows=len(AngelInstrumentDetails),
+        cached=CacheHit,
     )
-    # The CSV might have an unnamed first column which we rename below
-
-    # Rename only the unnamed column to 'serialnumber' if it exists
-    AngelInstrumentDetails.rename(columns={'Unnamed: 0': 'serialnumber'}, inplace=True)
     
     # Current datetime for reference
     today = datetime.now()
@@ -487,10 +561,6 @@ def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
     # Compute the rollover date by adding 'DaysPostWhichSelectNextContract'
     # to today's date
     RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
-
-    # Convert the 'expiry' column to a proper datetime format.
-    # Example expiry string: "28FEB2025" => datetime object
-    AngelInstrumentDetails['expiry'] = pd.to_datetime(AngelInstrumentDetails['expiry'].str.title(), format='%d%b%Y', errors='coerce')
 
     AngelInstrumentDetails_filtered = pd.DataFrame()
 
@@ -698,7 +768,6 @@ def EstablishConnectionAngelAPI(OrderDetails):
 
     CredentialDirectoryByUser = {
         'R71302': AngelNararushLoginCred,
-        'E51339915': AngelEkanshLoginCred,
         'AABM826021': AngelEshitaLoginCred,
     }
 
@@ -735,9 +804,20 @@ def EstablishConnectionAngelAPI(OrderDetails):
         login_message=data.get('message') if isinstance(data, dict) else None,
     )
 
-    # print(data)
-    authToken = data['data']['jwtToken']
-    refreshToken = data['data']['refreshToken']
+    SessionData = data.get('data') if isinstance(data, dict) else None
+    if not isinstance(SessionData, dict):
+        ErrorMessage = _FormatAngelApiError(data, 'Angel login failed.')
+        OrderDetails['LastOrderError'] = f'Angel login failed: {ErrorMessage}'
+        _LogAngelStep("Angel login failed", OrderDetails, Level='error', login_response=data)
+        raise RuntimeError(OrderDetails['LastOrderError'])
+
+    authToken = SessionData.get('jwtToken')
+    refreshToken = SessionData.get('refreshToken')
+    if not authToken or not refreshToken:
+        ErrorMessage = _FormatAngelApiError(data, 'Angel login response missing session tokens.')
+        OrderDetails['LastOrderError'] = f'Angel login failed: {ErrorMessage}'
+        _LogAngelStep("Angel login missing tokens", OrderDetails, Level='error', login_response=data)
+        raise RuntimeError(OrderDetails['LastOrderError'])
 
     # fetch the feedtoken
     feedToken = smartApi.getfeedToken()
@@ -745,7 +825,14 @@ def EstablishConnectionAngelAPI(OrderDetails):
     # fetch User Profile
     res = smartApi.getProfile(refreshToken)
     smartApi.generateToken(refreshToken)
-    res=res['data']['exchanges']
+    ProfileData = res.get('data') if isinstance(res, dict) else None
+    if not isinstance(ProfileData, dict):
+        ErrorMessage = _FormatAngelApiError(res, 'Angel profile fetch failed.')
+        OrderDetails['LastOrderError'] = f'Angel profile fetch failed: {ErrorMessage}'
+        _LogAngelStep("Angel profile fetch failed", OrderDetails, Level='error', profile_response=res)
+        raise RuntimeError(OrderDetails['LastOrderError'])
+
+    res = ProfileData.get('exchanges')
     _LogAngelStep("Angel profile fetched", OrderDetails, exchanges=res)
 
     return smartApi
@@ -758,6 +845,8 @@ def Validate_Quantity(OrderDetails):
 
     #If there is any disreparency between the total quantity and lotsize then correct it
     if len(Quantitysplit)>1:
+        if OrderDetails.get('UiQuantityLots') in (None, '', 0, '0'):
+            OrderDetails['UiQuantityLots'] = int(Quantitysplit[0])
         UpdatedQuantity = int(Quantitysplit[0]) * int(Quantitysplit[1])
         UpdatedNetQuantity = int(OrderDetails['Netposition']) * int(Quantitysplit[1])
         
@@ -893,8 +982,8 @@ def PrepareOrderAngel(smartApi,OrderDetails):
     print(LtpInfo)
     _LogAngelStep("Angel LTP fetched", OrderDetails, ltp_response=LtpInfo)
 
-    # If ordertype is not MARKET, set the limit price to the latest LTP
-    if OrderDetails['Ordertype'] != 'MARKET':
+    # Preserve an explicit limit price; only default to LTP when the request did not provide one.
+    if OrderDetails['Ordertype'] != 'MARKET' and OrderDetails.get('Price') in (None, '', '0', 0, 0.0):
         OrderDetails['Price'] = Instrumentdata['ltp']
 
     return OrderDetails
@@ -1072,12 +1161,31 @@ def _ExecuteAngelSmartApiOrderFlow(smartAPI, OrderDetails):
 
 
 def _ControlOrderFlowAngelCore(OrderDetails):
-    smartAPI = EstablishConnectionAngelAPI(OrderDetails)
     OrderDetails.pop('LastOrderError', None)
 
     ConfigureNetDirectionOfTrade(OrderDetails)
 
     Validate_Quantity(OrderDetails)
+
+    if _ShouldUseAngelBrowserRoute(OrderDetails):
+        if _CanUseAngelBrowserRouteWithoutSmartApi(OrderDetails):
+            if OrderDetails['ContractNameProvided'] == 'False':
+                PrepareInstrumentContractName(None, OrderDetails)
+                if OrderDetails.get('LastOrderError'):
+                    _LogAngelStep("Stopping Angel browser-only flow after contract resolution failure", OrderDetails, Level='error')
+                    return None
+
+            _LogAngelStep("Selected Angel browser execution route", OrderDetails, preflight_mode='browser_only')
+            return _ExecuteAngelBrowserOrderFlow(None, OrderDetails)
+
+        _LogAngelStep(
+            "Angel browser route requires SmartAPI preflight",
+            OrderDetails,
+            preflight_mode='smartapi',
+            reason=_GetAngelBrowserSmartApiPreflightReason(OrderDetails),
+        )
+
+    smartAPI = EstablishConnectionAngelAPI(OrderDetails)
 
     if OrderDetails['ContractNameProvided'] == 'False':
         PrepareInstrumentContractName(smartAPI,OrderDetails)
@@ -1085,14 +1193,13 @@ def _ControlOrderFlowAngelCore(OrderDetails):
             _LogAngelStep("Stopping Angel flow after contract resolution failure", OrderDetails, Level='error')
             return None
 
-
     OrderDetails = PrepareOrderAngel(smartAPI, OrderDetails)
     if OrderDetails.get('LastOrderError'):
         _LogAngelStep("Stopping Angel flow after LTP failure", OrderDetails, Level='error')
         return None
 
     if _ShouldUseAngelBrowserRoute(OrderDetails):
-        _LogAngelStep("Selected Angel browser execution route", OrderDetails)
+        _LogAngelStep("Selected Angel browser execution route", OrderDetails, preflight_mode='smartapi')
         return _ExecuteAngelBrowserOrderFlow(smartAPI, OrderDetails)
 
     _LogAngelStep("Selected Angel SmartAPI execution route", OrderDetails)

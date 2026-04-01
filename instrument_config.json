@@ -235,6 +235,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 1
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 4,
@@ -370,7 +373,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 50,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -396,6 +399,7 @@
         "AUTO_S30C_Dhaniya": "S30C",
         "AUTO_S30A_Dhaniya": "S30A",
         "AUTO2_DHANIA_S45A": "S45A",
+        "AUTO2_DHANIYA_S45A": "S45A",
         "AUTO2_DHANIYA_S30C": "S30C",
         "AUTO2_DHANIYA_S30A": "S30A"
       },
@@ -413,6 +417,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -426,7 +433,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 50,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -469,6 +476,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -482,7 +492,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 50,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -517,6 +527,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -530,7 +543,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 50,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -573,6 +586,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -586,7 +602,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 100,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -629,6 +645,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 10
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -642,7 +661,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 50,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -678,6 +697,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 5
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 4,
@@ -691,7 +713,7 @@
       "enabled": true,
       "exchange": "NCDEX",
       "broker": "ANGEL",
-      "user": "E51339915",
+      "user": "AABM826021",
       "point_value": 30,
       "vol_weights": {
         "sector_weight": 0.4,
@@ -730,6 +752,9 @@
         "ContractNameProvided": "False",
         "QuantityMultiplier": 3
       },
+      "execution": {
+        "use_smart_chase": false
+      },
       "rollover": {
         "enabled": true,
         "alert_days_before_expiry": 5,
@@ -767,6 +792,9 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 65
+      },
+      "execution": {
+        "use_smart_chase": false
       }
     },
     "BANKNIFTY": {
@@ -797,6 +825,9 @@
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
         "QuantityMultiplier": 25
+      },
+      "execution": {
+        "use_smart_chase": false
       }
     }
   },

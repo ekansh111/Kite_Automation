@@ -17,6 +17,7 @@ sidecar JSON file that can be tuned without touching the Python flow.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import logging
@@ -24,6 +25,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import textwrap
@@ -81,6 +83,9 @@ DEFAULT_LOG_DIR = ROOT_DIR / "logs" / "angel_web_bot"
 DEFAULT_DEBUGGER_ADDRESS = "127.0.0.1:9222"
 DEFAULT_LOGIN_CREDENTIALS_FILE = ROOT_DIR / "angel_web_login_credentials.txt"
 DEFAULT_LOGIN_OTP_FILE = ROOT_DIR / "angel_web_login_otp.txt"
+DEFAULT_LOGIN_OTP_FETCH_SCRIPT = ROOT_DIR / "fetch_broker_email_otp.py"
+DEFAULT_LOGIN_OTP_FETCH_WAIT_TIMEOUT_SECONDS = 30.0
+DEFAULT_LOGIN_OTP_FETCH_POLL_INTERVAL_SECONDS = 2.0
 
 BY_MAP = {
     "css": By.CSS_SELECTOR,
@@ -97,6 +102,9 @@ BY_MAP = {
 }
 
 CHROME_CANDIDATES = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
     "google-chrome",
@@ -108,10 +116,53 @@ CHROME_CANDIDATES = (
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOGGER = logging.getLogger("angel_web_order_bot")
-AUTH_FIELD_FILL_DELAY_SECONDS = 2
+LOGIN_IDENTIFIER_FILL_DELAY_SECONDS = 1
+OTP_FILL_DELAY_SECONDS = 2
+MPIN_FILL_DELAY_SECONDS = 1
+LOGIN_IDENTIFIER_TYPING_DELAY_SECONDS = 0.15
+OTP_TYPING_DELAY_SECONDS = 0.15
+MPIN_TYPING_DELAY_SECONDS = 0.15
+AUTH_SUBMIT_BUTTON_DELAY_SECONDS = 1
+ORDER_PRICE_SETTLE_DELAY_SECONDS = 3
+ORDER_PRICE_TYPING_DELAY_SECONDS = 0.35
+ORDER_SUBMIT_BUTTON_DELAY_SECONDS = 1
+ORDER_CONFIRM_BUTTON_DELAY_SECONDS = 1
+FILE_LOGIN_HARD_TIMEOUT_SECONDS = 180
+WATCHLIST_ADD_HARD_TIMEOUT_SECONDS = 45
+ORDER_PLACEMENT_HARD_TIMEOUT_SECONDS = 150
+MANUAL_LOGIN_HARD_TIMEOUT_SECONDS = 300
+MAX_LOGIN_IDENTIFIER_SUBMIT_ATTEMPTS = 3
 LOGIN_DEVICE_BLOCKER_PATTERNS = (
     "unable to authenticate you with this device",
 )
+LOGIN_IDENTIFIER_FORM_FALLBACK_XPATH = "//form//input[not(@type='hidden')][1]"
+PIN_PROMPT_KEYWORDS = (
+    "mpin",
+    "m-pin",
+    "m pin",
+    "4-digit pin",
+    "4 digit pin",
+    "enter your pin",
+    "enter your 4-digit pin",
+    "forgot pin",
+)
+CHROME_COMMON_ARGS = (
+    "--start-maximized",
+    "--disable-notifications",
+    "--disable-popup-blocking",
+    "--disable-features=PasswordManagerOnboarding,PasswordCheck,AutofillServerCommunication,PasswordsImport,PasswordManagerRedesign,FillOnAccountSelect",
+)
+CHROME_PROFILE_PREFERENCES = {
+    "credentials_enable_service": False,
+    "autofill": {
+        "credit_card_enabled": False,
+        "profile_enabled": False,
+    },
+    "profile": {
+        "password_manager_enabled": False,
+        "password_manager_leak_detection": False,
+    },
+}
 
 PRODUCT_BUTTON_IDS = {
     "INTRADAY": "productType1",
@@ -221,6 +272,11 @@ def configure_logging(log_dir: pathlib.Path, verbose: bool = False) -> pathlib.P
 
 def _iter_chrome_binaries() -> Iterable[str]:
     for candidate in CHROME_CANDIDATES:
+        expanded_candidate = os.path.expandvars(candidate)
+        if os.path.isabs(expanded_candidate):
+            if os.path.exists(expanded_candidate):
+                yield expanded_candidate
+            continue
         if candidate.startswith("/"):
             yield candidate
             continue
@@ -263,6 +319,122 @@ def detect_chrome_major_version(explicit_binary: Optional[str] = None) -> Option
             except ValueError:
                 continue
     return None
+
+
+def _deep_merge_mapping(base: Dict[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    for key, value in updates.items():
+        if isinstance(value, Mapping) and isinstance(base.get(key), dict):
+            _deep_merge_mapping(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
+def configure_chrome_profile_preferences(profile_dir: pathlib.Path) -> pathlib.Path:
+    profile_dir = pathlib.Path(profile_dir).expanduser().resolve()
+    default_profile_dir = profile_dir / "Default"
+    default_profile_dir.mkdir(parents=True, exist_ok=True)
+    preferences_path = default_profile_dir / "Preferences"
+
+    existing_preferences: Dict[str, Any] = {}
+    if preferences_path.exists():
+        try:
+            loaded = json.loads(preferences_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing_preferences = loaded
+        except (OSError, json.JSONDecodeError):
+            LOGGER.warning(
+                "Could not parse Chrome profile preferences; rewriting managed preferences | path=%s",
+                preferences_path,
+            )
+
+    merged_preferences = _deep_merge_mapping(existing_preferences, CHROME_PROFILE_PREFERENCES)
+    preferences_path.write_text(
+        json.dumps(merged_preferences, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return preferences_path
+
+
+def parse_debugger_address(debugger_address: str) -> Tuple[str, int]:
+    raw_value = str(debugger_address or "").strip()
+    host, separator, port_text = raw_value.rpartition(":")
+    if not separator or not host or not port_text:
+        raise ValueError(
+            f"Invalid debugger address '{debugger_address}'. Expected format host:port."
+        )
+
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid debugger port in '{debugger_address}'. Expected an integer port."
+        ) from exc
+
+    if port <= 0 or port > 65535:
+        raise ValueError(
+            f"Invalid debugger port in '{debugger_address}'. Expected 1-65535."
+        )
+
+    return host, port
+
+
+def wait_for_debugger_address(
+    debugger_address: str,
+    *,
+    timeout_seconds: float = 15.0,
+    poll_interval_seconds: float = 0.25,
+) -> bool:
+    host, port = parse_debugger_address(debugger_address)
+    deadline = time.time() + max(timeout_seconds, 0.0)
+    while time.time() <= deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(max(poll_interval_seconds, 0.05))
+    return False
+
+
+def launch_debugger_chrome_session(
+    *,
+    chrome_binary: str,
+    profile_dir: pathlib.Path,
+    debugger_address: str,
+    url: str = APP_URL,
+) -> subprocess.Popen:
+    profile_dir = pathlib.Path(profile_dir).expanduser().resolve()
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    configure_chrome_profile_preferences(profile_dir)
+    host, port = parse_debugger_address(debugger_address)
+
+    command = [
+        chrome_binary,
+        f"--remote-debugging-address={host}",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    command.extend(CHROME_COMMON_ARGS)
+    command.extend([
+        "--new-window",
+        url,
+    ])
+
+    LOGGER.info(
+        "Launching dedicated Angel browser | chrome_binary=%s profile_dir=%s debugger_address=%s url=%s",
+        chrome_binary,
+        profile_dir,
+        debugger_address,
+        url,
+    )
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def load_json_file(path: pathlib.Path) -> Dict[str, Any]:
@@ -654,9 +826,52 @@ class AngelWebOrderBot:
         )
         self.otp_timeout_seconds = max(int(otp_timeout_seconds), 1)
         self.otp_poll_interval = max(float(otp_poll_interval), 0.25)
+        otp_fetch_script_raw = os.environ.get(
+            "ANGEL_WEB_OTP_FETCH_SCRIPT_PATH",
+            str(DEFAULT_LOGIN_OTP_FETCH_SCRIPT),
+        )
+        self.otp_fetch_script = pathlib.Path(otp_fetch_script_raw).expanduser().resolve()
+        self.otp_fetch_wait_timeout_seconds = max(
+            float(
+                os.environ.get(
+                    "ANGEL_WEB_OTP_FETCH_WAIT_TIMEOUT_SECONDS",
+                    str(DEFAULT_LOGIN_OTP_FETCH_WAIT_TIMEOUT_SECONDS),
+                )
+            ),
+            0.0,
+        )
+        self.otp_fetch_poll_interval_seconds = max(
+            float(
+                os.environ.get(
+                    "ANGEL_WEB_OTP_FETCH_POLL_INTERVAL_SECONDS",
+                    str(DEFAULT_LOGIN_OTP_FETCH_POLL_INTERVAL_SECONDS),
+                )
+            ),
+            0.25,
+        )
+        self._otp_fetch_process = None
         self.driver: Optional[webdriver.Chrome] = None
         self.artifact_dir = self.log_dir / datetime.now().strftime("%Y%m%d")
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    def _build_debugger_attach_options(self) -> ChromeOptions:
+        if ChromeOptions is None:
+            raise RuntimeError(
+                "selenium is not installed in this environment."
+            ) from SELENIUM_IMPORT_ERROR
+
+        options = ChromeOptions()
+        options.add_experimental_option("debuggerAddress", self.debugger_address)
+        if self.chrome_binary:
+            options.binary_location = resolve_chrome_binary(self.chrome_binary)
+        return options
+
+    def _attach_to_debugger_session(self) -> webdriver.Chrome:
+        if webdriver is None:
+            raise RuntimeError(
+                "selenium is not installed in this environment."
+            ) from SELENIUM_IMPORT_ERROR
+        return webdriver.Chrome(options=self._build_debugger_attach_options())
 
     def _build_driver(self) -> webdriver.Chrome:
         if webdriver is None or ChromeOptions is None:
@@ -666,15 +881,53 @@ class AngelWebOrderBot:
 
         if self.debugger_address:
             LOGGER.info("Attaching to existing Chrome session at %s", self.debugger_address)
-            options = ChromeOptions()
-            options.add_experimental_option("debuggerAddress", self.debugger_address)
             try:
-                return webdriver.Chrome(options=options)
+                debugger_ready = wait_for_debugger_address(
+                    self.debugger_address,
+                    timeout_seconds=1.0,
+                    poll_interval_seconds=0.25,
+                )
+            except ValueError:
+                raise
+
+            if not debugger_ready:
+                if self.attach_only:
+                    raise RuntimeError(
+                        f"Debugger session {self.debugger_address} is unavailable."
+                    )
+                chrome_binary = resolve_chrome_binary(self.chrome_binary)
+                LOGGER.info(
+                    "Debugger session %s is not reachable yet. Launching dedicated Chrome for that debugger address.",
+                    self.debugger_address,
+                )
+                launch_debugger_chrome_session(
+                    chrome_binary=chrome_binary,
+                    profile_dir=self.profile_dir,
+                    debugger_address=self.debugger_address,
+                    url=self.url,
+                )
+                if wait_for_debugger_address(self.debugger_address, timeout_seconds=15.0):
+                    try:
+                        return self._attach_to_debugger_session()
+                    except Exception:
+                        LOGGER.warning(
+                            "Auto-launched debugger browser at %s did not become attachable. Falling back to a dedicated browser.",
+                            self.debugger_address,
+                            exc_info=True,
+                        )
+                else:
+                    LOGGER.warning(
+                        "Auto-launched debugger browser at %s did not open a reachable debugger endpoint. Falling back to a dedicated browser.",
+                        self.debugger_address,
+                    )
+
+            try:
+                return self._attach_to_debugger_session()
             except Exception:
                 if self.attach_only:
                     raise
                 LOGGER.warning(
-                    "Debugger session %s was unavailable. Falling back to a dedicated browser.",
+                    "Debugger session %s is reachable but Selenium could not attach. Falling back to a dedicated browser.",
                     self.debugger_address,
                     exc_info=True,
                 )
@@ -696,11 +949,11 @@ class AngelWebOrderBot:
 
         version_main = detect_chrome_major_version(self.chrome_binary)
         options = uc.ChromeOptions()
+        configure_chrome_profile_preferences(self.profile_dir)
         options.add_argument(f"--user-data-dir={self.profile_dir}")
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-notifications")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-blink-features=AutomationControlled")
+        for arg in CHROME_COMMON_ARGS:
+            options.add_argument(arg)
+        options.add_experimental_option("prefs", CHROME_PROFILE_PREFERENCES)
         if self.headless:
             options.headless = True
 
@@ -731,6 +984,27 @@ class AngelWebOrderBot:
                 self.driver.quit()
             except Exception:
                 LOGGER.exception("Error while closing browser")
+
+    def _build_flow_deadline(self, timeout_seconds: float) -> float:
+        return time.time() + max(float(timeout_seconds), 0.0)
+
+    def _remaining_timeout(
+        self,
+        deadline: Optional[float],
+        *,
+        fallback_seconds: float,
+        flow_name: str,
+        minimum_seconds: float = 0.25,
+    ) -> float:
+        fallback = max(float(fallback_seconds), minimum_seconds)
+        if deadline is None:
+            return fallback
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutException(f"{flow_name} exceeded hard timeout.")
+
+        return max(minimum_seconds, min(fallback, remaining))
 
     def _render_locator(self, locator: Mapping[str, str], context: Optional[Mapping[str, Any]] = None) -> Tuple[str, str]:
         context = context or {}
@@ -805,6 +1079,48 @@ class AngelWebOrderBot:
 
         return elements
 
+    def _find_login_identifier_input(
+        self,
+        *,
+        context: Optional[Mapping[str, Any]] = None,
+        timeout_seconds: int = 1,
+        displayed_only: bool = True,
+        allow_form_fallback: bool = True,
+    ):
+        if self.driver is None:
+            raise RuntimeError("Browser is not initialized.")
+
+        timeout = timeout_seconds or self.timeout_seconds
+        deadline = time.time() + timeout
+        candidates = list(self.selector_config.get("login_identifier_input", []))
+        last_error: Optional[Exception] = None
+
+        if not allow_form_fallback:
+            candidates = [
+                locator
+                for locator in candidates
+                if locator.get("value") != LOGIN_IDENTIFIER_FORM_FALLBACK_XPATH
+            ]
+
+        if not candidates:
+            return None
+
+        while time.time() < deadline:
+            for locator in candidates:
+                try:
+                    by, value = self._render_locator(locator, context)
+                    elements = self.driver.find_elements(by, value)
+                    for element in elements:
+                        if not displayed_only or element.is_displayed():
+                            return element
+                except WebDriverException as exc:
+                    last_error = exc
+            time.sleep(0.25)
+
+        if last_error is not None:
+            LOGGER.debug("Identifier input lookup did not succeed before timeout | error=%s", last_error)
+        return None
+
     def _find_optional(
         self,
         selector_key: str,
@@ -842,6 +1158,7 @@ class AngelWebOrderBot:
         deadline = time.time() + self.otp_timeout_seconds
         saw_otp_file = False
         saw_candidate_code = False
+        fetcher_attempted = False
 
         while time.time() < deadline:
             if self.otp_file.exists():
@@ -858,6 +1175,9 @@ class AngelWebOrderBot:
                             LOGGER.warning("Could not clear Angel OTP file after reading | path=%s", self.otp_file)
                         LOGGER.info("Read Angel OTP from file | path=%s", self.otp_file)
                         return code
+            if not fetcher_attempted:
+                self._start_otp_fetcher()
+                fetcher_attempted = True
             time.sleep(self.otp_poll_interval)
 
         raise TimeoutException(
@@ -865,7 +1185,57 @@ class AngelWebOrderBot:
             f"otp_file_present={saw_otp_file} candidate_code_seen={saw_candidate_code}"
         )
 
-    def _fill_code_elements(self, inputs: Sequence[Any], code: str) -> None:
+    def _start_otp_fetcher(self) -> bool:
+        if not self.otp_fetch_script.exists():
+            LOGGER.info(
+                "Angel OTP fetcher script was not found; continuing without auto-fetch | script=%s",
+                self.otp_fetch_script,
+            )
+            return False
+
+        if self._otp_fetch_process is not None and self._otp_fetch_process.poll() is None:
+            LOGGER.info("Angel OTP fetcher is already running.")
+            return True
+
+        command = [
+            sys.executable,
+            str(self.otp_fetch_script),
+            "--output-file",
+            str(self.otp_file),
+            "--wait-timeout-seconds",
+            str(self.otp_fetch_wait_timeout_seconds),
+            "--poll-interval-seconds",
+            str(self.otp_fetch_poll_interval_seconds),
+        ]
+
+        LOGGER.info(
+            "Starting Angel OTP fetcher | script=%s output_file=%s wait_timeout_seconds=%s poll_interval_seconds=%s",
+            self.otp_fetch_script,
+            self.otp_file,
+            self.otp_fetch_wait_timeout_seconds,
+            self.otp_fetch_poll_interval_seconds,
+        )
+
+        try:
+            self._otp_fetch_process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            LOGGER.warning("Could not start Angel OTP fetcher.", exc_info=True)
+            self._otp_fetch_process = None
+            return False
+
+    def _fill_code_elements(
+        self,
+        inputs: Sequence[Any],
+        code: str,
+        *,
+        typing_delay_seconds: float = 0.0,
+    ) -> None:
         code_text = str(code).strip()
         if not code_text:
             raise ValueError("Authentication code must not be empty.")
@@ -874,21 +1244,23 @@ class AngelWebOrderBot:
             raise TimeoutException("No authentication inputs were available.")
 
         if len(inputs) == 1:
-            self._set_input_value_with_retry(inputs[0], code_text)
+            self._set_input_value_with_retry(inputs[0], code_text, typing_delay_seconds=typing_delay_seconds)
             return
 
         if len(inputs) < len(code_text):
-            self._set_input_value_with_retry(inputs[0], code_text)
+            self._set_input_value_with_retry(inputs[0], code_text, typing_delay_seconds=typing_delay_seconds)
             return
 
         for element, digit in zip(inputs, code_text):
-            self._clear_and_type_element(element, digit)
+            self._clear_and_type_element(element, digit, typing_delay_seconds=typing_delay_seconds)
+            if typing_delay_seconds > 0:
+                time.sleep(typing_delay_seconds)
 
-    def _fill_code_inputs(self, selector_key: str, code: str) -> None:
+    def _fill_code_inputs(self, selector_key: str, code: str, *, typing_delay_seconds: float = 0.0) -> None:
         inputs = self._find_all(selector_key)
         if not inputs:
             raise TimeoutException(f"Timed out waiting for selector '{selector_key}'.")
-        self._fill_code_elements(inputs, code)
+        self._fill_code_elements(inputs, code, typing_delay_seconds=typing_delay_seconds)
 
     def _read_visible_page_text(self) -> str:
         if self.driver is None:
@@ -904,7 +1276,11 @@ class AngelWebOrderBot:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
-        xpath = "//input[not(@type='hidden') and (@type='password' or @type='tel' or @inputmode='numeric')]"
+        xpath = (
+            "//input[not(@type='hidden') and "
+            "(not(@type) or normalize-space(@type)='' or @type='password' or @type='tel' or @type='number' or @type='text' or @type='email' "
+            "or @inputmode='numeric' or @autocomplete='one-time-code')]"
+        )
         try:
             elements = self.driver.find_elements(By.XPATH, xpath)
         except Exception:
@@ -919,6 +1295,18 @@ class AngelWebOrderBot:
             return inputs
         return self._find_generic_auth_inputs()
 
+    def _page_mentions_pin_prompt(self, page_text: Optional[str] = None) -> bool:
+        if page_text is None:
+            page_text = self._read_visible_page_text()
+        normalized_page_text = " ".join(str(page_text or "").lower().split())
+        return any(keyword in normalized_page_text for keyword in PIN_PROMPT_KEYWORDS)
+
+    def _login_mode_tabs_visible(self) -> bool:
+        return (
+            self._find_optional("login_client_id_tab", timeout_seconds=1) is not None
+            or self._find_optional("login_mobile_number_tab", timeout_seconds=1) is not None
+        )
+
     def _detect_auth_challenge(self) -> Optional[str]:
         page_text = self._read_visible_page_text()
         strict_otp_inputs = self._find_all("otp_input")
@@ -926,7 +1314,12 @@ class AngelWebOrderBot:
         generic_inputs = self._find_generic_auth_inputs()
 
         otp_keywords = (" otp", "otp ", "one time password", "verification code", "verification otp", "enter otp")
-        mpin_keywords = ("mpin", "m-pin", "m pin")
+        pin_prompt_visible = self._page_mentions_pin_prompt(page_text)
+
+        # Angel can reuse the OTP input for the next PIN step, so visible PIN copy
+        # must override stale OTP-oriented attributes on the same input.
+        if pin_prompt_visible and (strict_mpin_inputs or generic_inputs):
+            return "mpin"
 
         if strict_otp_inputs:
             return "otp"
@@ -935,7 +1328,7 @@ class AngelWebOrderBot:
 
         if strict_mpin_inputs:
             return "mpin"
-        if any(keyword in page_text for keyword in mpin_keywords) and generic_inputs:
+        if pin_prompt_visible and generic_inputs:
             return "mpin"
 
         return None
@@ -957,6 +1350,19 @@ class AngelWebOrderBot:
         self._click_element(tab)
         time.sleep(1)
         return True
+
+    def _identifier_screen_requires_mode_reset(
+        self,
+        identifier_input: Optional[Any],
+        last_submitted_challenge: Optional[str],
+        selected_mode: Optional[str],
+        current_mode: str,
+    ) -> bool:
+        return (
+            identifier_input is not None
+            and last_submitted_challenge not in (None, "identifier")
+            and selected_mode == current_mode
+        )
 
     def _find_related_submit_button(self, source_element: Any):
         if self.driver is None:
@@ -1081,11 +1487,24 @@ class AngelWebOrderBot:
         *,
         context: Optional[Mapping[str, Any]] = None,
         press_enter: bool = False,
+        typing_delay_seconds: float = 0.0,
     ) -> None:
         element = self._find_first(selector_key, context=context)
-        self._clear_and_type_element(element, value, press_enter=press_enter)
+        self._clear_and_type_element(
+            element,
+            value,
+            press_enter=press_enter,
+            typing_delay_seconds=typing_delay_seconds,
+        )
 
-    def _clear_and_type_element(self, element: Any, value: str, *, press_enter: bool = False) -> None:
+    def _clear_and_type_element(
+        self,
+        element: Any,
+        value: str,
+        *,
+        press_enter: bool = False,
+        typing_delay_seconds: float = 0.0,
+    ) -> None:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
@@ -1097,7 +1516,13 @@ class AngelWebOrderBot:
             self.driver.execute_script("arguments[0].click();", element)
         element.send_keys(modifier, "a")
         element.send_keys(Keys.DELETE)
-        element.send_keys(str(value))
+        text_value = str(value)
+        if typing_delay_seconds > 0:
+            for character in text_value:
+                element.send_keys(character)
+                time.sleep(typing_delay_seconds)
+        else:
+            element.send_keys(text_value)
         if press_enter:
             element.send_keys(Keys.ENTER)
 
@@ -1129,6 +1554,24 @@ class AngelWebOrderBot:
     def _normalize_input_value(self, value: str) -> str:
         return str(value).replace(",", "").strip()
 
+    def _dismiss_post_login_dialogs(self, *, timeout_seconds: float = 3.0) -> bool:
+        if self.driver is None:
+            raise RuntimeError("Browser is not initialized.")
+
+        dismissed = False
+        deadline = time.time() + max(timeout_seconds, 0.0)
+        while time.time() < deadline:
+            button = self._find_optional("post_login_got_it_button", timeout_seconds=1)
+            if button is None:
+                return dismissed
+
+            LOGGER.info("Dismissing Angel post-login disclosure modal.")
+            self._click_element(button)
+            dismissed = True
+            time.sleep(1)
+
+        return dismissed
+
     def _set_input_value_with_retry(
         self,
         element: Any,
@@ -1136,6 +1579,7 @@ class AngelWebOrderBot:
         *,
         press_enter: bool = False,
         timeout_seconds: int = 5,
+        typing_delay_seconds: float = 0.0,
     ) -> None:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
@@ -1147,7 +1591,12 @@ class AngelWebOrderBot:
 
         while time.time() < deadline:
             try:
-                self._clear_and_type_element(element, value, press_enter=press_enter)
+                self._clear_and_type_element(
+                    element,
+                    value,
+                    press_enter=press_enter,
+                    typing_delay_seconds=typing_delay_seconds,
+                )
                 last_seen = self._normalize_input_value(element.get_attribute("value") or "")
                 if last_seen == expected_value:
                     return
@@ -1235,12 +1684,16 @@ class AngelWebOrderBot:
                 keys.append(key)
         return keys
 
-    def _select_watchlist(self, watchlist_index: int) -> None:
+    def _select_watchlist(self, watchlist_index: int, *, deadline: Optional[float] = None) -> None:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
-        deadline = time.time() + self.timeout_seconds
-        while time.time() < deadline:
+        local_deadline = time.time() + self._remaining_timeout(
+            deadline,
+            fallback_seconds=self.timeout_seconds,
+            flow_name=f"Watchlist selection for tab {watchlist_index}",
+        )
+        while time.time() < local_deadline:
             for button in self.driver.find_elements(By.CSS_SELECTOR, 'button[role="tab"]'):
                 if button.text.strip() == str(watchlist_index):
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
@@ -1282,10 +1735,14 @@ class AngelWebOrderBot:
         search.send_keys(Keys.ESCAPE)
         time.sleep(1)
 
-    def _find_search_result_row(self, candidate: WatchlistCandidate) -> Any:
-        deadline = time.time() + self.timeout_seconds
+    def _find_search_result_row(self, candidate: WatchlistCandidate, *, deadline: Optional[float] = None) -> Any:
+        local_deadline = time.time() + self._remaining_timeout(
+            deadline,
+            fallback_seconds=self.timeout_seconds,
+            flow_name=f"Watchlist search for {candidate.symbol}",
+        )
         target = candidate.key()
-        while time.time() < deadline:
+        while time.time() < local_deadline:
             rows = self._find_watchlist_rows(search_mode=True)
             for row in rows:
                 row_key = self._extract_watchlist_row_key(row)
@@ -1294,11 +1751,15 @@ class AngelWebOrderBot:
             time.sleep(0.25)
         raise TimeoutException(f"Could not find watchlist search row for {candidate.to_log_dict()}.")
 
-    def _find_watchlist_row(self, candidate: WatchlistCandidate) -> Any:
-        deadline = time.time() + self.timeout_seconds
+    def _find_watchlist_row(self, candidate: WatchlistCandidate, *, deadline: Optional[float] = None) -> Any:
+        local_deadline = time.time() + self._remaining_timeout(
+            deadline,
+            fallback_seconds=self.timeout_seconds,
+            flow_name=f"Watchlist row lookup for {candidate.symbol}",
+        )
         target = candidate.key()
         last_seen = 0
-        while time.time() < deadline:
+        while time.time() < local_deadline:
             rows = self._find_watchlist_rows(search_mode=False)
             last_seen = len(rows)
             for row in rows:
@@ -1311,7 +1772,13 @@ class AngelWebOrderBot:
             f"Visible rows={last_seen}."
         )
 
-    def _click_watchlist_action(self, candidate: WatchlistCandidate, side: str) -> None:
+    def _click_watchlist_action(
+        self,
+        candidate: WatchlistCandidate,
+        side: str,
+        *,
+        deadline: Optional[float] = None,
+    ) -> None:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
         if ActionChains is None:
@@ -1320,11 +1787,15 @@ class AngelWebOrderBot:
             ) from SELENIUM_IMPORT_ERROR
 
         button_id = side.lower()
-        deadline = time.time() + self.timeout_seconds
+        local_deadline = time.time() + self._remaining_timeout(
+            deadline,
+            fallback_seconds=self.timeout_seconds,
+            flow_name=f"Watchlist action {side} for {candidate.symbol}",
+        )
         last_error: Optional[Exception] = None
-        while time.time() < deadline:
+        while time.time() < local_deadline:
             try:
-                row = self._find_watchlist_row(candidate)
+                row = self._find_watchlist_row(candidate, deadline=deadline)
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", row)
                 ActionChains(self.driver).move_to_element(row).perform()
                 time.sleep(0.4)
@@ -1339,6 +1810,28 @@ class AngelWebOrderBot:
             f"Could not click '{side}' for watchlist row {candidate.to_log_dict()}. "
             f"Last error: {last_error}"
         )
+
+    def _ensure_watchlist_candidate_present(
+        self,
+        candidate: WatchlistCandidate,
+        *,
+        watchlist_index: int,
+        deadline: Optional[float] = None,
+    ) -> None:
+        try:
+            self._find_watchlist_row(candidate, deadline=deadline)
+            return
+        except TimeoutException:
+            LOGGER.warning(
+                "Watchlist candidate was not present; attempting automatic add | watchlist_index=%s candidate=%s",
+                watchlist_index,
+                json.dumps(candidate.to_log_dict(), sort_keys=True),
+            )
+
+        self.add_candidate_to_watchlist(candidate, deadline=deadline)
+        self._close_watchlist_search()
+        self._select_watchlist(watchlist_index, deadline=deadline)
+        self._find_watchlist_row(candidate, deadline=deadline)
 
     def _find_element_by_id(self, element_id: str, *, timeout_seconds: Optional[int] = None):
         if self.driver is None:
@@ -1600,11 +2093,11 @@ class AngelWebOrderBot:
 
         return normalized
 
-    def _wait_for_post_submit_state(self) -> Optional[str]:
+    def _wait_for_post_submit_state(self, *, timeout_seconds: float = 12) -> Optional[str]:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
-        deadline = time.time() + 12
+        deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             try:
                 scheduled = self._find_first("scheduled_order_title", timeout_seconds=1)
@@ -1684,18 +2177,38 @@ class AngelWebOrderBot:
 
         if order.price is not None:
             # Angel occasionally ignores the first price update unless the pad settles first.
-            time.sleep(3)
+            LOGGER.info(
+                "Pausing before filling Angel limit price | seconds=%s symbol=%s",
+                ORDER_PRICE_SETTLE_DELAY_SECONDS,
+                order.symbol,
+            )
+            time.sleep(ORDER_PRICE_SETTLE_DELAY_SECONDS)
             price_input = self._find_element_by_id("priceOrderPad")
-            self._set_input_value_with_retry(price_input, str(order.price))
+            LOGGER.info(
+                "Typing Angel limit price with inter-key delay | seconds=%s symbol=%s",
+                ORDER_PRICE_TYPING_DELAY_SECONDS,
+                order.symbol,
+            )
+            self._set_input_value_with_retry(
+                price_input,
+                str(order.price),
+                typing_delay_seconds=ORDER_PRICE_TYPING_DELAY_SECONDS,
+            )
 
-    def add_candidate_to_watchlist(self, candidate: WatchlistCandidate) -> Dict[str, Any]:
+    def add_candidate_to_watchlist(
+        self,
+        candidate: WatchlistCandidate,
+        *,
+        deadline: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
+        flow_deadline = deadline or self._build_flow_deadline(WATCHLIST_ADD_HARD_TIMEOUT_SECONDS)
         LOGGER.info("Adding watchlist candidate | candidate=%s", json.dumps(candidate.to_log_dict(), sort_keys=True))
         self._set_watchlist_search(candidate.name)
         self._filter_watchlist_search_to_commodity()
-        row = self._find_search_result_row(candidate)
+        row = self._find_search_result_row(candidate, deadline=flow_deadline)
         buttons = row.find_elements(By.TAG_NAME, "button")
         if not buttons:
             raise RuntimeError(f"Search row for {candidate.symbol} did not expose any actions.")
@@ -1808,6 +2321,7 @@ class AngelWebOrderBot:
         try:
             self._find_first("page_ready", timeout_seconds=3)
             page_ready = True
+            self._dismiss_post_login_dialogs(timeout_seconds=1.5)
         except TimeoutException:
             page_ready = False
 
@@ -1837,6 +2351,7 @@ class AngelWebOrderBot:
         self.driver.get(self.url)
         try:
             self._find_first("page_ready", timeout_seconds=5)
+            self._dismiss_post_login_dialogs(timeout_seconds=1.5)
         except TimeoutException:
             LOGGER.info("Page-ready markers were not visible immediately after navigation.")
 
@@ -1896,7 +2411,9 @@ class AngelWebOrderBot:
         identifier_submit_attempts = 0
         last_identifier_submit_at = 0.0
         otp_wait_started_at: Optional[float] = None
-        deadline = time.time() + max(self.otp_timeout_seconds + 30, 60)
+        deadline = self._build_flow_deadline(
+            min(max(self.otp_timeout_seconds + 30, 60), FILE_LOGIN_HARD_TIMEOUT_SECONDS)
+        )
         last_wait_log_at = 0.0
         last_submitted_challenge: Optional[str] = None
         selected_mode: Optional[str] = None
@@ -1911,27 +2428,6 @@ class AngelWebOrderBot:
                 if switched or current_mode == "mobile":
                     selected_mode = current_mode
 
-            identifier_input = self._find_optional("login_identifier_input", timeout_seconds=1)
-            if identifier_input is not None and (
-                not identifier_submitted or (time.time() - last_identifier_submit_at) >= 8
-            ):
-                attempt_number = identifier_submit_attempts + 1
-                LOGGER.info(
-                    "Submitting Angel login identifier from file | attempt=%s mode=%s",
-                    attempt_number,
-                    current_mode,
-                )
-                time.sleep(AUTH_FIELD_FILL_DELAY_SECONDS)
-                self._set_input_value_with_retry(identifier_input, current_identifier)
-                self._submit_auth_step("login_continue_button", source_element=identifier_input)
-                identifier_submitted = True
-                identifier_submit_attempts += 1
-                last_identifier_submit_at = time.time()
-                last_submitted_challenge = "identifier"
-                LOGGER.info("Angel login identifier submitted. Waiting for MPIN/OTP challenge.")
-                time.sleep(2)
-                continue
-
             challenge = self._detect_auth_challenge()
 
             if challenge == "otp":
@@ -1945,9 +2441,13 @@ class AngelWebOrderBot:
                 if last_submitted_challenge != "otp":
                     otp_code = self._read_otp_from_file(otp_wait_started_at)
                     LOGGER.info("Submitting Angel OTP from file.")
-                    time.sleep(AUTH_FIELD_FILL_DELAY_SECONDS)
+                    time.sleep(OTP_FILL_DELAY_SECONDS)
                     otp_inputs = self._resolve_auth_inputs("otp")
-                    self._fill_code_elements(otp_inputs, otp_code)
+                    self._fill_code_elements(
+                        otp_inputs,
+                        otp_code,
+                        typing_delay_seconds=OTP_TYPING_DELAY_SECONDS,
+                    )
                     self._submit_auth_step("otp_submit_button", source_element=otp_inputs[0] if otp_inputs else None)
                     last_submitted_challenge = "otp"
                 time.sleep(2)
@@ -1960,11 +2460,86 @@ class AngelWebOrderBot:
                     )
                 if last_submitted_challenge != "mpin":
                     LOGGER.info("Submitting Angel MPIN from file.")
-                    time.sleep(AUTH_FIELD_FILL_DELAY_SECONDS)
+                    time.sleep(MPIN_FILL_DELAY_SECONDS)
                     mpin_inputs = self._resolve_auth_inputs("mpin")
-                    self._fill_code_elements(mpin_inputs, mpin)
+                    self._fill_code_elements(
+                        mpin_inputs,
+                        mpin,
+                        typing_delay_seconds=MPIN_TYPING_DELAY_SECONDS,
+                    )
+                    time.sleep(AUTH_SUBMIT_BUTTON_DELAY_SECONDS)
                     self._submit_auth_step("mpin_submit_button", source_element=mpin_inputs[0] if mpin_inputs else None)
                     last_submitted_challenge = "mpin"
+                time.sleep(2)
+                continue
+
+            if last_submitted_challenge == "otp" and self._page_mentions_pin_prompt():
+                LOGGER.info("Angel PIN prompt text detected after OTP; waiting for MPIN challenge instead of retrying identifier.")
+                time.sleep(1)
+                continue
+
+            identifier_input = self._find_login_identifier_input(
+                timeout_seconds=1,
+                allow_form_fallback=last_submitted_challenge in (None, "identifier"),
+            )
+            if (
+                identifier_input is not None
+                and last_submitted_challenge == "otp"
+                and mpin
+                and not self._login_mode_tabs_visible()
+            ):
+                LOGGER.info("Angel reused the login input for the PIN step after OTP; submitting MPIN through that field.")
+                time.sleep(MPIN_FILL_DELAY_SECONDS)
+                self._set_input_value_with_retry(
+                    identifier_input,
+                    mpin,
+                    typing_delay_seconds=MPIN_TYPING_DELAY_SECONDS,
+                )
+                time.sleep(AUTH_SUBMIT_BUTTON_DELAY_SECONDS)
+                self._submit_auth_step("mpin_submit_button", source_element=identifier_input)
+                last_submitted_challenge = "mpin"
+                time.sleep(2)
+                continue
+            if self._identifier_screen_requires_mode_reset(
+                identifier_input,
+                last_submitted_challenge,
+                selected_mode,
+                current_mode,
+            ):
+                LOGGER.info(
+                    "Angel login identifier screen reappeared after %s; reapplying login mode %s.",
+                    last_submitted_challenge,
+                    current_mode,
+                )
+                selected_mode = None
+                time.sleep(0.5)
+                continue
+            if identifier_input is not None and (
+                not identifier_submitted or (time.time() - last_identifier_submit_at) >= 8
+            ):
+                if identifier_submit_attempts >= MAX_LOGIN_IDENTIFIER_SUBMIT_ATTEMPTS:
+                    raise TimeoutException(
+                        "Angel login exceeded the maximum identifier submit attempts. "
+                        "Stopping to avoid looping on the login screen."
+                    )
+                attempt_number = identifier_submit_attempts + 1
+                LOGGER.info(
+                    "Submitting Angel login identifier from file | attempt=%s mode=%s",
+                    attempt_number,
+                    current_mode,
+                )
+                time.sleep(LOGIN_IDENTIFIER_FILL_DELAY_SECONDS)
+                self._set_input_value_with_retry(
+                    identifier_input,
+                    current_identifier,
+                    typing_delay_seconds=LOGIN_IDENTIFIER_TYPING_DELAY_SECONDS,
+                )
+                self._submit_auth_step("login_continue_button", source_element=identifier_input)
+                identifier_submitted = True
+                identifier_submit_attempts += 1
+                last_identifier_submit_at = time.time()
+                last_submitted_challenge = "identifier"
+                LOGGER.info("Angel login identifier submitted. Waiting for MPIN/OTP challenge.")
                 time.sleep(2)
                 continue
 
@@ -1995,10 +2570,11 @@ class AngelWebOrderBot:
                     )
                 )
 
-            if identifier_submitted and (time.time() - last_wait_log_at) >= 10:
+            if last_submitted_challenge is not None and (time.time() - last_wait_log_at) >= 10:
                 last_wait_log_at = time.time()
                 LOGGER.info(
-                    "Angel login is still waiting for the next challenge after identifier submit | mode=%s url=%s title=%s",
+                    "Angel login is still waiting after %s submit | mode=%s url=%s title=%s",
+                    last_submitted_challenge,
                     current_mode,
                     self.driver.current_url,
                     self.driver.title,
@@ -2013,30 +2589,40 @@ class AngelWebOrderBot:
         )
         return False
 
-    def wait_for_manual_login(self) -> None:
+    def wait_for_manual_login(self, *, timeout_seconds: float = MANUAL_LOGIN_HARD_TIMEOUT_SECONDS) -> None:
         print(
             textwrap.dedent(
                 f"""
                 Browser launched.
                 1. Log in to Angel One manually in that browser.
                 2. Navigate until the watchlist/chart page is visible.
-                3. Press Enter here once the page is ready.
+                3. The bot will wait up to {int(timeout_seconds)} seconds for the page to become ready.
                 """
             ).strip()
         )
-        input()
+        deadline = self._build_flow_deadline(timeout_seconds)
+        while time.time() < deadline:
+            if self._selector_exists("page_ready", timeout_seconds=1):
+                LOGGER.info("Angel page became ready after manual login.")
+                return
+            time.sleep(1)
+
+        raise TimeoutException("Manual Angel login did not reach a ready state before timeout.")
 
     def ensure_ready(self, allow_manual_login: bool = False) -> None:
         try:
             self._find_first("page_ready", timeout_seconds=10)
+            self._dismiss_post_login_dialogs(timeout_seconds=2.0)
         except TimeoutException:
             LOGGER.warning("Could not confirm page-ready state immediately.")
             if self._attempt_login_from_files():
                 self._find_first("page_ready", timeout_seconds=10)
+                self._dismiss_post_login_dialogs(timeout_seconds=2.0)
                 return
             if allow_manual_login:
                 LOGGER.info("Manual login is allowed for this run. Waiting for user.")
                 self.wait_for_manual_login()
+                self._dismiss_post_login_dialogs(timeout_seconds=2.0)
             else:
                 raise
 
@@ -2051,6 +2637,7 @@ class AngelWebOrderBot:
             raise RuntimeError("Browser is not initialized.")
 
         LOGGER.info("Starting Angel web order flow | order=%s", json.dumps(order.to_log_dict(), sort_keys=True))
+        flow_deadline = self._build_flow_deadline(ORDER_PLACEMENT_HARD_TIMEOUT_SECONDS)
         self.open_target_page()
         self.ensure_ready(allow_manual_login=order.allow_manual_login)
         self._reset_order_entry_state()
@@ -2071,8 +2658,13 @@ class AngelWebOrderBot:
                         json.dumps(candidate.to_log_dict(), sort_keys=True),
                         attempt + 1,
                     )
-                    self._select_watchlist(watchlist_index)
-                    self._click_watchlist_action(candidate, order.side)
+                    self._select_watchlist(watchlist_index, deadline=flow_deadline)
+                    self._ensure_watchlist_candidate_present(
+                        candidate,
+                        watchlist_index=watchlist_index,
+                        deadline=flow_deadline,
+                    )
+                    self._click_watchlist_action(candidate, order.side, deadline=flow_deadline)
                     self._fill_order_pad_fields(order)
                 else:
                     self._clear_and_type("search_input", order.symbol, press_enter=False)
@@ -2119,19 +2711,49 @@ class AngelWebOrderBot:
             }
 
         self._prepare_submit_click()
-        submit_button = self._wait_for_submit_ready(order, timeout_seconds=8, refill_attempts=1)
-        time.sleep(1)
+        submit_button = self._wait_for_submit_ready(
+            order,
+            timeout_seconds=self._remaining_timeout(
+                flow_deadline,
+                fallback_seconds=8,
+                flow_name=f"Angel order placement for {order.symbol}",
+            ),
+            refill_attempts=1,
+        )
+        LOGGER.info(
+            "Pausing before Angel submit click | seconds=%s symbol=%s",
+            ORDER_SUBMIT_BUTTON_DELAY_SECONDS,
+            order.symbol,
+        )
+        time.sleep(ORDER_SUBMIT_BUTTON_DELAY_SECONDS)
         self._click_element(submit_button)
-        transition_state = self._wait_for_post_submit_state()
+        transition_state = self._wait_for_post_submit_state(
+            timeout_seconds=self._remaining_timeout(
+                flow_deadline,
+                fallback_seconds=12,
+                flow_name=f"Angel order placement for {order.symbol}",
+            )
+        )
         if transition_state == "confirm_required":
             try:
                 confirm_button = self._find_first_enabled("confirm_button", timeout_seconds=3)
-                time.sleep(1)
+                LOGGER.info(
+                    "Pausing before Angel confirm click | seconds=%s symbol=%s",
+                    ORDER_CONFIRM_BUTTON_DELAY_SECONDS,
+                    order.symbol,
+                )
+                time.sleep(ORDER_CONFIRM_BUTTON_DELAY_SECONDS)
                 self._click_element(confirm_button)
             except (TimeoutException, KeyError):
                 LOGGER.info("Confirm button was not enabled; waiting for downstream transition.")
 
-            follow_up_state = self._wait_for_post_submit_state()
+            follow_up_state = self._wait_for_post_submit_state(
+                timeout_seconds=self._remaining_timeout(
+                    flow_deadline,
+                    fallback_seconds=12,
+                    flow_name=f"Angel order placement for {order.symbol}",
+                )
+            )
             if follow_up_state not in (None, "confirm_required", "no_transition"):
                 transition_state = follow_up_state
 
@@ -2343,28 +2965,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 def run_launch_command(args: argparse.Namespace) -> int:
     profile_dir = pathlib.Path(args.profile_dir).expanduser().resolve()
-    profile_dir.mkdir(parents=True, exist_ok=True)
-
     chrome_binary = resolve_chrome_binary(args.chrome_binary)
-    command = [
-        chrome_binary,
-        f"--remote-debugging-port={args.debug_port}",
-        f"--user-data-dir={profile_dir}",
-        "--new-window",
-        APP_URL,
-    ]
-
-    LOGGER.info(
-        "Launching dedicated Angel browser | chrome_binary=%s profile_dir=%s debug_port=%s",
-        chrome_binary,
-        profile_dir,
-        args.debug_port,
-    )
-    subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    debugger_address = f"127.0.0.1:{args.debug_port}"
+    launch_debugger_chrome_session(
+        chrome_binary=chrome_binary,
+        profile_dir=profile_dir,
+        debugger_address=debugger_address,
+        url=args.url,
     )
 
     print(
@@ -2372,12 +2979,12 @@ def run_launch_command(args: argparse.Namespace) -> int:
             f"""
             Chrome launched for Angel web trading.
 
-            Remote debugger: 127.0.0.1:{args.debug_port}
+            Remote debugger: {debugger_address}
             Profile dir: {profile_dir}
 
             Leave that browser open after logging in.
             Later, place an order with:
-              python3 angel_web_order_bot.py place --debugger-address 127.0.0.1:{args.debug_port} --order-file {DEFAULT_ORDER_PATH}
+              python3 angel_web_order_bot.py place --debugger-address {debugger_address} --order-file {DEFAULT_ORDER_PATH}
             """
         ).strip()
     )

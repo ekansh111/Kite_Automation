@@ -8,19 +8,24 @@ rounds once, and executes via existing Kite/Angel order handlers.
 Architecture:
   - One queue + one daemon worker thread per instrument (serial within, parallel across)
   - Flask returns 200 immediately; worker processes in background
-  - Reconciliation runs every 15 minutes (alert-only, no auto-correction)
+  - Reconciliation runs every 15 minutes (syncs confirmed_qty to broker and alerts on unexpected mismatches)
 """
 
+import copy
 import json
 import math
+import os
 import time
 import queue
 import threading
 import logging
 import smtplib
+import uuid
 from email.mime.text import MIMEText
 from pathlib import Path
 from datetime import datetime
+
+import requests
 
 import forecast_db as db
 import Kite_Server_Order_Handler as KiteHandler
@@ -59,6 +64,21 @@ class ForecastOrchestrator:
 
         # DryRun from config JSON: if present and true → dry run, otherwise live
         self.DryRun = self.Account.get("dry_run", False)
+        self.AngelRemoteExecutionUrl = (os.environ.get("ANGEL_REMOTE_EXECUTION_URL") or "").strip()
+        self.AngelExecutorToken = (os.environ.get("ANGEL_EXECUTOR_TOKEN") or "").strip()
+        try:
+            self.AngelRemoteExecutionTimeoutSeconds = float(
+                os.environ.get("ANGEL_REMOTE_EXECUTION_TIMEOUT_SECONDS", "60")
+            )
+        except ValueError:
+            self.AngelRemoteExecutionTimeoutSeconds = 60.0
+            Logger.warning(
+                "Invalid ANGEL_REMOTE_EXECUTION_TIMEOUT_SECONDS value; defaulting to %.1f seconds",
+                self.AngelRemoteExecutionTimeoutSeconds,
+            )
+
+        # Ensure the schema exists before any startup reads against optional newer tables.
+        db.InitDB()
 
         # Compute effective capital = base_capital + cumulative realized P&L
         BaseCapital = self.Account["base_capital"]
@@ -88,13 +108,17 @@ class ForecastOrchestrator:
             for SysKey in InstCfg.get("subsystems", {}):
                 self._SystemNameMap[SysKey] = (InstName, SysKey)
 
-        # Initialize database
-        db.InitDB()
-
         # One queue per instrument
         self.Queues = {}
         self._Workers = {}
         self._ReconTimer = None
+
+        if self.AngelRemoteExecutionUrl:
+            Logger.info(
+                "Angel remote execution enabled | url=%s timeout_seconds=%.1f",
+                self.AngelRemoteExecutionUrl,
+                self.AngelRemoteExecutionTimeoutSeconds,
+            )
 
         for InstName in self.Instruments:
             self.Queues[InstName] = queue.Queue()
@@ -171,6 +195,250 @@ class ForecastOrchestrator:
         # 4. Fall back to raw name (will log a warning upstream)
         return RawName
 
+    def _GetContractLookupName(self, Instrument):
+        """Return the broker-facing root symbol used for contract lookup."""
+        Config = self.Instruments[Instrument]
+        Routing = Config.get("order_routing", {})
+        return str(Routing.get("ContractLookupName") or Instrument)
+
+    def _GetReconciliationPrefixes(self, Instrument):
+        """Return broker symbol prefixes that identify this instrument's positions."""
+        Config = self.Instruments[Instrument]
+        Routing = Config.get("order_routing", {})
+        Prefixes = Routing.get("ReconciliationPrefixes")
+
+        if Prefixes is None:
+            Prefixes = [self._GetContractLookupName(Instrument), Instrument]
+        elif isinstance(Prefixes, str):
+            Prefixes = [Prefixes]
+
+        Normalized = []
+        Seen = set()
+        for Prefix in Prefixes:
+            PrefixText = str(Prefix).strip().upper()
+            if PrefixText and PrefixText not in Seen:
+                Seen.add(PrefixText)
+                Normalized.append(PrefixText)
+        return Normalized
+
+    def _CalculateBrokerQty(self, Instrument, BrokerPositions):
+        """Aggregate broker net quantity for an instrument using configured prefixes."""
+        Prefixes = self._GetReconciliationPrefixes(Instrument)
+        BrokerQty = 0
+
+        for BrokerSymbol, Qty in BrokerPositions.items():
+            SymbolUpper = str(BrokerSymbol).strip().upper()
+            for Prefix in Prefixes:
+                if SymbolUpper.startswith(Prefix):
+                    BrokerQty += Qty
+                    break
+
+        return BrokerQty
+
+    def _SyncInstrumentWithBroker(self, Instrument, Config):
+        """Refresh confirmed_qty from broker positions for a single instrument."""
+        Pos = db.GetSystemPosition(Instrument)
+        ConfirmedQty = Pos["confirmed_qty"]
+        TargetQty = Pos["target_qty"]
+        BrokerPositions = self._FetchBrokerPositions(Config["broker"], Config["user"])
+        BrokerQty = self._CalculateBrokerQty(Instrument, BrokerPositions)
+
+        if BrokerQty == ConfirmedQty:
+            return {
+                "changed": False,
+                "confirmed_qty": ConfirmedQty,
+                "target_qty": TargetQty,
+                "broker_qty": BrokerQty,
+            }
+
+        db.UpdateSystemPosition(Instrument, TargetQty, BrokerQty)
+
+        SyncedToTarget = (TargetQty != ConfirmedQty and BrokerQty == TargetQty)
+        if SyncedToTarget:
+            Logger.info(
+                "%s: Broker position reached pending target; confirmed_qty synced %d -> %d",
+                Instrument, ConfirmedQty, BrokerQty
+            )
+        else:
+            Logger.warning(
+                "%s: Broker position sync adjusted confirmed_qty %d -> %d (target=%d)",
+                Instrument, ConfirmedQty, BrokerQty, TargetQty
+            )
+
+        return {
+            "changed": True,
+            "confirmed_qty": ConfirmedQty,
+            "target_qty": TargetQty,
+            "broker_qty": BrokerQty,
+            "synced_to_target": SyncedToTarget,
+        }
+
+    def _ShouldUseRemoteAngelExecutor(self, OrderDict, Broker):
+        """Return True when Angel NCDEX orders should be delegated to a remote worker."""
+        if Broker != "ANGEL" or not self.AngelRemoteExecutionUrl:
+            return False
+        return str(OrderDict.get("Exchange", "")).strip().upper() == "NCDEX"
+
+    def _ExecuteRemoteAngel(self, OrderDict):
+        """Delegate an Angel order to the Windows browser worker and mirror its response."""
+        RequestId = str(uuid.uuid4())
+        Payload = {
+            "request_id": RequestId,
+            "source": "forecast_orchestrator",
+            "instrument": str(OrderDict.get("Tradingsymbol") or ""),
+            "order": copy.deepcopy(OrderDict),
+        }
+        Headers = {"Content-Type": "application/json"}
+        if self.AngelExecutorToken:
+            Headers["Authorization"] = f"Bearer {self.AngelExecutorToken}"
+
+        Logger.info(
+            "Forwarding Angel order to remote executor | request_id=%s url=%s order=%s",
+            RequestId,
+            self.AngelRemoteExecutionUrl,
+            {
+                "Exchange": OrderDict.get("Exchange"),
+                "Tradingsymbol": OrderDict.get("Tradingsymbol"),
+                "Tradetype": OrderDict.get("Tradetype"),
+                "Quantity": OrderDict.get("Quantity"),
+                "Ordertype": OrderDict.get("Ordertype"),
+                "User": OrderDict.get("User"),
+            },
+        )
+
+        try:
+            Response = requests.post(
+                self.AngelRemoteExecutionUrl,
+                json=Payload,
+                headers=Headers,
+                timeout=self.AngelRemoteExecutionTimeoutSeconds,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Remote Angel execution request failed: {exc}") from exc
+
+        try:
+            ResponsePayload = Response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Remote Angel executor returned non-JSON response (status={Response.status_code})"
+            ) from exc
+
+        if not isinstance(ResponsePayload, dict):
+            raise RuntimeError(
+                f"Remote Angel executor returned invalid payload type: {type(ResponsePayload).__name__}"
+            )
+
+        RequestStatus = str(ResponsePayload.get("status") or "").strip().lower()
+        if Response.status_code == 202:
+            raise RuntimeError(
+                ResponsePayload.get("message")
+                or "Remote Angel execution request is already processing."
+            )
+
+        if ResponsePayload.get("execution_route") is not None:
+            OrderDict["ExecutionRoute"] = ResponsePayload.get("execution_route")
+        if ResponsePayload.get("order_id") is not None:
+            OrderDict["OrderId"] = ResponsePayload.get("order_id")
+        if ResponsePayload.get("warning"):
+            OrderDict["LastOrderWarning"] = ResponsePayload.get("warning")
+        if ResponsePayload.get("error"):
+            OrderDict["LastOrderError"] = ResponsePayload.get("error")
+        OrderDict["RemoteExecutionRequestId"] = RequestId
+
+        if Response.status_code >= 400:
+            raise RuntimeError(
+                ResponsePayload.get("error")
+                or ResponsePayload.get("message")
+                or f"Remote Angel executor HTTP {Response.status_code}"
+            )
+
+        if RequestStatus == "error":
+            raise RuntimeError(
+                ResponsePayload.get("error")
+                or ResponsePayload.get("message")
+                or "Remote Angel executor reported an error."
+            )
+
+        Logger.info(
+            "Remote Angel execution returned | request_id=%s status=%s execution_route=%s order_id=%s",
+            RequestId,
+            ResponsePayload.get("status"),
+            ResponsePayload.get("execution_route"),
+            ResponsePayload.get("order_id"),
+        )
+        return ResponsePayload
+
+    @staticmethod
+    def _FormatLegacyLimitPrice(Price):
+        """Normalize price values for legacy order dicts."""
+        if Price in (None, ""):
+            return None
+        PriceValue = float(Price)
+        if PriceValue <= 0:
+            return None
+        return format(PriceValue, ".10f").rstrip("0").rstrip(".")
+
+    def _PrimeAngelLegacyLimitPrice(self, Instrument, OrderDict):
+        """Populate Angel LIMIT order price on Unix before legacy/browser execution."""
+        if str(OrderDict.get("Broker", "")).strip().upper() != "ANGEL":
+            return
+        if str(OrderDict.get("Ordertype", "")).strip().upper() == "MARKET":
+            return
+
+        ExplicitPrice = self._FormatLegacyLimitPrice(OrderDict.get("Price"))
+        if ExplicitPrice:
+            OrderDict["Price"] = ExplicitPrice
+            return
+
+        WebhookLtp = db.GetLatestLTP(Instrument)
+        WebhookPrice = self._FormatLegacyLimitPrice(WebhookLtp)
+        if WebhookPrice:
+            OrderDict["Price"] = WebhookPrice
+            Logger.info(
+                "%s: Using webhook LTP for Angel limit order | price=%s",
+                Instrument,
+                WebhookPrice,
+            )
+            return
+
+        Logger.info(
+            "%s: No webhook LTP supplied; fetching Angel LTP on Unix before execution",
+            Instrument,
+        )
+
+        PreflightOrder = copy.deepcopy(OrderDict)
+        Session = AngelHandler.EstablishConnectionAngelAPI(PreflightOrder)
+        AngelHandler.ConfigureNetDirectionOfTrade(PreflightOrder)
+        AngelHandler.Validate_Quantity(PreflightOrder)
+
+        if PreflightOrder['ContractNameProvided'] == 'False':
+            AngelHandler.PrepareInstrumentContractName(Session, PreflightOrder)
+            if PreflightOrder.get("LastOrderError"):
+                raise RuntimeError(PreflightOrder["LastOrderError"])
+
+        PreparedOrder = AngelHandler.PrepareOrderAngel(Session, PreflightOrder)
+        if PreparedOrder.get("LastOrderError"):
+            raise RuntimeError(PreparedOrder["LastOrderError"])
+
+        ResolvedPrice = self._FormatLegacyLimitPrice(PreparedOrder.get("Price"))
+        if not ResolvedPrice:
+            raise RuntimeError("Angel Unix LTP preflight did not produce a usable limit price.")
+
+        for Key in ("Tradingsymbol", "Symboltoken", "Quantity", "Netposition"):
+            if PreparedOrder.get(Key) not in (None, ""):
+                OrderDict[Key] = PreparedOrder[Key]
+
+        if PreparedOrder.get("Tradingsymbol") and PreparedOrder.get("Symboltoken"):
+            OrderDict["ContractNameProvided"] = "True"
+
+        OrderDict["Price"] = ResolvedPrice
+        Logger.info(
+            "%s: Retrieved Angel LTP on Unix | price=%s tradingsymbol=%s",
+            Instrument,
+            ResolvedPrice,
+            OrderDict.get("Tradingsymbol"),
+        )
+
     # ─── Webhook Handler ──────────────────────────────────────────────
 
     def HandleWebhook(self, Payload):
@@ -184,14 +452,22 @@ class ForecastOrchestrator:
             "SystemName": "S30A_GoldM",
             "Instrument": "GOLDM",
             "Netposition": 1,       # 1, 0, or -1
-            "ATR": 1200.5
+            "ATR": 1200.5,
+            "LTP": 72500.0          # optional, used for Angel limit-order routing
         }
         """
         RawSystemName = Payload["SystemName"]
         Instrument = Payload["Instrument"]
         Netposition = int(Payload["Netposition"])
         ATR = float(Payload["ATR"])
+        LtpRaw = Payload.get("LTP", Payload.get("ltp"))
         Action = Payload.get("Action", "").lower().strip() or None  # "buy" or "sell" or None
+
+        LTP = None
+        if LtpRaw not in (None, ""):
+            LTP = float(LtpRaw)
+            if LTP <= 0:
+                return {"status": "error", "message": f"Invalid LTP for {Instrument}: {LtpRaw}"}
 
         # Validate instrument is known
         if Instrument not in self.Instruments:
@@ -220,7 +496,7 @@ class ForecastOrchestrator:
             Forecast = 0.0
 
         # Log raw signal with original name (append-only, never overwritten)
-        db.LogTVSignal(Instrument, RawSystemName, Netposition, ATR, Action)
+        db.LogTVSignal(Instrument, RawSystemName, Netposition, ATR, Action, LTP)
 
         # Upsert derived forecast using normalized config key
         db.UpsertForecast(Instrument, SystemName, Forecast, ATR, Action)
@@ -229,11 +505,11 @@ class ForecastOrchestrator:
         self.Queues[Instrument].put(Instrument)
 
         Logger.info(
-            "Webhook: %s | %s (raw: %s) | netpos=%d → forecast=%.0f | ATR=%.2f | action=%s",
-            Instrument, SystemName, RawSystemName, Netposition, Forecast, ATR, Action
+            "Webhook: %s | %s (raw: %s) | netpos=%d → forecast=%.0f | ATR=%.2f | LTP=%s | action=%s",
+            Instrument, SystemName, RawSystemName, Netposition, Forecast, ATR, LTP, Action
         )
         return {"status": "ok", "instrument": Instrument, "system": SystemName,
-                "raw_system_name": RawSystemName, "action": Action}
+                "raw_system_name": RawSystemName, "action": Action, "ltp": LTP}
 
     # ─── Worker Loop ──────────────────────────────────────────────────
 
@@ -343,14 +619,54 @@ class ForecastOrchestrator:
                 Target = int(Override["value"])
                 Logger.info("%s: SET_POSITION override active, target → %d", Instrument, Target)
 
-        # Step 8: Get current confirmed position
+        # Step 8: Refresh pending positions from broker before deciding whether to trade again.
         Pos = db.GetSystemPosition(Instrument)
-        Current = Pos["confirmed_qty"]
+        if Pos["target_qty"] != Pos["confirmed_qty"]:
+            try:
+                self._SyncInstrumentWithBroker(Instrument, Config)
+                Pos = db.GetSystemPosition(Instrument)
+            except Exception as e:
+                Logger.warning(
+                    "%s: Pending broker sync failed, keeping DB state as-is: %s",
+                    Instrument, e
+                )
 
-        # Step 9: Calculate delta
+        # Step 9: Get current confirmed position
+        Current = Pos["confirmed_qty"]
+        PendingTarget = Pos["target_qty"]
+
+        # Step 10: Avoid resubmitting while a prior browser/LIMIT order is unresolved.
+        if PendingTarget != Current:
+            if Target == PendingTarget:
+                Logger.info(
+                    "%s: Existing pending target=%d with confirmed=%d; skipping duplicate execution",
+                    Instrument, PendingTarget, Current
+                )
+                db.LogOrder(
+                    Instrument, "BUY" if Target > Current else "SELL",
+                    abs(Target - Current), "PENDING_SKIP",
+                    Reason=f"pending_target={PendingTarget}, confirmed={Current}"
+                )
+                db.UpdateSystemPosition(Instrument, Target, Current)
+                return
+
+            PendingMsg = (
+                f"{Instrument}: Pending target {PendingTarget} is unresolved with confirmed_qty "
+                f"{Current}; new target {Target} will not be traded until broker sync."
+            )
+            Logger.warning(PendingMsg)
+            db.LogOrder(
+                Instrument, "BUY" if Target > Current else "SELL",
+                abs(Target - Current), "PENDING_CONFLICT",
+                Reason=PendingMsg
+            )
+            db.UpdateSystemPosition(Instrument, PendingTarget, Current)
+            return
+
+        # Step 11: Calculate delta
         Delta = Target - Current
 
-        # Step 10: Position inertia — skip if delta is too small relative to target
+        # Step 12: Position inertia — skip if delta is too small relative to target
         InertiaPct = Config.get("position_inertia_pct", 0.10)
         if Target != 0 and abs(Delta) < InertiaPct * abs(Target):
             Logger.info(
@@ -379,7 +695,7 @@ class ForecastOrchestrator:
             Target, Current, Delta
         )
 
-        # Step 11: Direction cross-check — halt if orchestrator delta conflicts
+        # Step 13: Direction cross-check — halt if orchestrator delta conflicts
         # with ALL subsystem actions from TradingView.
         # e.g., all subsystems say "sell" but orchestrator wants to BUY → DB out of sync
         SubsystemActions = [
@@ -417,7 +733,7 @@ class ForecastOrchestrator:
                 self._SendDirectionConflictAlert(Instrument, "BUY", "SELL", Delta, Current, Target, SubsystemActions)
                 return
 
-        # Step 12: Execute
+        # Step 14: Execute
         if self.DryRun:
             Logger.info("[DRY RUN] %s: Would execute delta=%d (target=%d)", Instrument, Delta, Target)
             db.LogOrder(Instrument, "BUY" if Delta > 0 else "SELL", abs(Delta), "DRY_RUN",
@@ -526,7 +842,19 @@ class ForecastOrchestrator:
                 return
 
             # ── Legacy Path ───────────────────────────────────────────
+            if Broker == "ANGEL":
+                self._PrimeAngelLegacyLimitPrice(Instrument, OrderDict)
+
             Result = self._ExecuteLegacy(OrderDict, Broker)
+
+            if isinstance(Result, dict):
+                ResultStatus = str(Result.get("status", "")).strip().lower()
+                if ResultStatus and ResultStatus not in {"submitted", "success", "accepted"}:
+                    raise RuntimeError(
+                        Result.get("error")
+                        or Result.get("message")
+                        or f"Broker handler returned status={ResultStatus}"
+                    )
 
             # Check for non-raising failures:
             if Result is None or Result == 0 or Result == "":
@@ -534,6 +862,24 @@ class ForecastOrchestrator:
                     f"Broker handler returned falsy result: {Result!r}. "
                     f"Order likely not placed."
                 )
+
+            if (
+                Broker == "ANGEL" and
+                OrderDict.get("ExecutionRoute") == "ANGEL_WEB" and
+                str(OrderDict.get("Ordertype", "")).upper() == "LIMIT"
+            ):
+                BrokerOrderId = OrderDict.get("OrderId") or "ANGEL_WEB_LIMIT_SUBMITTED"
+                db.UpdateSystemPosition(Instrument, Target, Current)
+                db.LogOrder(
+                    Instrument, Action, abs(Delta), "SUBMITTED_PENDING",
+                    BrokerOrderId=str(BrokerOrderId),
+                    Reason=f"target={Target}, prev={Current}, route=ANGEL_WEB_LIMIT"
+                )
+                Logger.info(
+                    "%s: Angel browser LIMIT order submitted (id=%s); awaiting broker fill confirmation",
+                    Instrument, BrokerOrderId
+                )
+                return
 
             # Success: update confirmed_qty to target
             db.UpdateConfirmedQty(Instrument, Target)
@@ -589,6 +935,8 @@ class ForecastOrchestrator:
         if Broker == "ZERODHA":
             return ControlOrderFlowKite(OrderDict)
         elif Broker == "ANGEL":
+            if self._ShouldUseRemoteAngelExecutor(OrderDict, Broker):
+                return self._ExecuteRemoteAngel(OrderDict)
             return ControlOrderFlowAngel(OrderDict)
         else:
             raise ValueError(f"Unknown broker: {Broker}")
@@ -625,8 +973,9 @@ class ForecastOrchestrator:
         OrderDict = {
             "Tradetype": Tradetype,
             "Exchange": Config["exchange"],
-            "Tradingsymbol": Instrument,
+            "Tradingsymbol": self._GetContractLookupName(Instrument),
             "Quantity": Quantity,
+            "UiQuantityLots": abs(Delta),
             "Variety": Routing.get("Variety", "REGULAR"),
             "Ordertype": "LIMIT",
             "Product": Routing.get("Product", "NRML"),
@@ -696,9 +1045,9 @@ class ForecastOrchestrator:
 
     def _RunReconciliation(self):
         """
-        Fetch broker positions, compare with system_positions, log and alert on mismatch.
+        Fetch broker positions, compare with system_positions, sync confirmed_qty,
+        and alert on unexpected mismatches.
         Groups by (broker, user) to minimize API connections.
-        Alert-only: no automatic correction.
         """
         Logger.info("Running reconciliation check...")
         Mismatches = []
@@ -721,16 +1070,14 @@ class ForecastOrchestrator:
             for InstName in InstList:
                 Pos = db.GetSystemPosition(InstName)
                 SystemQty = Pos["confirmed_qty"]
+                TargetQty = Pos["target_qty"]
+                BrokerQty = self._CalculateBrokerQty(InstName, BrokerPositions)
 
-                # Look up broker position by matching root instrument name.
-                # Broker returns full contract names like "GOLDM25APRFUT"
-                # but our InstName is just "GOLDM". Match by startswith.
-                BrokerQty = 0
-                for BrokerSymbol, Qty in BrokerPositions.items():
-                    if BrokerSymbol.startswith(InstName):
-                        BrokerQty += Qty
+                SyncedToTarget = (TargetQty != SystemQty and BrokerQty == TargetQty)
+                if BrokerQty != SystemQty:
+                    db.UpdateSystemPosition(InstName, TargetQty, BrokerQty)
 
-                Match = (SystemQty == BrokerQty)
+                Match = (SystemQty == BrokerQty) or SyncedToTarget
                 db.LogReconciliation(InstName, SystemQty, BrokerQty, Match)
 
                 if not Match:
@@ -738,6 +1085,11 @@ class ForecastOrchestrator:
                            f"({Broker}/{User})")
                     Logger.warning(Msg)
                     Mismatches.append(Msg)
+                elif SyncedToTarget:
+                    Logger.info(
+                        "%s: Broker position reached target during reconciliation; confirmed_qty synced to %d",
+                        InstName, BrokerQty
+                    )
 
         if Mismatches:
             self._SendReconAlert(Mismatches)

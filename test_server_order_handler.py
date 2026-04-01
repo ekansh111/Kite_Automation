@@ -11,8 +11,22 @@ from unittest.mock import MagicMock, patch
 
 
 sys.path.insert(0, os.path.dirname(__file__))
+_MISSING = object()
 
 
+def _snapshot_modules(names):
+    return {name: sys.modules.get(name, _MISSING) for name in names}
+
+
+def _restore_modules(snapshot):
+    for name, module in snapshot.items():
+        if module is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+
+_MODULE_SNAPSHOT = _snapshot_modules(["SmartApi", "pyotp", "Directories", "Server_Order_Handler"])
 _smartapi = types.ModuleType("SmartApi")
 _smartapi.SmartConnect = MagicMock()
 sys.modules["SmartApi"] = _smartapi
@@ -27,6 +41,7 @@ sys.modules["Directories"] = _dirs
 
 
 import Server_Order_Handler as handler
+_restore_modules(_MODULE_SNAPSHOT)
 
 
 def _make_order_details(**overrides):
@@ -114,10 +129,50 @@ class TestPrepareAngelInstrumentContractName(unittest.TestCase):
         self.assertEqual(filtered["token"].iloc[0], "DHANIYA20APR2099")
 
 
+class TestAngelInstrumentMasterCache(unittest.TestCase):
+
+    def test_reuses_cached_master_when_file_is_unchanged(self):
+        csv_content = (
+            ",token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg,tick_size\n"
+            "0,DHANIYA20APR2099,DHANIYA20APR2099,DHANIYA,20APR2099,-1,5,FUTCOM,NCDEX,200\n"
+        )
+
+        with NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+            tmp.write(csv_content)
+            csv_path = tmp.name
+
+        read_calls = []
+        real_read_csv = handler.pd.read_csv
+
+        def tracking_read_csv(*args, **kwargs):
+            read_calls.append((args, kwargs))
+            return real_read_csv(*args, **kwargs)
+
+        handler._ANGEL_INSTRUMENT_MASTER_CACHE.clear()
+        try:
+            with patch.object(handler.pd, "read_csv", side_effect=tracking_read_csv):
+                first_df, first_hit, first_path = handler._LoadAngelInstrumentMaster(csv_path)
+                second_df, second_hit, second_path = handler._LoadAngelInstrumentMaster(csv_path)
+        finally:
+            handler._ANGEL_INSTRUMENT_MASTER_CACHE.clear()
+            os.unlink(csv_path)
+
+        self.assertFalse(first_hit)
+        self.assertTrue(second_hit)
+        self.assertEqual(first_path, second_path)
+        self.assertEqual(len(read_calls), 1)
+        self.assertIn("serialnumber", first_df.columns)
+        self.assertEqual(str(second_df["expiry"].iloc[0].date()), "2099-04-20")
+
+
 class TestControlOrderFlowAngel(unittest.TestCase):
 
-    def test_ncdex_route_enters_fifo_before_api_session(self):
-        order = _make_order_details(ContractNameProvided="True", ConvertToMarketOrder="False")
+    def test_ncdex_route_uses_browser_only_preflight_for_simple_orders(self):
+        order = _make_order_details(
+            ContractNameProvided="True",
+            ConvertToMarketOrder="False",
+            Price="11948",
+        )
         events = []
 
         @contextmanager
@@ -126,50 +181,49 @@ class TestControlOrderFlowAngel(unittest.TestCase):
             yield
             events.append("fifo_exit")
 
-        def fake_connect(_details):
-            events.append("connect")
-            return MagicMock()
-
         def fake_browser_order(_details):
             events.append("browser")
             return {"status": "submitted"}
 
         with patch.object(handler, "_AcquireAngelBrowserFifoTurn", fake_fifo), \
-             patch.object(handler, "EstablishConnectionAngelAPI", side_effect=fake_connect), \
              patch.object(handler, "ConfigureNetDirectionOfTrade"), \
              patch.object(handler, "Validate_Quantity"), \
-             patch.object(handler, "PrepareOrderAngel", side_effect=lambda session, details: details), \
+             patch.object(handler, "EstablishConnectionAngelAPI") as connect_api, \
              patch.object(handler, "PlaceOrderAngelBrowser", side_effect=fake_browser_order):
 
             result = handler.ControlOrderFlowAngel(order)
 
         self.assertEqual(result["status"], "submitted")
-        self.assertEqual(events, ["fifo_enter", "connect", "browser", "fifo_exit"])
+        self.assertEqual(events, ["fifo_enter", "browser", "fifo_exit"])
+        connect_api.assert_not_called()
 
     def test_stops_cleanly_when_browser_order_placement_fails(self):
-        order = _make_order_details(ContractNameProvided="True")
+        order = _make_order_details(ContractNameProvided="True", Price="11948")
 
-        with patch.object(handler, "EstablishConnectionAngelAPI", return_value=MagicMock()), \
-             patch.object(handler, "ConfigureNetDirectionOfTrade"), \
+        with patch.object(handler, "ConfigureNetDirectionOfTrade"), \
              patch.object(handler, "Validate_Quantity"), \
-             patch.object(handler, "PrepareOrderAngel", side_effect=lambda session, details: details), \
              patch.object(handler, "PlaceOrderAngelBrowser", return_value=None), \
+             patch.object(handler, "EstablishConnectionAngelAPI") as connect_api, \
              patch.object(handler, "PlaceOrderAngelAPI") as api_order, \
              patch.object(handler, "ModifyAngeOrder") as modify_order:
 
             result = handler.ControlOrderFlowAngel(order)
 
         self.assertIsNone(result)
+        connect_api.assert_not_called()
         api_order.assert_not_called()
         modify_order.assert_not_called()
 
-    def test_routes_to_browser_execution_after_contract_processing(self):
-        order = _make_order_details(ContractNameProvided="True", ConvertToMarketOrder="False")
+    def test_routes_to_browser_execution_without_smartapi_for_simple_ncdex_orders(self):
+        order = _make_order_details(
+            ContractNameProvided="True",
+            ConvertToMarketOrder="False",
+            Price="11948",
+        )
 
-        with patch.object(handler, "EstablishConnectionAngelAPI", return_value=MagicMock()), \
-             patch.object(handler, "ConfigureNetDirectionOfTrade"), \
+        with patch.object(handler, "ConfigureNetDirectionOfTrade"), \
              patch.object(handler, "Validate_Quantity"), \
-             patch.object(handler, "PrepareOrderAngel", side_effect=lambda session, details: details), \
+             patch.object(handler, "EstablishConnectionAngelAPI") as connect_api, \
              patch.object(handler, "PlaceOrderAngelBrowser", return_value={"status": "submitted"}) as browser_order, \
              patch.object(handler, "PlaceOrderAngelAPI") as api_order:
 
@@ -177,8 +231,34 @@ class TestControlOrderFlowAngel(unittest.TestCase):
 
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(len(result["placements"]), 1)
+        connect_api.assert_not_called()
         browser_order.assert_called_once()
         api_order.assert_not_called()
+
+    def test_browser_route_resolves_contract_without_smartapi_for_simple_ncdex_entries(self):
+        order = _make_order_details(
+            Tradingsymbol="CASTOR",
+            Symboltoken="",
+            ContractNameProvided="False",
+            ConvertToMarketOrder="False",
+            Netposition="3",
+            Quantity="3*5",
+            Price="11948",
+        )
+
+        with patch.object(handler, "ConfigureNetDirectionOfTrade"), \
+             patch.object(handler, "Validate_Quantity", side_effect=lambda details: details.update({"Quantity": 15, "Netposition": 15})), \
+             patch.object(handler, "PrepareInstrumentContractName", side_effect=lambda _session, details: details.update({"Tradingsymbol": "CASTOR20APR2026", "Symboltoken": "12345"})), \
+             patch.object(handler, "EstablishConnectionAngelAPI") as connect_api, \
+             patch.object(handler, "PlaceOrderAngelBrowser", return_value={"status": "submitted"}) as browser_order:
+
+            result = handler.ControlOrderFlowAngel(order)
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(order["Tradingsymbol"], "CASTOR20APR2026")
+        self.assertEqual(order["Symboltoken"], "12345")
+        connect_api.assert_not_called()
+        browser_order.assert_called_once()
 
     def test_non_ncdex_orders_stay_on_smartapi_route(self):
         order = _make_order_details(
@@ -203,18 +283,70 @@ class TestControlOrderFlowAngel(unittest.TestCase):
         api_order.assert_called_once()
 
     def test_sets_warning_when_limit_to_market_conversion_is_skipped(self):
-        order = _make_order_details(ContractNameProvided="True", ConvertToMarketOrder="True")
+        order = _make_order_details(
+            ContractNameProvided="True",
+            ConvertToMarketOrder="True",
+            Price="11948",
+        )
 
-        with patch.object(handler, "EstablishConnectionAngelAPI", return_value=MagicMock()), \
-             patch.object(handler, "ConfigureNetDirectionOfTrade"), \
+        with patch.object(handler, "ConfigureNetDirectionOfTrade"), \
              patch.object(handler, "Validate_Quantity"), \
-             patch.object(handler, "PrepareOrderAngel", side_effect=lambda session, details: details), \
+             patch.object(handler, "EstablishConnectionAngelAPI") as connect_api, \
              patch.object(handler, "PlaceOrderAngelBrowser", return_value={"status": "submitted"}):
 
             result = handler.ControlOrderFlowAngel(order)
 
+        connect_api.assert_not_called()
         self.assertIn("warning", result)
         self.assertIn("limit-to-market conversion", result["warning"])
+
+    def test_ncdex_limit_order_without_price_still_uses_smartapi_preflight(self):
+        order = _make_order_details(
+            ContractNameProvided="True",
+            ConvertToMarketOrder="False",
+            Price="0",
+        )
+
+        with patch.object(handler, "ConfigureNetDirectionOfTrade"), \
+             patch.object(handler, "Validate_Quantity"), \
+             patch.object(handler, "EstablishConnectionAngelAPI", return_value=MagicMock()) as connect_api, \
+             patch.object(handler, "PrepareOrderAngel", side_effect=lambda session, details: details), \
+             patch.object(handler, "PlaceOrderAngelBrowser", return_value={"status": "submitted"}) as browser_order:
+
+            result = handler.ControlOrderFlowAngel(order)
+
+        self.assertEqual(result["status"], "submitted")
+        connect_api.assert_called_once()
+        browser_order.assert_called_once()
+
+
+class TestValidateQuantity(unittest.TestCase):
+
+    def test_preserves_lot_count_for_browser_routes_when_multiplier_is_expanded(self):
+        order = _make_order_details(
+            Quantity="3*5",
+            Netposition="3",
+        )
+
+        handler.Validate_Quantity(order)
+
+        self.assertEqual(order["Quantity"], 15)
+        self.assertEqual(order["Netposition"], 15)
+        self.assertEqual(order["UiQuantityLots"], 3)
+
+
+class TestPrepareOrderAngel(unittest.TestCase):
+
+    def test_preserves_explicit_limit_price_when_provided(self):
+        session = MagicMock()
+        session.ltpData.return_value = {
+            "data": {"ltp": 12345.0},
+        }
+        order = _make_order_details(Price="11948", Ordertype="LIMIT")
+
+        result = handler.PrepareOrderAngel(session, order)
+
+        self.assertEqual(result["Price"], "11948")
 
 
 class TestPlaceOrderAngelBrowser(unittest.TestCase):
@@ -230,6 +362,9 @@ class TestPlaceOrderAngelBrowser(unittest.TestCase):
             "otp_timeout_seconds": 120,
             "otp_poll_interval": 1.0,
             "debugger_address": "127.0.0.1:9222",
+            "chrome_binary": None,
+            "headless": False,
+            "attach_only": False,
             "url": "https://example.com",
             "watchlist_index": 4,
             "lock_path": pathlib.Path("/tmp/angel_browser.lock"),
@@ -316,6 +451,72 @@ class TestPlaceOrderAngelBrowser(unittest.TestCase):
         self.assertEqual(result["status"], "submitted")
         self.assertNotIn("LastOrderError", order)
 
+    def test_uses_browser_config_for_auto_launch_capable_guard_and_bot(self):
+        order = _make_order_details(ContractNameProvided="True")
+        bot_instance = MagicMock()
+        bot_instance.place_order.return_value = {
+            "status": "submitted",
+            "message": "submitted",
+            "artifacts": {},
+        }
+        bot_instance.__enter__.return_value = bot_instance
+        bot_instance.__exit__.return_value = None
+
+        order_request = MagicMock()
+        order_request.symbol = "CASTOR20APR2026"
+        order_request.exchange = "NCDEX"
+
+        @contextmanager
+        def fake_lock(*_args, **_kwargs):
+            yield
+
+        config = self._browser_config()
+        config["chrome_binary"] = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        config["attach_only"] = False
+
+        with patch.object(handler, "_GetAngelWebExecutionConfig", return_value=config), \
+             patch.object(handler, "_AcquireAngelBrowserExecutionLock", fake_lock), \
+             patch.object(handler, "LoadAngelWebJson", return_value={}), \
+             patch.object(handler, "InspectAngelBrowserSession", return_value={"status": "READY"}) as inspect_mock, \
+             patch.object(handler, "NormalizeAngelWebOrderPayload", return_value=order_request), \
+             patch.object(handler, "ResolveAngelWatchlistCandidate", return_value=MagicMock()), \
+             patch.object(handler, "AngelWebOrderBot", return_value=bot_instance) as bot_cls:
+
+            result = handler.PlaceOrderAngelBrowser(order)
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(inspect_mock.call_args.kwargs["attach_only"], False)
+        self.assertEqual(inspect_mock.call_args.kwargs["chrome_binary"], config["chrome_binary"])
+        self.assertEqual(bot_cls.call_args.kwargs["attach_only"], False)
+        self.assertEqual(bot_cls.call_args.kwargs["chrome_binary"], config["chrome_binary"])
+
+    def test_browser_payload_uses_ui_quantity_lots_instead_of_expanded_quantity(self):
+        order = _make_order_details(
+            Tradingsymbol="CASTOR20APR2026",
+            Symboltoken="CASTOR20APR2026",
+            Quantity=15,
+            UiQuantityLots=3,
+            Price="6557",
+        )
+
+        payload = handler._BuildAngelWebOrderPayload(order)
+
+        self.assertEqual(payload["quantity"], 3)
+        self.assertEqual(payload["symbol"], "CASTOR20APR2026")
+        self.assertEqual(payload["price"], 6557.0)
+
+    def test_browser_payload_falls_back_to_lot_count_from_multiplier_string(self):
+        order = _make_order_details(
+            Tradingsymbol="CASTOR20APR2026",
+            Symboltoken="CASTOR20APR2026",
+            Quantity="3*5",
+            Price="6557",
+        )
+
+        payload = handler._BuildAngelWebOrderPayload(order)
+
+        self.assertEqual(payload["quantity"], 3)
+
 
 class TestAngelBrowserFifoTurn(unittest.TestCase):
 
@@ -358,11 +559,13 @@ class TestAngelBrowserFifoTurn(unittest.TestCase):
 
 class TestEstablishConnectionAngelAPI(unittest.TestCase):
 
-    def test_maps_aabm_user_to_ekansh_credentials(self):
+    def test_maps_aabm_user_to_eshita_credentials(self):
         mock_session = MagicMock()
 
+        open_mock = unittest.mock.mock_open(read_data="api\nclient\npwd\ntotp\n")
+
         with patch.object(handler, "SmartConnect", return_value=mock_session) as smart_connect_cls, \
-             patch("builtins.open", unittest.mock.mock_open(read_data="api\nclient\npwd\ntotp\n")), \
+             patch("builtins.open", open_mock), \
              patch.object(handler.pyotp, "TOTP") as totp_cls:
 
             totp_cls.return_value.now.return_value = "123456"
@@ -376,10 +579,15 @@ class TestEstablishConnectionAngelAPI(unittest.TestCase):
 
         self.assertIs(result, mock_session)
         smart_connect_cls.assert_called_with("api")
+        open_mock.assert_called_once_with("unused_eshita.txt", 'r')
 
     def test_raises_clear_error_for_unknown_user(self):
         with self.assertRaisesRegex(ValueError, "Unsupported Angel user"):
             handler.EstablishConnectionAngelAPI({"User": "UNKNOWN"})
+
+    def test_e513_user_is_rejected_as_unsupported(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported Angel user"):
+            handler.EstablishConnectionAngelAPI({"User": "E51339915"})
 
 
 if __name__ == "__main__":
