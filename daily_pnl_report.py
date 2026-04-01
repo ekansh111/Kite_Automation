@@ -858,7 +858,15 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     db.InitDB()
 
     if DateStr is None:
-        DateStr = date.today().strftime("%Y-%m-%d")
+        # If running after midnight but before market open (09:00 IST),
+        # the broker still has the previous session's data — use yesterday's date
+        Now = datetime.now()
+        IstHour = Now.hour  # Server runs in IST
+        if IstHour < 9:
+            DateStr = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+            Logger.info("Running after midnight, using previous trading day: %s", DateStr)
+        else:
+            DateStr = date.today().strftime("%Y-%m-%d")
 
     Logger.info("Generating daily P&L report for %s (dry_run=%s)", DateStr, DryRun)
 
@@ -879,14 +887,20 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     RealizedTotal = sum(r["pnl_inr"] for r in RealizedRows)
 
     # Snapshot comparison for unrealized change
+    # Only count change for instruments that exist in BOTH today and yesterday's snapshot.
+    # New positions (not in snapshot) contribute 0 change — we have no baseline.
+    # Closed positions (in snapshot but not today) contribute -prev (unrealized went to 0).
     PrevSnapshot = db.GetPreviousSnapshot(DateStr)
     if PrevSnapshot:
-        TotalUnrealizedNow = sum(p["unrealized_pnl"] for p in BrokerPositions)
-        TotalUnrealizedPrev = sum(PrevSnapshot.get(p["instrument"], 0) for p in BrokerPositions)
+        UnrealizedChange = 0
+        for P in BrokerPositions:
+            if P["instrument"] in PrevSnapshot:
+                UnrealizedChange += P["unrealized_pnl"] - PrevSnapshot[P["instrument"]]
+            # else: new position, no baseline — skip
+        # Positions closed since yesterday: unrealized went from prev to 0
         for Inst, PrevVal in PrevSnapshot.items():
             if not any(p["instrument"] == Inst for p in BrokerPositions):
-                TotalUnrealizedPrev += PrevVal
-        UnrealizedChange = TotalUnrealizedNow - TotalUnrealizedPrev
+                UnrealizedChange += 0 - PrevVal
     else:
         UnrealizedChange = 0
         Logger.info("No previous snapshot found — unrealized change set to 0 (first run)")
