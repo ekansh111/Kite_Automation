@@ -116,179 +116,213 @@ def _FmtTime(CreatedAt):
         return str(CreatedAt)[-8:-3] if len(str(CreatedAt)) > 8 else ""
 
 
-# ─── LTP Fetching ─────────────────────────────────────────────────
+# ─── Broker Position Fetching ─────────────────────────────────────
 
 
-def _ResolveKiteContract(InstrumentName, Exchange, InstrumentType="FUT"):
-    """Resolve GOLDM → GOLDM25APRFUT from ZerodhaInstruments.csv."""
-    try:
-        Df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=",")
-        Df["expiry"] = pd.to_datetime(Df["expiry"].str.title(), format="%Y-%m-%d", errors="coerce")
-        Today = datetime.now()
-        Filtered = Df[
-            (Df["name"] == InstrumentName) &
-            (Df["exch_seg"] == Exchange) &
-            (Df["instrumenttype"] == InstrumentType) &
-            (Df["expiry"] > Today)
-        ].sort_values(by="expiry", ascending=True).head(1)
-        if not Filtered.empty:
-            return Filtered.iloc[0]["symbol"], str(Filtered.iloc[0]["token"])
-    except Exception as e:
-        Logger.warning("Failed to resolve Kite contract for %s: %s", InstrumentName, e)
-    return None, None
+def _IsIndexOption(Symbol):
+    """Return True if symbol looks like an index option (NIFTY/SENSEX/BANKEX CE/PE)."""
+    S = Symbol.upper()
+    return any(S.startswith(P) for P in ("NIFTY", "SENSEX", "BANKEX", "BANKNIFTY")) and (
+        S.endswith("CE") or S.endswith("PE"))
 
 
-def _ResolveAngelContract(InstrumentName, Exchange, InstrumentType="FUT"):
-    """Resolve DHANIYA → DHANIYA25APR2025 from AngelInstrumentDetails.csv."""
-    try:
-        Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",", low_memory=False)
-        Df["expiry"] = pd.to_datetime(Df["expiry"].str.title(), format="%d%b%Y", errors="coerce")
-        Today = datetime.now()
-        Filtered = Df[
-            (Df["name"] == InstrumentName) &
-            (Df["exch_seg"] == Exchange) &
-            (Df["instrumenttype"] == InstrumentType) &
-            (Df["expiry"] > Today)
-        ].sort_values(by="expiry", ascending=True).head(1)
-        if not Filtered.empty:
-            return Filtered.iloc[0]["symbol"], str(Filtered.iloc[0]["token"])
-    except Exception as e:
-        Logger.warning("Failed to resolve Angel contract for %s: %s", InstrumentName, e)
-    return None, None
+def _MatchPositionToInstrument(TradingSymbol, Exchange, Broker, Instruments):
+    """Match a broker position's tradingsymbol to our instrument config.
 
-
-def _FetchAllLTPs(InstrumentConfig):
-    """Fetch LTP for all open futures positions + open options from brokers.
-
-    Returns dict: {instrument_name: ltp} e.g. {"GOLDM": 73100.0, "NIFTY_OPT_CE": 45.0}
+    Uses CSV lookup (symbol → name), then falls back to prefix matching.
+    Returns (InstrumentName, Config) or (None, None).
     """
-    LTPs = {}
-    OpenPositions = db.GetAllOpenPositions()
-    OpenInstruments = {p["instrument"] for p in OpenPositions}
-
-    # Load instrument config for exchange/broker mapping
-    Instruments = InstrumentConfig.get("instruments", {})
-
-    # ── Kite (Zerodha) batch LTP ──
-    KiteSymbols = {}  # {exchange_key: instrument_name}
-    for InstName in OpenInstruments:
-        Cfg = Instruments.get(InstName)
-        if not Cfg or Cfg.get("broker") != "ZERODHA":
-            continue
-        Symbol, Token = _ResolveKiteContract(InstName, Cfg["exchange"])
-        if Symbol:
-            Key = f"{Cfg['exchange']}:{Symbol}"
-            KiteSymbols[Key] = InstName
-
-    if KiteSymbols:
+    if Broker == "ZERODHA":
         try:
-            Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
-            LtpData = Kite.ltp(list(KiteSymbols.keys()))
-            for Key, InstName in KiteSymbols.items():
-                if Key in LtpData:
-                    LTPs[InstName] = float(LtpData[Key]["last_price"])
+            Df = pd.read_csv(ZerodhaInstrumentDirectory, delimiter=",")
+            Match = Df[(Df["symbol"] == TradingSymbol) & (Df["exch_seg"] == Exchange)]
+            if not Match.empty:
+                Name = Match.iloc[0]["name"]
+                for InstName, Cfg in Instruments.items():
+                    if InstName == Name and Cfg.get("exchange") == Exchange:
+                        return InstName, Cfg
         except Exception as e:
-            Logger.error("Kite LTP fetch failed: %s", e)
+            Logger.warning("CSV match failed for %s: %s", TradingSymbol, e)
 
-    # ── Angel (NCDEX) individual LTP ──
-    AngelInstruments = []
-    for InstName in OpenInstruments:
-        Cfg = Instruments.get(InstName)
-        if not Cfg or Cfg.get("broker") != "ANGEL":
-            continue
-        Symbol, Token = _ResolveAngelContract(InstName, Cfg["exchange"])
-        if Symbol and Token:
-            AngelInstruments.append((InstName, Cfg["exchange"], Symbol, Token))
-
-    if AngelInstruments:
+    elif Broker == "ANGEL":
         try:
-            SmartApi = EstablishConnectionAngelAPI({"User": "E51339915"})
-            for InstName, Exchange, Symbol, Token in AngelInstruments:
-                try:
-                    Data = SmartApi.ltpData(exchange=Exchange, tradingsymbol=Symbol, symboltoken=Token)
-                    if Data and Data.get("data") and Data["data"].get("ltp") not in (None, ""):
-                        LTPs[InstName] = float(Data["data"]["ltp"])
-                except Exception as e:
-                    Logger.warning("Angel LTP failed for %s: %s", InstName, e)
+            Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",", low_memory=False)
+            Match = Df[(Df["symbol"] == TradingSymbol) & (Df["exch_seg"] == Exchange)]
+            if not Match.empty:
+                Name = Match.iloc[0]["name"]
+                for InstName, Cfg in Instruments.items():
+                    if InstName == Name and Cfg.get("exchange") == Exchange:
+                        return InstName, Cfg
         except Exception as e:
-            Logger.error("Angel session failed: %s", e)
+            Logger.warning("CSV match failed for %s: %s", TradingSymbol, e)
 
-    # ── Options LTP from Kite ──
-    OptionsLTPs = _FetchOptionsLTPs()
-    LTPs.update(OptionsLTPs)
+    # Fallback: prefix match
+    for InstName, Cfg in Instruments.items():
+        if TradingSymbol.upper().startswith(InstName.upper()):
+            if Cfg.get("exchange") == Exchange:
+                return InstName, Cfg
 
-    return LTPs
+    return None, None
 
 
-def _FetchOptionsLTPs():
-    """Fetch LTP for open options positions from v2_state.json."""
-    LTPs = {}
+def _FetchBrokerPositions(FullConfig):
+    """Fetch all open positions directly from broker APIs.
+
+    Returns list of dicts: instrument, confirmed_qty, avg_entry_price,
+    point_value, ltp, unrealized_pnl, direction, tradingsymbol, broker.
+    """
+    Instruments = FullConfig.get("instruments", {})
+    Positions = []
+
+    # ── Kite (Zerodha) — MCX futures ──
     try:
-        if not STATE_FILE_PATH.exists():
-            return LTPs
-        with open(STATE_FILE_PATH) as f:
-            State = json.load(f)
-
-        KiteKeys = {}  # {exchange_key: options_instrument_name}
-        ExchangeMap = {"NIFTY": "NFO", "SENSEX": "BFO"}
-
-        for Underlying, UState in State.items():
-            if UState.get("activeLots", 0) <= 0:
+        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
+        RawPositions = Kite.positions().get("net", [])
+        for Pos in RawPositions:
+            Qty = Pos.get("quantity", 0)
+            Product = Pos.get("product", "")
+            if Qty == 0 or Product != "NRML":
                 continue
-            Contracts = UState.get("activeContracts", [])
-            Exchange = ExchangeMap.get(Underlying, "NFO")
-            for Contract in Contracts:
-                Leg = "CE" if "CE" in Contract.upper() else "PE"
-                OptKey = f"{Underlying}_OPT_{Leg}"
-                Key = f"{Exchange}:{Contract}"
-                KiteKeys[Key] = OptKey
+            Symbol = Pos.get("tradingsymbol", "")
+            Exchange = Pos.get("exchange", "")
 
-        if KiteKeys:
-            Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
-            LtpData = Kite.ltp(list(KiteKeys.keys()))
-            for Key, OptKey in KiteKeys.items():
-                if Key in LtpData:
-                    LTPs[OptKey] = float(LtpData[Key]["last_price"])
+            # Skip index options — handled separately
+            if _IsIndexOption(Symbol):
+                continue
+
+            InstName, Cfg = _MatchPositionToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
+            if not InstName:
+                Logger.warning("Unmatched Kite position: %s (%s)", Symbol, Exchange)
+                continue
+
+            AvgPrice = float(Pos.get("average_price", 0))
+            Ltp = float(Pos.get("last_price", 0))
+            PV = Cfg.get("point_value", 1)
+            if AvgPrice > 0 and Ltp > 0:
+                if Qty > 0:
+                    Unrealized = (Ltp - AvgPrice) * abs(Qty) * PV
+                else:
+                    Unrealized = (AvgPrice - Ltp) * abs(Qty) * PV
+            else:
+                Unrealized = 0
+
+            Positions.append({
+                "instrument": InstName,
+                "confirmed_qty": Qty,
+                "avg_entry_price": AvgPrice,
+                "point_value": PV,
+                "ltp": Ltp,
+                "unrealized_pnl": round(Unrealized, 2),
+                "direction": "LONG" if Qty > 0 else "SHORT",
+                "tradingsymbol": Symbol,
+                "broker": "ZERODHA",
+            })
+        Logger.info("Kite: fetched %d open positions", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
     except Exception as e:
-        Logger.warning("Options LTP fetch failed: %s", e)
-    return LTPs
+        Logger.error("Kite positions fetch failed: %s", e)
 
+    # ── Angel (NCDEX) ──
+    try:
+        SmartApi = EstablishConnectionAngelAPI({"User": "E51339915"})
+        RawResponse = SmartApi.position()
+        RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
+        if RawPositions is None:
+            RawPositions = []
+        for Pos in RawPositions:
+            Qty = int(Pos.get("netqty", 0))
+            ProdType = Pos.get("producttype", "")
+            if Qty == 0 or ProdType != "CARRYFORWARD":
+                continue
+            Symbol = Pos.get("tradingsymbol", "")
+            Exchange = Pos.get("exchange", "")
 
-# ─── Unrealized P&L Computation ───────────────────────────────────
+            InstName, Cfg = _MatchPositionToInstrument(Symbol, Exchange, "ANGEL", Instruments)
+            if not InstName:
+                Logger.warning("Unmatched Angel position: %s (%s)", Symbol, Exchange)
+                continue
 
+            Ltp = float(Pos.get("ltp", 0))
+            # Angel: use buy/sell avg based on direction
+            if Qty > 0:
+                AvgPrice = float(Pos.get("buyavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
+            else:
+                AvgPrice = float(Pos.get("sellavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
+            PV = Cfg.get("point_value", 1)
+            if AvgPrice > 0 and Ltp > 0:
+                if Qty > 0:
+                    Unrealized = (Ltp - AvgPrice) * abs(Qty) * PV
+                else:
+                    Unrealized = (AvgPrice - Ltp) * abs(Qty) * PV
+            else:
+                Unrealized = 0
 
-def _ComputeUnrealizedPnl(OpenPositions, LTPs):
-    """Compute unrealized P&L for each open position.
+            Positions.append({
+                "instrument": InstName,
+                "confirmed_qty": Qty,
+                "avg_entry_price": AvgPrice,
+                "point_value": PV,
+                "ltp": Ltp,
+                "unrealized_pnl": round(Unrealized, 2),
+                "direction": "LONG" if Qty > 0 else "SHORT",
+                "tradingsymbol": Symbol,
+                "broker": "ANGEL",
+            })
+        Logger.info("Angel: fetched %d open positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
+    except Exception as e:
+        Logger.error("Angel positions fetch failed: %s", e)
 
-    Returns list of dicts with: instrument, confirmed_qty, avg_entry_price,
-    point_value, ltp, unrealized_pnl, direction.
-    """
-    Results = []
-    for Pos in OpenPositions:
-        Inst = Pos["instrument"]
-        Qty = Pos["confirmed_qty"]
-        AvgEntry = Pos["avg_entry_price"]
-        PV = Pos["point_value"]
-        Ltp = LTPs.get(Inst, 0)
+    # ── Options from Kite (NFO/BFO) ──
+    try:
+        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
+        RawPositions = Kite.positions().get("net", [])
+        for Pos in RawPositions:
+            Qty = Pos.get("quantity", 0)
+            if Qty == 0 or Pos.get("product", "") != "NRML":
+                continue
+            Symbol = Pos.get("tradingsymbol", "")
+            Exchange = Pos.get("exchange", "")
+            if not _IsIndexOption(Symbol):
+                continue
 
-        if Ltp == 0 or AvgEntry == 0:
-            UnrealizedPnl = 0
-        elif Qty > 0:
-            UnrealizedPnl = (Ltp - AvgEntry) * abs(Qty) * PV
-        else:
-            UnrealizedPnl = (AvgEntry - Ltp) * abs(Qty) * PV
+            # Determine underlying and leg
+            S = Symbol.upper()
+            if S.startswith("NIFTY"):
+                Underlying = "NIFTY"
+            elif S.startswith("SENSEX"):
+                Underlying = "SENSEX"
+            elif S.startswith("BANKEX"):
+                Underlying = "BANKEX"
+            elif S.startswith("BANKNIFTY"):
+                Underlying = "BANKNIFTY"
+            else:
+                continue
+            Leg = "CE" if S.endswith("CE") else "PE"
+            InstName = f"{Underlying}_OPT_{Leg}"
 
-        Direction = "LONG" if Qty > 0 else "SHORT"
-        Results.append({
-            "instrument": Inst,
-            "confirmed_qty": Qty,
-            "avg_entry_price": AvgEntry,
-            "point_value": PV,
-            "ltp": Ltp,
-            "unrealized_pnl": UnrealizedPnl,
-            "direction": Direction,
-        })
-    return Results
+            AvgPrice = float(Pos.get("average_price", 0))
+            Ltp = float(Pos.get("last_price", 0))
+            # Options are always short straddles — WasLong=False
+            if AvgPrice > 0 and Ltp > 0:
+                Unrealized = (AvgPrice - Ltp) * abs(Qty) * 1.0  # point_value=1 for options
+            else:
+                Unrealized = 0
+
+            Positions.append({
+                "instrument": InstName,
+                "confirmed_qty": Qty,
+                "avg_entry_price": AvgPrice,
+                "point_value": 1.0,
+                "ltp": Ltp,
+                "unrealized_pnl": round(Unrealized, 2),
+                "direction": "SHORT",
+                "tradingsymbol": Symbol,
+                "broker": "ZERODHA",
+            })
+    except Exception as e:
+        Logger.warning("Options position fetch failed: %s", e)
+
+    Logger.info("Total broker positions: %d", len(Positions))
+    return Positions
 
 
 # ─── Card Builders ─────────────────────────────────────────────────
@@ -735,29 +769,29 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     RealizedRows = db.GetTodayRealizedPnl(DateStr)
     FuturesOrders = db.GetTodayFuturesOrders(DateStr)
     OptionsOrders = db.GetTodayOptionsOrders(DateStr)
-    OpenPositions = db.GetAllOpenPositions()
 
     RealizedTotal = sum(r["pnl_inr"] for r in RealizedRows)
     TradeCount = len(FuturesOrders) + len(OptionsOrders)
 
-    LTPs = _FetchAllLTPs(FullConfig)
-    UnrealizedPositions = _ComputeUnrealizedPnl(OpenPositions, LTPs)
+    # Fetch positions live from brokers — source of truth
+    BrokerPositions = _FetchBrokerPositions(FullConfig)
 
+    # Snapshot comparison for unrealized change
     PrevSnapshot = db.GetPreviousSnapshot(DateStr)
     if PrevSnapshot:
-        TotalUnrealizedNow = sum(p["unrealized_pnl"] for p in UnrealizedPositions)
-        TotalUnrealizedPrev = sum(PrevSnapshot.get(p["instrument"], 0) for p in UnrealizedPositions)
+        TotalUnrealizedNow = sum(p["unrealized_pnl"] for p in BrokerPositions)
+        TotalUnrealizedPrev = sum(PrevSnapshot.get(p["instrument"], 0) for p in BrokerPositions)
         for Inst, PrevVal in PrevSnapshot.items():
-            if not any(p["instrument"] == Inst for p in UnrealizedPositions):
+            if not any(p["instrument"] == Inst for p in BrokerPositions):
                 TotalUnrealizedPrev += PrevVal
         UnrealizedChange = TotalUnrealizedNow - TotalUnrealizedPrev
     else:
-        # First run — no baseline, unrealized change is unknown
         UnrealizedChange = 0
         Logger.info("No previous snapshot found — unrealized change set to 0 (first run)")
 
     TotalDailyPnl = RealizedTotal + UnrealizedChange
 
+    # Save today's snapshot for tomorrow's comparison
     Snapshots = [
         {
             "instrument": P["instrument"],
@@ -766,11 +800,11 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
             "ltp": P["ltp"],
             "unrealized_pnl": P["unrealized_pnl"],
         }
-        for P in UnrealizedPositions
+        for P in BrokerPositions
     ]
     db.SaveDailySnapshot(DateStr, Snapshots)
 
-    OpenCount = len([p for p in OpenPositions if "_OPT_" not in p["instrument"]])
+    OpenCount = len([p for p in BrokerPositions if "_OPT_" not in p["instrument"]])
 
     ReportData = {
         "date": DateStr,
@@ -784,7 +818,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "realized_rows": RealizedRows,
         "futures_orders": FuturesOrders,
         "options_orders": OptionsOrders,
-        "unrealized_positions": UnrealizedPositions,
+        "unrealized_positions": BrokerPositions,
         "prev_snapshot": PrevSnapshot,
     }
 
