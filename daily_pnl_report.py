@@ -141,7 +141,7 @@ def _ResolveKiteContract(InstrumentName, Exchange, InstrumentType="FUT"):
 def _ResolveAngelContract(InstrumentName, Exchange, InstrumentType="FUT"):
     """Resolve DHANIYA → DHANIYA25APR2025 from AngelInstrumentDetails.csv."""
     try:
-        Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",")
+        Df = pd.read_csv(AngelInstrumentDirectory, delimiter=",", low_memory=False)
         Df["expiry"] = pd.to_datetime(Df["expiry"].str.title(), format="%d%b%Y", errors="coerce")
         Today = datetime.now()
         Filtered = Df[
@@ -339,6 +339,10 @@ def _PositionBlock(Instrument, Direction, Qty, AvgEntry, Ltp, Unrealized, Change
     DirColor = GREEN if Direction == "LONG" else RED
     DirBg = "#f0fdf4" if Direction == "LONG" else "#fef2f2"
     LtpStr = f"{Ltp:.2f}" if Ltp > 0 else "N/A"
+    if Change is not None:
+        TodayStr = f'<span style="font-size:12px;color:{SLATE};">Today: <b style="color:{_PnlColor(Change)};">\u20b9{_FmtINR(Change)}</b></span>'
+    else:
+        TodayStr = f'<span style="font-size:12px;color:{MUTED};">Today: N/A</span>'
     return f"""
     <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -354,7 +358,7 @@ def _PositionBlock(Instrument, Direction, Qty, AvgEntry, Ltp, Unrealized, Change
             <span style="font-size:12px;color:{SLATE};">Qty: <b style="color:{NAVY};">{abs(Qty)}</b></span>
             <span style="font-size:12px;color:{SLATE};">Entry: <b style="color:{NAVY};">{AvgEntry:.2f}</b></span>
             <span style="font-size:12px;color:{SLATE};">LTP: <b style="color:{NAVY};">{LtpStr}</b></span>
-            <span style="font-size:12px;color:{SLATE};">Today: <b style="color:{_PnlColor(Change)};">\u20b9{_FmtINR(Change)}</b></span>
+            {TodayStr}
         </div>
     </td></tr>"""
 
@@ -550,12 +554,16 @@ def _BuildReportHtml(Data):
         OptTradesHtml += _Divider()
 
     # ── Open Futures Positions ──
+    HasPrevSnapshot = bool(D["prev_snapshot"])
     FuturesPos = [P for P in D["unrealized_positions"] if "_OPT_" not in P["instrument"]]
     OpenFutHtml = _SectionHeader("Open Futures")
     if FuturesPos:
         for P in FuturesPos:
-            Prev = D["prev_snapshot"].get(P["instrument"], 0)
-            Change = P["unrealized_pnl"] - Prev
+            if HasPrevSnapshot:
+                Prev = D["prev_snapshot"].get(P["instrument"], 0)
+                Change = P["unrealized_pnl"] - Prev
+            else:
+                Change = None  # No baseline
             OpenFutHtml += _PositionBlock(
                 P["instrument"], P["direction"], P["confirmed_qty"],
                 P["avg_entry_price"], P["ltp"], P["unrealized_pnl"], Change,
@@ -585,7 +593,11 @@ def _BuildReportHtml(Data):
             pass
 
         for Underlying, Combo in ByUnderlying.items():
-            Change = Combo["unrealized"] - Combo["prev_unrealized"]
+            if HasPrevSnapshot:
+                Change = Combo["unrealized"] - Combo["prev_unrealized"]
+                TodayLine = f'<b style="color:{_PnlColor(Change)};">\u20b9{_FmtINR(Change)}</b>'
+            else:
+                TodayLine = f'<span style="color:{MUTED};">N/A</span>'
             Lots = StateInfo.get(Underlying, {}).get("activeLots", "?")
             Contracts = StateInfo.get(Underlying, {}).get("activeContracts", [])
             OpenOptHtml += f"""
@@ -607,7 +619,7 @@ def _BuildReportHtml(Data):
                 </div>
                 <div style="margin-top:4px;font-size:12px;">
                     <span style="color:{SLATE};">Today:</span>
-                    <b style="color:{_PnlColor(Change)};">\u20b9{_FmtINR(Change)}</b>
+                    {TodayLine}
                 </div>
             </td></tr>"""
     else:
@@ -732,12 +744,17 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     UnrealizedPositions = _ComputeUnrealizedPnl(OpenPositions, LTPs)
 
     PrevSnapshot = db.GetPreviousSnapshot(DateStr)
-    TotalUnrealizedNow = sum(p["unrealized_pnl"] for p in UnrealizedPositions)
-    TotalUnrealizedPrev = sum(PrevSnapshot.get(p["instrument"], 0) for p in UnrealizedPositions)
-    for Inst, PrevVal in PrevSnapshot.items():
-        if not any(p["instrument"] == Inst for p in UnrealizedPositions):
-            TotalUnrealizedPrev += PrevVal
-    UnrealizedChange = TotalUnrealizedNow - TotalUnrealizedPrev
+    if PrevSnapshot:
+        TotalUnrealizedNow = sum(p["unrealized_pnl"] for p in UnrealizedPositions)
+        TotalUnrealizedPrev = sum(PrevSnapshot.get(p["instrument"], 0) for p in UnrealizedPositions)
+        for Inst, PrevVal in PrevSnapshot.items():
+            if not any(p["instrument"] == Inst for p in UnrealizedPositions):
+                TotalUnrealizedPrev += PrevVal
+        UnrealizedChange = TotalUnrealizedNow - TotalUnrealizedPrev
+    else:
+        # First run — no baseline, unrealized change is unknown
+        UnrealizedChange = 0
+        Logger.info("No previous snapshot found — unrealized change set to 0 (first run)")
 
     TotalDailyPnl = RealizedTotal + UnrealizedChange
 
