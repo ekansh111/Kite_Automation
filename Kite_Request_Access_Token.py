@@ -6,7 +6,7 @@ from datetime import date
 logging.basicConfig(level=logging.DEBUG)
 
 
-kite = KiteConnect(api_key="nget8iniou5mlnfj")
+kite = KiteConnect(api_key="osq1egp94e2ilge3")
 
 with open('C:/Users/ekans/OneDrive/Documents/inputs/api_secret_yd.txt','r') as a:
         api_secret = a.read()
