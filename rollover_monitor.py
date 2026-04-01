@@ -461,7 +461,7 @@ def _SendEmail(Subject, HtmlBody, PlainBody=None):
         Logger.error("Failed to send email: %s", e)
 
 
-def _BuildEmailHtml(Title, Subtitle, Cards):
+def _BuildEmailHtml(Title, Subtitle, Cards, FooterLabel="Rollover Monitor"):
     """Build a responsive HTML email with dark mode support.
 
     Args:
@@ -551,7 +551,7 @@ def _BuildEmailHtml(Title, Subtitle, Cards):
         </div>
         <div class="email-footer" style="padding:16px;text-align:center;font-size:11px;color:{MUTED};
             border-top:1px solid {BORDER};">
-            Rollover Monitor &bull; Auto-generated &bull; {datetime.now().strftime('%Y-%m-%d %H:%M IST')}
+            {FooterLabel} &bull; Auto-generated &bull; {datetime.now().strftime('%Y-%m-%d %H:%M IST')}
         </div>
     </div>
 </div></body></html>"""
