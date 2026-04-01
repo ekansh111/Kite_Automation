@@ -527,7 +527,7 @@ def _BuildReportHtml(Data):
     """Build the full P&L report HTML."""
     D = Data
     DateDisplay = datetime.strptime(D["date"], "%Y-%m-%d").strftime("%d %b %Y")
-    TotalPnl = D["realized_total"] + D["unrealized_change"]
+    TotalPnl = D["unrealized_change"]
     HeroColor = _PnlColor(TotalPnl)
     HeroBg = "#0d3320" if TotalPnl >= 0 else "#3b1119"
 
@@ -576,7 +576,7 @@ def _BuildReportHtml(Data):
             <td style="width:60%;padding:12px 0;">
                 <table style="width:100%;border-collapse:collapse;">
                     <tr>
-                        {_StatBox("Realized", _FmtINR(D["realized_total"]), _PnlColor(D["realized_total"]))}
+                        {_StatBox("Trades", str(D["trade_count"]), NAVY)}
                         {_StatBox("Cumulative", _FmtINR(D["cumulative_pnl"]), _PnlColor(D["cumulative_pnl"]))}
                     </tr>
                 </table>
@@ -602,30 +602,6 @@ def _BuildReportHtml(Data):
             </td>
         </tr>
     </table>"""
-
-    # ── Closed Positions ──
-    ClosedHtml = ""
-    if D["realized_rows"]:
-        ClosedHtml += _SectionHeader("Closed Positions")
-        # Group options by underlying
-        Combined = defaultdict(lambda: {"pnl": 0, "legs": []})
-        for R in D["realized_rows"]:
-            Inst = R["instrument"]
-            if "_OPT_" in Inst:
-                Underlying = Inst.split("_OPT_")[0]
-                Leg = Inst.split("_OPT_")[1]
-                Combined[Underlying]["pnl"] += R["pnl_inr"]
-                Combined[Underlying]["legs"].append((Leg, R["entry_price"], R["exit_price"], R["pnl_inr"]))
-            else:
-                ClosedHtml += _ClosedRow(Inst, "Futures", R["close_qty"], R["entry_price"], R["exit_price"], R["pnl_inr"])
-
-        for Underlying, Combo in Combined.items():
-            LegStr = " + ".join(L[0] for L in Combo["legs"])
-            AvgEntry = sum(L[1] for L in Combo["legs"]) / len(Combo["legs"]) if Combo["legs"] else 0
-            AvgExit = sum(L[2] for L in Combo["legs"]) / len(Combo["legs"]) if Combo["legs"] else 0
-            ClosedHtml += _ClosedRow(Underlying, f"Straddle ({LegStr})", "", AvgEntry, AvgExit, Combo["pnl"])
-
-        ClosedHtml += _Divider()
 
     # ── Futures Trades ──
     FutTradesHtml = ""
@@ -819,7 +795,6 @@ def _BuildReportHtml(Data):
         {OpenFutHtml}
         {OpenOptHtml}
         {_Divider()}
-        {ClosedHtml}
         {FutTradesHtml}
         {OptTradesHtml}
         {CapHtml}
@@ -882,10 +857,6 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     FuturesOrders, OptionsOrders = _FetchBrokerOrders(FullConfig)
     TradeCount = len(FuturesOrders) + len(OptionsOrders)
 
-    # Realized P&L from DB (tracked during execution)
-    RealizedRows = db.GetTodayRealizedPnl(DateStr)
-    RealizedTotal = sum(r["pnl_inr"] for r in RealizedRows)
-
     # Snapshot comparison for unrealized change
     # Only count change for instruments that exist in BOTH today and yesterday's snapshot.
     # New positions (not in snapshot) contribute 0 change — we have no baseline.
@@ -905,7 +876,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         UnrealizedChange = 0
         Logger.info("No previous snapshot found — unrealized change set to 0 (first run)")
 
-    TotalDailyPnl = RealizedTotal + UnrealizedChange
+    TotalDailyPnl = UnrealizedChange
 
     # Save today's snapshot for tomorrow's comparison
     Snapshots = [
@@ -926,12 +897,10 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "date": DateStr,
         "trade_count": TradeCount,
         "open_count": OpenCount,
-        "realized_total": RealizedTotal,
         "unrealized_change": UnrealizedChange,
         "cumulative_pnl": CumulativePnl,
         "effective_capital": EffectiveCapital,
         "base_capital": BaseCapital,
-        "realized_rows": RealizedRows,
         "futures_orders": FuturesOrders,
         "options_orders": OptionsOrders,
         "unrealized_positions": BrokerPositions,
@@ -950,7 +919,6 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         Logger.info("Daily P&L report sent for %s", DateStr)
 
     return {
-        "realized_total": RealizedTotal,
         "unrealized_change": UnrealizedChange,
         "total_daily_pnl": TotalDailyPnl,
         "effective_capital": EffectiveCapital,
