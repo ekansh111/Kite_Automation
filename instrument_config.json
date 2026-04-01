@@ -847,6 +847,22 @@
         "asset_DM": 3.9,
         "neg_skew_discount": 0.5
       }
+    },
+    "NIFTY_ITM_CALL": {
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.15,
+        "asset_DM": 3.9,
+        "neg_skew_discount": 0.5
+      }
+    },
+    "BANKNIFTY_ITM_CALL": {
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.15,
+        "asset_DM": 3.9,
+        "neg_skew_discount": 0.5
+      }
     }
   }
 }
