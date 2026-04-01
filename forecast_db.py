@@ -208,6 +208,16 @@ def InitDB():
 
             CREATE INDEX IF NOT EXISTS idx_itm_call_rollover_lookup
                 ON itm_call_rollover_log(instrument, expiry_date, status);
+
+            CREATE TABLE IF NOT EXISTS daily_pnl_snapshot (
+                report_date TEXT NOT NULL,
+                instrument TEXT NOT NULL,
+                confirmed_qty INTEGER NOT NULL,
+                avg_entry_price REAL NOT NULL,
+                ltp REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL,
+                PRIMARY KEY (report_date, instrument)
+            );
         """)
         Conn.commit()
 
@@ -835,3 +845,109 @@ def GetAvgEntryPrice(Instrument):
     """Return the current average entry price for an instrument."""
     Pos = GetSystemPosition(Instrument)
     return Pos.get("avg_entry_price", 0)
+
+
+# ─── Daily P&L Report Queries ─────────────────────────────────────
+
+
+def GetTodayRealizedPnl(DateStr=None):
+    """Return today's realized P&L rows (IST date). DateStr overrides for backfill."""
+    Conn = _GetConn()
+    if DateStr is None:
+        DateStr = datetime.now().strftime("%Y-%m-%d")
+    Rows = Conn.execute(
+        """SELECT instrument, category, close_qty, entry_price, exit_price,
+                  point_value, pnl_inr, created_at
+           FROM realized_pnl
+           WHERE date(created_at, '+5 hours', '+30 minutes') = ?
+           ORDER BY created_at DESC""",
+        (DateStr,)
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetTodayFuturesOrders(DateStr=None):
+    """Return today's filled futures orders."""
+    Conn = _GetConn()
+    if DateStr is None:
+        DateStr = datetime.now().strftime("%Y-%m-%d")
+    Rows = Conn.execute(
+        """SELECT instrument, action, qty, fill_price, slippage,
+                  execution_mode, status, created_at
+           FROM order_log
+           WHERE date(created_at, '+5 hours', '+30 minutes') = ?
+             AND status IN ('FILLED', 'PLACED')
+           ORDER BY created_at""",
+        (DateStr,)
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetTodayOptionsOrders(DateStr=None):
+    """Return today's options orders."""
+    Conn = _GetConn()
+    if DateStr is None:
+        DateStr = datetime.now().strftime("%Y-%m-%d")
+    Rows = Conn.execute(
+        """SELECT underlying, strategy_name, leg, contract, action, qty,
+                  fill_price, slippage, created_at
+           FROM options_order_log
+           WHERE date(created_at, '+5 hours', '+30 minutes') = ?
+           ORDER BY created_at""",
+        (DateStr,)
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetAllOpenPositions():
+    """Return all system_positions with non-zero confirmed_qty."""
+    Conn = _GetConn()
+    Rows = Conn.execute(
+        """SELECT instrument, target_qty, confirmed_qty, avg_entry_price,
+                  point_value, updated_at
+           FROM system_positions
+           WHERE confirmed_qty != 0
+           ORDER BY instrument"""
+    ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def SaveDailySnapshot(ReportDate, Snapshots):
+    """Save end-of-day unrealized P&L snapshot.
+
+    Parameters
+    ----------
+    ReportDate : str
+        Date string (YYYY-MM-DD).
+    Snapshots : list of dict
+        Each dict: instrument, confirmed_qty, avg_entry_price, ltp, unrealized_pnl.
+    """
+    Conn = _GetConn()
+    with _DBLock:
+        for S in Snapshots:
+            Conn.execute(
+                """INSERT OR REPLACE INTO daily_pnl_snapshot
+                   (report_date, instrument, confirmed_qty, avg_entry_price, ltp, unrealized_pnl)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (ReportDate, S["instrument"], S["confirmed_qty"],
+                 S["avg_entry_price"], S["ltp"], S["unrealized_pnl"])
+            )
+        Conn.commit()
+    Logger.info("Saved daily snapshot for %s: %d instruments", ReportDate, len(Snapshots))
+
+
+def GetPreviousSnapshot(ReportDate):
+    """Load the most recent snapshot before ReportDate.
+
+    Returns dict keyed by instrument: {instrument: unrealized_pnl}.
+    """
+    Conn = _GetConn()
+    Rows = Conn.execute(
+        """SELECT instrument, unrealized_pnl FROM daily_pnl_snapshot
+           WHERE report_date = (
+               SELECT MAX(report_date) FROM daily_pnl_snapshot
+               WHERE report_date < ?
+           )""",
+        (ReportDate,)
+    ).fetchall()
+    return {r["instrument"]: r["unrealized_pnl"] for r in Rows}
