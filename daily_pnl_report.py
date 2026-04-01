@@ -26,7 +26,6 @@ from collections import defaultdict
 
 import pandas as pd
 
-import forecast_db as db
 from Server_Order_Handler import EstablishConnectionAngelAPI
 from rollover_monitor import _LoadEmailConfig, _SendEmail, _EstablishKiteSession
 from Directories import workInputRoot, ZerodhaInstrumentDirectory, AngelInstrumentDirectory
@@ -164,28 +163,40 @@ def _MatchPositionToInstrument(TradingSymbol, Exchange, Broker, Instruments):
     return None, None
 
 
-def _FetchBrokerPositions(FullConfig):
-    """Fetch all open positions directly from broker APIs.
+def _FetchBrokerData(FullConfig):
+    """Fetch all positions + daily M2M directly from broker APIs.
 
-    Returns list of dicts: instrument, confirmed_qty, avg_entry_price,
-    point_value, ltp, unrealized_pnl, direction, tradingsymbol, broker.
+    Returns (OpenPositions, DailyMtm):
+      - OpenPositions: list of dicts for display (instrument, qty, avg, ltp, unrealized, etc.)
+      - DailyMtm: float — total daily P&L across all accounts from broker's own m2m/pnl fields
     """
     Instruments = FullConfig.get("instruments", {})
     Positions = []
+    DailyMtm = 0.0
 
-    # ── Kite (Zerodha) — MCX futures ──
+    # ── Kite (Zerodha) — MCX futures via YD6016 ──
     try:
         Kite = _EstablishKiteSession("YD6016")
-        RawPositions = Kite.positions().get("net", [])
-        for Pos in RawPositions:
+        AllPositions = Kite.positions()
+        # Day positions include ALL instruments that had activity today (even closed)
+        # Each has 'm2m' = broker's daily mark-to-market P&L
+        DayPositions = AllPositions.get("day", [])
+        for Pos in DayPositions:
+            if Pos.get("product") != "NRML":
+                continue
+            if _IsIndexOption(Pos.get("tradingsymbol", "")):
+                continue
+            M2m = float(Pos.get("m2m", 0) or Pos.get("pnl", 0) or 0)
+            DailyMtm += M2m
+
+        # Net positions for open display
+        NetPositions = AllPositions.get("net", [])
+        for Pos in NetPositions:
             Qty = Pos.get("quantity", 0)
-            Product = Pos.get("product", "")
-            if Qty == 0 or Product != "NRML":
+            if Qty == 0 or Pos.get("product") != "NRML":
                 continue
             Symbol = Pos.get("tradingsymbol", "")
             Exchange = Pos.get("exchange", "")
-
-            # Skip index options — handled separately
             if _IsIndexOption(Symbol):
                 continue
 
@@ -197,13 +208,14 @@ def _FetchBrokerPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PV = Cfg.get("point_value", 1)
-            if AvgPrice > 0 and Ltp > 0:
+            Unrealized = float(Pos.get("unrealised", 0) or 0)
+            # If broker didn't give us unrealised, compute it
+            if Unrealized == 0 and AvgPrice > 0 and Ltp > 0:
                 if Qty > 0:
                     Unrealized = (Ltp - AvgPrice) * abs(Qty) * PV
                 else:
                     Unrealized = (AvgPrice - Ltp) * abs(Qty) * PV
-            else:
-                Unrealized = 0
+            M2m = float(Pos.get("m2m", 0) or 0)
 
             Positions.append({
                 "instrument": InstName,
@@ -212,26 +224,43 @@ def _FetchBrokerPositions(FullConfig):
                 "point_value": PV,
                 "ltp": Ltp,
                 "unrealized_pnl": round(Unrealized, 2),
+                "day_m2m": round(M2m, 2),
                 "direction": "LONG" if Qty > 0 else "SHORT",
                 "tradingsymbol": Symbol,
                 "broker": "ZERODHA",
             })
-        Logger.info("Kite: fetched %d open positions", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
+        Logger.info("Kite YD6016: %d open positions, day M2M from %d day positions",
+                     sum(1 for p in Positions if p["broker"] == "ZERODHA"), len(DayPositions))
     except Exception as e:
-        Logger.error("Kite positions fetch failed: %s", e)
+        Logger.error("Kite YD6016 positions fetch failed: %s", e)
 
     # ── Angel (NCDEX) ──
+    AngelMtm = 0.0
     try:
         SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
         RawResponse = SmartApi.position()
         RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
         if RawPositions is None:
             RawPositions = []
+
+        # Log available keys from first position so we can verify fields
+        if RawPositions:
+            Logger.info("Angel position keys: %s", list(RawPositions[0].keys()))
+
         for Pos in RawPositions:
-            Qty = int(Pos.get("netqty", 0))
             ProdType = Pos.get("producttype", "")
-            if Qty == 0 or ProdType != "CARRYFORWARD":
+            if ProdType != "CARRYFORWARD":
                 continue
+
+            # Try broker's own P&L field
+            PosPnl = float(Pos.get("pnl", 0) or Pos.get("realised", 0) or 0)
+            PosUnrealised = float(Pos.get("unrealised", 0) or 0)
+            AngelMtm += PosPnl + PosUnrealised
+
+            Qty = int(Pos.get("netqty", 0))
+            if Qty == 0:
+                continue
+
             Symbol = Pos.get("tradingsymbol", "")
             Exchange = Pos.get("exchange", "")
 
@@ -241,7 +270,6 @@ def _FetchBrokerPositions(FullConfig):
                 continue
 
             Ltp = float(Pos.get("ltp", 0))
-            # Angel: use buy/sell avg based on direction
             if Qty > 0:
                 AvgPrice = float(Pos.get("buyavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
             else:
@@ -262,37 +290,51 @@ def _FetchBrokerPositions(FullConfig):
                 "point_value": PV,
                 "ltp": Ltp,
                 "unrealized_pnl": round(Unrealized, 2),
+                "day_m2m": round(PosPnl + PosUnrealised, 2),
                 "direction": "LONG" if Qty > 0 else "SHORT",
                 "tradingsymbol": Symbol,
                 "broker": "ANGEL",
             })
-        Logger.info("Angel: fetched %d open positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
+        DailyMtm += AngelMtm
+        Logger.info("Angel: %d open positions, Angel M2M=%.2f",
+                     sum(1 for p in Positions if p["broker"] == "ANGEL"), AngelMtm)
     except Exception as e:
         Logger.error("Angel positions fetch failed: %s", e)
 
     # ── Options from Kite OFS653 (NFO/BFO) ──
     try:
         Kite = _EstablishKiteSession("OFS653")
-        RawPositions = Kite.positions().get("net", [])
-        for Pos in RawPositions:
+        AllPositions = Kite.positions()
+
+        # Day positions for M2M (includes closed options)
+        DayPositions = AllPositions.get("day", [])
+        OptMtm = 0.0
+        for Pos in DayPositions:
+            if Pos.get("product") != "NRML":
+                continue
+            M2m = float(Pos.get("m2m", 0) or Pos.get("pnl", 0) or 0)
+            OptMtm += M2m
+        DailyMtm += OptMtm
+
+        # Net positions for open display
+        NetPositions = AllPositions.get("net", [])
+        for Pos in NetPositions:
             Qty = Pos.get("quantity", 0)
             if Qty == 0 or Pos.get("product", "") != "NRML":
                 continue
             Symbol = Pos.get("tradingsymbol", "")
-            Exchange = Pos.get("exchange", "")
             if not _IsIndexOption(Symbol):
                 continue
 
-            # Determine underlying and leg
             S = Symbol.upper()
-            if S.startswith("NIFTY"):
+            if S.startswith("BANKNIFTY"):
+                Underlying = "BANKNIFTY"
+            elif S.startswith("NIFTY"):
                 Underlying = "NIFTY"
             elif S.startswith("SENSEX"):
                 Underlying = "SENSEX"
             elif S.startswith("BANKEX"):
                 Underlying = "BANKEX"
-            elif S.startswith("BANKNIFTY"):
-                Underlying = "BANKNIFTY"
             else:
                 continue
             Leg = "CE" if S.endswith("CE") else "PE"
@@ -300,11 +342,10 @@ def _FetchBrokerPositions(FullConfig):
 
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
-            # Options are always short straddles — WasLong=False
-            if AvgPrice > 0 and Ltp > 0:
-                Unrealized = (AvgPrice - Ltp) * abs(Qty) * 1.0  # point_value=1 for options
-            else:
-                Unrealized = 0
+            Unrealized = float(Pos.get("unrealised", 0) or 0)
+            if Unrealized == 0 and AvgPrice > 0 and Ltp > 0:
+                Unrealized = (AvgPrice - Ltp) * abs(Qty) * 1.0
+            M2m = float(Pos.get("m2m", 0) or 0)
 
             Positions.append({
                 "instrument": InstName,
@@ -313,15 +354,17 @@ def _FetchBrokerPositions(FullConfig):
                 "point_value": 1.0,
                 "ltp": Ltp,
                 "unrealized_pnl": round(Unrealized, 2),
+                "day_m2m": round(M2m, 2),
                 "direction": "SHORT",
                 "tradingsymbol": Symbol,
                 "broker": "ZERODHA",
             })
+        Logger.info("Kite OFS653: options M2M=%.2f", OptMtm)
     except Exception as e:
         Logger.warning("Options position fetch failed: %s", e)
 
-    Logger.info("Total broker positions: %d", len(Positions))
-    return Positions
+    Logger.info("Total broker positions: %d, Total daily M2M: %.2f", len(Positions), DailyMtm)
+    return Positions, DailyMtm
 
 
 # ─── Broker Order Fetching ────────────────────────────────────────
@@ -527,7 +570,7 @@ def _BuildReportHtml(Data):
     """Build the full P&L report HTML."""
     D = Data
     DateDisplay = datetime.strptime(D["date"], "%Y-%m-%d").strftime("%d %b %Y")
-    TotalPnl = D["unrealized_change"]
+    TotalPnl = D["daily_mtm"]
     HeroColor = _PnlColor(TotalPnl)
     HeroBg = "#0d3320" if TotalPnl >= 0 else "#3b1119"
 
@@ -561,23 +604,23 @@ def _BuildReportHtml(Data):
             TOTAL DAILY P&L</div>
     </div>"""
 
-    # ── Summary strip: MTM prominent, realized + cumulative secondary ──
-    MtmColor = _PnlColor(D["unrealized_change"])
-    MtmBg = _PnlBg(D["unrealized_change"])
+    # ── Summary strip: Daily MTM prominent, trades + total unrealized secondary ──
+    MtmColor = _PnlColor(D["daily_mtm"])
+    MtmBg = _PnlBg(D["daily_mtm"])
     SummaryHtml = f"""
     <table style="width:100%;border-collapse:collapse;border-bottom:1px solid {BORDER};">
         <tr>
             <td style="width:40%;text-align:center;padding:18px 8px;background:{MtmBg};
                 border-right:1px solid {BORDER};">
                 <div style="font-size:10px;font-weight:700;color:{SLATE};text-transform:uppercase;
-                    letter-spacing:1px;margin-bottom:6px;">MTM Change</div>
-                <div style="font-size:22px;font-weight:800;color:{MtmColor};">\u20b9{_FmtINR(D["unrealized_change"])}</div>
+                    letter-spacing:1px;margin-bottom:6px;">Daily MTM</div>
+                <div style="font-size:22px;font-weight:800;color:{MtmColor};">\u20b9{_FmtINR(D["daily_mtm"])}</div>
             </td>
             <td style="width:60%;padding:12px 0;">
                 <table style="width:100%;border-collapse:collapse;">
                     <tr>
                         {_StatBox("Trades", str(D["trade_count"]), NAVY)}
-                        {_StatBox("Cumulative", _FmtINR(D["cumulative_pnl"]), _PnlColor(D["cumulative_pnl"]))}
+                        {_StatBox("Unrealized", _FmtINR(D["total_unrealized"]), _PnlColor(D["total_unrealized"]))}
                     </tr>
                 </table>
             </td>
@@ -598,7 +641,7 @@ def _BuildReportHtml(Data):
             </td>
             <td style="width:33.3%;text-align:center;padding:12px 8px;">
                 <span style="font-size:12px;color:{SLATE};">Capital</span>
-                <span style="font-size:14px;font-weight:700;color:{NAVY};margin-left:6px;">\u20b9{_FmtPlain(D["effective_capital"])}</span>
+                <span style="font-size:14px;font-weight:700;color:{NAVY};margin-left:6px;">\u20b9{_FmtPlain(D["base_capital"])}</span>
             </td>
         </tr>
     </table>"""
@@ -667,19 +710,14 @@ def _BuildReportHtml(Data):
         OptTradesHtml += _Divider()
 
     # ── Open Futures Positions ──
-    HasPrevSnapshot = bool(D["prev_snapshot"])
     FuturesPos = [P for P in D["unrealized_positions"] if "_OPT_" not in P["instrument"]]
     OpenFutHtml = _SectionHeader("Open Futures")
     if FuturesPos:
         for P in FuturesPos:
-            if HasPrevSnapshot:
-                Prev = D["prev_snapshot"].get(P["instrument"], 0)
-                Change = P["unrealized_pnl"] - Prev
-            else:
-                Change = None  # No baseline
+            DayChange = P.get("day_m2m", 0)
             OpenFutHtml += _PositionBlock(
                 P["instrument"], P["direction"], P["confirmed_qty"],
-                P["avg_entry_price"], P["ltp"], P["unrealized_pnl"], Change,
+                P["avg_entry_price"], P["ltp"], P["unrealized_pnl"], DayChange,
             )
     else:
         OpenFutHtml += _EmptyRow("No open futures positions")
@@ -688,12 +726,12 @@ def _BuildReportHtml(Data):
     OptionsPos = [P for P in D["unrealized_positions"] if "_OPT_" in P["instrument"]]
     OpenOptHtml = _SectionHeader("Open Options")
     if OptionsPos:
-        ByUnderlying = defaultdict(lambda: {"unrealized": 0, "prev_unrealized": 0, "legs": []})
+        ByUnderlying = defaultdict(lambda: {"unrealized": 0, "day_m2m": 0, "legs": []})
         for P in OptionsPos:
             Parts = P["instrument"].split("_OPT_")
             Underlying, Leg = Parts[0], Parts[1] if len(Parts) > 1 else "?"
             ByUnderlying[Underlying]["unrealized"] += P["unrealized_pnl"]
-            ByUnderlying[Underlying]["prev_unrealized"] += D["prev_snapshot"].get(P["instrument"], 0)
+            ByUnderlying[Underlying]["day_m2m"] += P.get("day_m2m", 0)
             LtpStr = f"{P['ltp']:.2f}" if P["ltp"] > 0 else "N/A"
             ByUnderlying[Underlying]["legs"].append(f"{Leg}: {P['avg_entry_price']:.1f} \u2192 {LtpStr}")
 
@@ -706,11 +744,8 @@ def _BuildReportHtml(Data):
             pass
 
         for Underlying, Combo in ByUnderlying.items():
-            if HasPrevSnapshot:
-                Change = Combo["unrealized"] - Combo["prev_unrealized"]
-                TodayLine = f'<b style="color:{_PnlColor(Change)};">\u20b9{_FmtINR(Change)}</b>'
-            else:
-                TodayLine = f'<span style="color:{MUTED};">N/A</span>'
+            DayM2m = Combo["day_m2m"]
+            TodayLine = f'<b style="color:{_PnlColor(DayM2m)};">\u20b9{_FmtINR(DayM2m)}</b>'
             Lots = StateInfo.get(Underlying, {}).get("activeLots", "?")
             Contracts = StateInfo.get(Underlying, {}).get("activeContracts", [])
             OpenOptHtml += f"""
@@ -760,9 +795,10 @@ def _BuildReportHtml(Data):
         except Exception:
             OpenOptHtml += _EmptyRow("No open options positions")
 
-    # ── Effective Capital ──
-    CapHtml = _SectionHeader("Effective Capital")
-    PnlSign = "+" if D["cumulative_pnl"] >= 0 else ""
+    # ── Capital & Unrealized ──
+    UnrealizedPnl = D["total_unrealized"]
+    UnrealizedSign = "+" if UnrealizedPnl >= 0 else ""
+    CapHtml = _SectionHeader("Capital Overview")
     CapHtml += f"""
     <tr><td style="padding:8px 20px 16px;">
         <table style="width:100%;border-collapse:collapse;">
@@ -772,17 +808,9 @@ def _BuildReportHtml(Data):
                     \u20b9{_FmtPlain(D["base_capital"])}</td>
             </tr>
             <tr>
-                <td style="padding:6px 0;font-size:13px;color:{SLATE};">Cumulative Realized P&L</td>
-                <td style="padding:6px 0;font-size:13px;font-weight:600;color:{_PnlColor(D['cumulative_pnl'])};text-align:right;">
-                    {PnlSign}\u20b9{_FmtPlain(D["cumulative_pnl"])}</td>
-            </tr>
-            <tr>
-                <td colspan="2" style="padding:8px 0 0;"><div style="border-top:1px solid {BORDER};"></div></td>
-            </tr>
-            <tr>
-                <td style="padding:6px 0;font-size:14px;font-weight:700;color:{NAVY};">Effective Capital</td>
-                <td style="padding:6px 0;font-size:16px;font-weight:800;color:{NAVY};text-align:right;">
-                    \u20b9{_FmtPlain(D["effective_capital"])}</td>
+                <td style="padding:6px 0;font-size:13px;color:{SLATE};">Total Unrealized P&L</td>
+                <td style="padding:6px 0;font-size:13px;font-weight:600;color:{_PnlColor(UnrealizedPnl)};text-align:right;">
+                    {UnrealizedSign}\u20b9{_FmtPlain(UnrealizedPnl)}</td>
             </tr>
         </table>
     </td></tr>"""
@@ -830,7 +858,6 @@ def _BuildReportHtml(Data):
 
 def GenerateDailyReport(DryRun=False, DateStr=None):
     """Generate and send the daily P&L report."""
-    db.InitDB()
 
     if DateStr is None:
         # If running after midnight but before market open (09:00 IST),
@@ -849,62 +876,28 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         FullConfig = json.load(f)
 
     BaseCapital = FullConfig["account"]["base_capital"]
-    CumulativePnl = db.GetCumulativeRealizedPnl()
-    EffectiveCapital = BaseCapital + CumulativePnl
 
     # ── Fetch everything from brokers ──
-    BrokerPositions = _FetchBrokerPositions(FullConfig)
+    BrokerPositions, DailyMtm = _FetchBrokerData(FullConfig)
     FuturesOrders, OptionsOrders = _FetchBrokerOrders(FullConfig)
     TradeCount = len(FuturesOrders) + len(OptionsOrders)
 
-    # Snapshot comparison for unrealized change
-    # Only count change for instruments that exist in BOTH today and yesterday's snapshot.
-    # New positions (not in snapshot) contribute 0 change — we have no baseline.
-    # Closed positions (in snapshot but not today) contribute -prev (unrealized went to 0).
-    PrevSnapshot = db.GetPreviousSnapshot(DateStr)
-    if PrevSnapshot:
-        UnrealizedChange = 0
-        for P in BrokerPositions:
-            if P["instrument"] in PrevSnapshot:
-                UnrealizedChange += P["unrealized_pnl"] - PrevSnapshot[P["instrument"]]
-            # else: new position, no baseline — skip
-        # Positions closed since yesterday: unrealized went from prev to 0
-        for Inst, PrevVal in PrevSnapshot.items():
-            if not any(p["instrument"] == Inst for p in BrokerPositions):
-                UnrealizedChange += 0 - PrevVal
-    else:
-        UnrealizedChange = 0
-        Logger.info("No previous snapshot found — unrealized change set to 0 (first run)")
+    # Total unrealized across all open positions = embedded P&L
+    TotalUnrealized = sum(P["unrealized_pnl"] for P in BrokerPositions)
 
-    TotalDailyPnl = UnrealizedChange
-
-    # Save today's snapshot for tomorrow's comparison
-    Snapshots = [
-        {
-            "instrument": P["instrument"],
-            "confirmed_qty": P["confirmed_qty"],
-            "avg_entry_price": P["avg_entry_price"],
-            "ltp": P["ltp"],
-            "unrealized_pnl": P["unrealized_pnl"],
-        }
-        for P in BrokerPositions
-    ]
-    db.SaveDailySnapshot(DateStr, Snapshots)
-
+    TotalDailyPnl = DailyMtm
     OpenCount = len([p for p in BrokerPositions if "_OPT_" not in p["instrument"]])
 
     ReportData = {
         "date": DateStr,
         "trade_count": TradeCount,
         "open_count": OpenCount,
-        "unrealized_change": UnrealizedChange,
-        "cumulative_pnl": CumulativePnl,
-        "effective_capital": EffectiveCapital,
+        "daily_mtm": DailyMtm,
+        "total_unrealized": TotalUnrealized,
         "base_capital": BaseCapital,
         "futures_orders": FuturesOrders,
         "options_orders": OptionsOrders,
         "unrealized_positions": BrokerPositions,
-        "prev_snapshot": PrevSnapshot,
     }
 
     Html = _BuildReportHtml(ReportData)
@@ -919,9 +912,8 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         Logger.info("Daily P&L report sent for %s", DateStr)
 
     return {
-        "unrealized_change": UnrealizedChange,
+        "daily_mtm": DailyMtm,
         "total_daily_pnl": TotalDailyPnl,
-        "effective_capital": EffectiveCapital,
     }
 
 
