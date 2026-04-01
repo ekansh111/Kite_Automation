@@ -223,7 +223,7 @@ def _FetchBrokerPositions(FullConfig):
 
     # ── Angel (NCDEX) ──
     try:
-        SmartApi = EstablishConnectionAngelAPI({"User": "E51339915"})
+        SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
         RawResponse = SmartApi.position()
         RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
         if RawPositions is None:
@@ -325,7 +325,110 @@ def _FetchBrokerPositions(FullConfig):
     return Positions
 
 
-# ─── Card Builders ─────────────────────────────────────────────────
+# ─── Broker Order Fetching ────────────────────────────────────────
+
+
+def _FetchBrokerOrders(FullConfig):
+    """Fetch today's completed orders from broker APIs.
+
+    Returns (FuturesOrders, OptionsOrders) — lists of dicts with unified schema.
+    """
+    Instruments = FullConfig.get("instruments", {})
+    FuturesOrders = []
+    OptionsOrders = []
+
+    # ── Kite orders ──
+    try:
+        Kite = EstablishConnectionKiteAPI({"User": "YD6016"})
+        AllOrders = Kite.orders()
+        for O in AllOrders:
+            if O.get("status") != "COMPLETE":
+                continue
+            if O.get("product") != "NRML":
+                continue
+            Symbol = O.get("tradingsymbol", "")
+            Exchange = O.get("exchange", "")
+            Qty = O.get("filled_quantity", 0) or O.get("quantity", 0)
+            AvgPrice = float(O.get("average_price", 0))
+            Action = O.get("transaction_type", "")  # BUY/SELL
+            OrderTime = O.get("order_timestamp", "")
+            if isinstance(OrderTime, datetime):
+                OrderTime = OrderTime.strftime("%H:%M")
+            else:
+                OrderTime = str(OrderTime)[-8:-3] if len(str(OrderTime)) > 8 else ""
+
+            if _IsIndexOption(Symbol):
+                # Options order
+                S = Symbol.upper()
+                if S.startswith("NIFTY"):
+                    Underlying = "NIFTY"
+                elif S.startswith("SENSEX"):
+                    Underlying = "SENSEX"
+                elif S.startswith("BANKNIFTY"):
+                    Underlying = "BANKNIFTY"
+                else:
+                    Underlying = Symbol[:6]
+                Leg = "CE" if S.endswith("CE") else "PE"
+                OptionsOrders.append({
+                    "underlying": Underlying,
+                    "leg": Leg,
+                    "contract": Symbol,
+                    "action": Action,
+                    "qty": Qty,
+                    "fill_price": AvgPrice,
+                    "time": OrderTime,
+                    "broker": "ZERODHA",
+                })
+            else:
+                # Futures order — match to instrument name
+                InstName, _ = _MatchPositionToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
+                FuturesOrders.append({
+                    "instrument": InstName or Symbol,
+                    "action": Action,
+                    "qty": Qty,
+                    "fill_price": AvgPrice,
+                    "time": OrderTime,
+                    "broker": "ZERODHA",
+                })
+        Logger.info("Kite: fetched %d completed orders", len([o for o in AllOrders if o.get("status") == "COMPLETE"]))
+    except Exception as e:
+        Logger.error("Kite orders fetch failed: %s", e)
+
+    # ── Angel orders ──
+    try:
+        SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
+        RawResponse = SmartApi.orderBook()
+        RawOrders = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
+        if RawOrders is None:
+            RawOrders = []
+        for O in RawOrders:
+            if O.get("status") != "complete":
+                continue
+            if O.get("producttype") != "CARRYFORWARD":
+                continue
+            Symbol = O.get("tradingsymbol", "")
+            Exchange = O.get("exchange", "")
+            Qty = int(O.get("filledshares", 0) or O.get("quantity", 0))
+            AvgPrice = float(O.get("averageprice", 0) or 0)
+            Action = O.get("transactiontype", "")  # BUY/SELL
+            OrderTime = O.get("updatetime", "") or O.get("ordertime", "")
+            if len(str(OrderTime)) > 5:
+                OrderTime = str(OrderTime)[-8:-3]
+
+            InstName, _ = _MatchPositionToInstrument(Symbol, Exchange, "ANGEL", Instruments)
+            FuturesOrders.append({
+                "instrument": InstName or Symbol,
+                "action": Action,
+                "qty": Qty,
+                "fill_price": AvgPrice,
+                "time": OrderTime,
+                "broker": "ANGEL",
+            })
+        Logger.info("Angel: fetched %d completed orders", len([o for o in RawOrders if o.get("status") == "complete"]))
+    except Exception as e:
+        Logger.error("Angel orders fetch failed: %s", e)
+
+    return FuturesOrders, OptionsOrders
 
 
 # ─── HTML Builder ─────────────────────────────────────────────────
@@ -530,28 +633,28 @@ def _BuildReportHtml(Data):
         FutTradesHtml += _SectionHeader("Futures Trades")
         FutTradesHtml += '<tr><td style="padding:0 12px;"><table style="width:100%;border-collapse:collapse;">'
         FutTradesHtml += _TradeRow([
-            ("Instrument", "left", "30%"), ("Action", "center", "15%"),
-            ("Qty", "center", "10%"), ("Fill", "right", "20%"),
-            ("Slip", "right", "10%"), ("Time", "right", "15%"),
+            ("Instrument", "left", "30%"), ("Action", "center", "12%"),
+            ("Qty", "center", "10%"), ("Fill", "right", "22%"),
+            ("Broker", "center", "12%"), ("Time", "right", "14%"),
         ], IsHeader=True)
         for O in D["futures_orders"]:
             Fill = f"{O['fill_price']:.2f}" if O.get("fill_price") else "N/A"
-            Slip = f"{O['slippage']:.2f}" if O.get("slippage") else "-"
-            Time = _FmtTime(O.get("created_at", ""))
+            Time = O.get("time", "")
+            Broker = O.get("broker", "")[:3]  # ZER / ANG
             ActionColor = GREEN if O["action"] == "BUY" else RED
             FutTradesHtml += f"""<tr class="pnl-row">
                 <td style="padding:8px 12px;font-size:12px;font-weight:600;color:{NAVY};
-                    border-bottom:1px solid {BORDER};width:30%;">{O['instrument']}</td>
+                    border-bottom:1px solid {BORDER};width:30%;">{_html.escape(str(O['instrument']))}</td>
                 <td style="padding:8px 12px;font-size:12px;font-weight:600;color:{ActionColor};
-                    text-align:center;border-bottom:1px solid {BORDER};width:15%;">{O['action']}</td>
+                    text-align:center;border-bottom:1px solid {BORDER};width:12%;">{O['action']}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{NAVY};text-align:center;
                     border-bottom:1px solid {BORDER};width:10%;">{O['qty']}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{NAVY};text-align:right;
-                    font-weight:600;border-bottom:1px solid {BORDER};width:20%;">{Fill}</td>
+                    font-weight:600;border-bottom:1px solid {BORDER};width:22%;">{Fill}</td>
+                <td style="padding:8px 12px;font-size:12px;color:{SLATE};text-align:center;
+                    border-bottom:1px solid {BORDER};width:12%;">{Broker}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{SLATE};text-align:right;
-                    border-bottom:1px solid {BORDER};width:10%;">{Slip}</td>
-                <td style="padding:8px 12px;font-size:12px;color:{SLATE};text-align:right;
-                    border-bottom:1px solid {BORDER};width:15%;">{Time}</td>
+                    border-bottom:1px solid {BORDER};width:14%;">{Time}</td>
             </tr>"""
         FutTradesHtml += '</table></td></tr>'
         FutTradesHtml += _Divider()
@@ -562,17 +665,17 @@ def _BuildReportHtml(Data):
         OptTradesHtml += _SectionHeader("Options Trades")
         OptTradesHtml += '<tr><td style="padding:0 12px;"><table style="width:100%;border-collapse:collapse;">'
         OptTradesHtml += _TradeRow([
-            ("Underlying", "left", "20%"), ("Leg", "center", "10%"),
+            ("Contract", "left", "35%"), ("Leg", "center", "10%"),
             ("Action", "center", "12%"), ("Qty", "center", "10%"),
-            ("Fill", "right", "20%"), ("Time", "right", "15%"),
+            ("Fill", "right", "18%"), ("Time", "right", "15%"),
         ], IsHeader=True)
         for O in D["options_orders"]:
             Fill = f"{O['fill_price']:.2f}" if O.get("fill_price") else "N/A"
-            Time = _FmtTime(O.get("created_at", ""))
+            Time = O.get("time", "")
             ActionColor = GREEN if O["action"] == "BUY" else RED
             OptTradesHtml += f"""<tr class="pnl-row">
                 <td style="padding:8px 12px;font-size:12px;font-weight:600;color:{NAVY};
-                    border-bottom:1px solid {BORDER};width:20%;">{O['underlying']}</td>
+                    border-bottom:1px solid {BORDER};width:35%;">{_html.escape(O.get('contract', O.get('underlying','')))}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{NAVY};text-align:center;
                     border-bottom:1px solid {BORDER};width:10%;">{O.get('leg','')}</td>
                 <td style="padding:8px 12px;font-size:12px;font-weight:600;color:{ActionColor};
@@ -580,7 +683,7 @@ def _BuildReportHtml(Data):
                 <td style="padding:8px 12px;font-size:12px;color:{NAVY};text-align:center;
                     border-bottom:1px solid {BORDER};width:10%;">{O['qty']}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{NAVY};text-align:right;
-                    font-weight:600;border-bottom:1px solid {BORDER};width:20%;">{Fill}</td>
+                    font-weight:600;border-bottom:1px solid {BORDER};width:18%;">{Fill}</td>
                 <td style="padding:8px 12px;font-size:12px;color:{SLATE};text-align:right;
                     border-bottom:1px solid {BORDER};width:15%;">{Time}</td>
             </tr>"""
@@ -766,15 +869,14 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     CumulativePnl = db.GetCumulativeRealizedPnl()
     EffectiveCapital = BaseCapital + CumulativePnl
 
-    RealizedRows = db.GetTodayRealizedPnl(DateStr)
-    FuturesOrders = db.GetTodayFuturesOrders(DateStr)
-    OptionsOrders = db.GetTodayOptionsOrders(DateStr)
-
-    RealizedTotal = sum(r["pnl_inr"] for r in RealizedRows)
+    # ── Fetch everything from brokers ──
+    BrokerPositions = _FetchBrokerPositions(FullConfig)
+    FuturesOrders, OptionsOrders = _FetchBrokerOrders(FullConfig)
     TradeCount = len(FuturesOrders) + len(OptionsOrders)
 
-    # Fetch positions live from brokers — source of truth
-    BrokerPositions = _FetchBrokerPositions(FullConfig)
+    # Realized P&L from DB (tracked during execution)
+    RealizedRows = db.GetTodayRealizedPnl(DateStr)
+    RealizedTotal = sum(r["pnl_inr"] for r in RealizedRows)
 
     # Snapshot comparison for unrealized change
     PrevSnapshot = db.GetPreviousSnapshot(DateStr)
