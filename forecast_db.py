@@ -177,6 +177,36 @@ def InitDB():
 
             CREATE INDEX IF NOT EXISTS idx_realized_pnl_instrument
                 ON realized_pnl(instrument, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS itm_call_rollover_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument TEXT NOT NULL,
+                expiry_date TEXT NOT NULL,
+                old_contract TEXT,
+                new_contract TEXT,
+                old_qty INTEGER,
+                new_qty INTEGER,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                leg1_order_id TEXT,
+                leg1_fill_price REAL,
+                leg1_slippage REAL,
+                leg2_order_id TEXT,
+                leg2_fill_price REAL,
+                leg2_slippage REAL,
+                roll_spread REAL,
+                realized_pnl REAL,
+                daily_vol_budget REAL,
+                k_value REAL,
+                broker TEXT,
+                user_account TEXT,
+                email_sent_at TEXT,
+                executed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_itm_call_rollover_lookup
+                ON itm_call_rollover_log(instrument, expiry_date, status);
         """)
         Conn.commit()
 
@@ -572,6 +602,94 @@ def GetRecentRollovers(limit=20):
         "SELECT * FROM rollover_log ORDER BY created_at DESC LIMIT ?",
         (limit,)
     ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+# ─── ITM Call Rollover ─────────────────────────────────────────────
+
+
+def LogITMCallRollover(Instrument, ExpiryDate, OldContract, NewContract,
+                       OldQty, NewQty, DailyVolBudget=None, KValue=None,
+                       Broker=None, UserAccount=None):
+    """Insert a PENDING ITM call rollover row. Returns the row id."""
+    Conn = _GetConn()
+    with _DBLock:
+        Cur = Conn.execute(
+            """INSERT INTO itm_call_rollover_log
+               (instrument, expiry_date, old_contract, new_contract,
+                old_qty, new_qty, daily_vol_budget, k_value,
+                broker, user_account, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING',
+                       datetime('now'), datetime('now'))""",
+            (Instrument, str(ExpiryDate), OldContract, NewContract,
+             OldQty, NewQty, DailyVolBudget, KValue, Broker, UserAccount)
+        )
+        Conn.commit()
+        return Cur.lastrowid
+
+
+def UpdateITMCallRolloverStatus(RowId, Status, **kwargs):
+    """Update ITM call rollover status and any additional fields.
+
+    Accepted kwargs: new_contract, leg1_order_id, leg1_fill_price, leg1_slippage,
+    leg2_order_id, leg2_fill_price, leg2_slippage, roll_spread,
+    realized_pnl, email_sent_at, executed_at.
+    """
+    AllowedFields = {
+        "new_contract", "leg1_order_id", "leg1_fill_price", "leg1_slippage",
+        "leg2_order_id", "leg2_fill_price", "leg2_slippage", "roll_spread",
+        "realized_pnl", "email_sent_at", "executed_at",
+    }
+    Sets = ["status = ?", "updated_at = datetime('now')"]
+    Vals = [Status]
+    for Key, Val in kwargs.items():
+        if Key in AllowedFields:
+            Sets.append(f"{Key} = ?")
+            Vals.append(Val)
+    Vals.append(RowId)
+
+    Conn = _GetConn()
+    with _DBLock:
+        Conn.execute(
+            f"UPDATE itm_call_rollover_log SET {', '.join(Sets)} WHERE id = ?",
+            tuple(Vals)
+        )
+        Conn.commit()
+
+
+def GetIncompleteITMCallRollovers(Instrument=None):
+    """Return rows with status LEG1_DONE for crash recovery.
+
+    If Instrument is provided, filter to that instrument only.
+    """
+    Conn = _GetConn()
+    if Instrument:
+        Rows = Conn.execute(
+            """SELECT * FROM itm_call_rollover_log
+               WHERE status = 'LEG1_DONE' AND instrument = ?
+               ORDER BY created_at""",
+            (Instrument,)
+        ).fetchall()
+    else:
+        Rows = Conn.execute(
+            "SELECT * FROM itm_call_rollover_log WHERE status = 'LEG1_DONE' ORDER BY created_at"
+        ).fetchall()
+    return [dict(r) for r in Rows]
+
+
+def GetRecentITMCallRollovers(Instrument=None, limit=20):
+    """Return recent ITM call rollover attempts (for status/debugging)."""
+    Conn = _GetConn()
+    if Instrument:
+        Rows = Conn.execute(
+            "SELECT * FROM itm_call_rollover_log WHERE instrument = ? ORDER BY created_at DESC LIMIT ?",
+            (Instrument, limit)
+        ).fetchall()
+    else:
+        Rows = Conn.execute(
+            "SELECT * FROM itm_call_rollover_log ORDER BY created_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
     return [dict(r) for r in Rows]
 
 

@@ -38,5 +38,25 @@
       "max_chase_seconds_exit": 25,
       "tick_size": 0.05
     }
+  },
+  "BANKNIFTY_OPT": {
+    "enabled": true,
+    "exchange": "NFO",
+    "broker": "ZERODHA",
+    "user": "OFS653",
+    "execution": {
+      "use_smart_chase": true,
+      "execution_mode_override": "D",
+      "market_open_delay_seconds": 10,
+      "baseline_spread_ticks": 5,
+      "max_settle_wait_seconds": 20,
+      "buffer_ticks": 3,
+      "chase_step_ticks": 1,
+      "max_chase_ticks": 20,
+      "poll_interval_seconds": 4,
+      "max_chase_seconds_entry": 30,
+      "max_chase_seconds_exit": 20,
+      "tick_size": 0.05
+    }
   }
 }

@@ -90,8 +90,11 @@ K_TABLE_STRADDLE = [
     (1, 1, 1.00),   # 1/√1 = 1.00
 ]
 
-# K values for single call/put (future extensibility)
+# K values for single call/put (used by ITM call rollover strategy)
 K_TABLE_SINGLE = [
+    (22, 45, 0.18),  # monthly territory — deep ITM, low gamma
+    (15, 21, 0.25),  # 2-3 weeks out
+    (8, 14, 0.35),   # 1-2 weeks out
     (5, 7, 0.50),
     (3, 4, 0.60),
     (2, 2, 0.80),
@@ -1114,11 +1117,21 @@ def sendEntryEmail(strategyName, config, dte, kValue, callPremium, putPremium,
 
 
 def lookupK(dte, kTable):
-    """Return the k multiplier for a given trading DTE from the provided k table."""
+    """Return the k multiplier for a given trading DTE from the provided k table.
+
+    Falls back to boundary K values if DTE is outside the table range:
+    - DTE above max → smallest K (most conservative sizing, largest position)
+    - DTE below min → largest K (most conservative sizing, smallest position)
+    """
     for minDte, maxDte, kValue in kTable:
         if minDte <= dte <= maxDte:
             return kValue
-    raise ValueError(f"No k value found for DTE={dte}. Must be between 1 and 7.")
+    # Fallback: use boundary K values instead of crashing
+    allK = [k for _, _, k in kTable]
+    maxDteInTable = max(hi for _, hi, _ in kTable)
+    if dte > maxDteInTable:
+        return min(allK)   # long-dated → smallest K → larger position (low daily risk)
+    return max(allK)       # very short-dated → largest K → smaller position (high daily risk)
 
 
 def lookupIvShock(sizingDte):
@@ -1882,8 +1895,7 @@ def _load_vol_budgets():
     base_capital = acct["base_capital"]
     cumulative_pnl = GetCumulativeRealizedPnl()
     effective_capital = base_capital + cumulative_pnl
-    logger.info("Options effective capital: base=%d + pnl=%.0f = %.0f",
-                base_capital, cumulative_pnl, effective_capital)
+    print(f"Options effective capital: base={base_capital} + pnl={cumulative_pnl:.0f} = {effective_capital:.0f}")
     budgets = {}
     for underlying, opt_cfg in cfg.get("options_allocation", {}).items():
         budgets[underlying] = compute_daily_vol_target(
