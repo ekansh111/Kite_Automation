@@ -111,11 +111,20 @@ def _MatchToInstrument(TradingSymbol, Exchange, Broker, Instruments):
 
 # ─── Fetch Open Positions ────────────────────────────────────────
 
+def _CalcPnl(Direction, Price1, Price2, Qty, PV):
+    """P&L from Price1 to Price2. LONG: (P2-P1)*Q*PV, SHORT: (P1-P2)*Q*PV."""
+    if Direction == "LONG":
+        return (Price2 - Price1) * Qty * PV
+    return (Price1 - Price2) * Qty * PV
+
+
 def _FetchOpenPositions(FullConfig):
     """Fetch open positions from all broker accounts.
 
-    For each: P&L = (LTP - AvgEntry) x Qty x PointValue
-    Returns list of position dicts.
+    For each position returns:
+      pnl         = (LTP - Entry) x Qty x PV  (total unrealized)
+      daily_swing = (LTP - Prev Close) x Qty x PV  (today's movement)
+      prev_close  = previous day's closing price from broker
     """
     Instruments = FullConfig.get("instruments", {})
     Positions = []
@@ -139,19 +148,22 @@ def _FetchOpenPositions(FullConfig):
 
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
+            PrevClose = float(Pos.get("close_price", 0) or 0)
             PV = Cfg.get("point_value", 1)
             Direction = "LONG" if Qty > 0 else "SHORT"
+            AbsQty = abs(Qty)
 
-            if Direction == "LONG":
-                Pnl = (Ltp - AvgPrice) * abs(Qty) * PV
-            else:
-                Pnl = (AvgPrice - Ltp) * abs(Qty) * PV
+            Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
+            # Daily swing: if no prev close (new position today), fall back to entry
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, PV)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
-                "direction": Direction, "qty": abs(Qty),
-                "avg_entry": round(AvgPrice, 2), "ltp": round(Ltp, 2),
-                "point_value": PV, "pnl": round(Pnl, 2),
+                "direction": Direction, "qty": AbsQty,
+                "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
+                "ltp": round(Ltp, 2), "point_value": PV,
+                "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
                 "broker": "ZERODHA",
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
@@ -179,19 +191,26 @@ def _FetchOpenPositions(FullConfig):
                 continue
 
             Ltp = float(Pos.get("ltp", 0))
+            PrevClose = float(Pos.get("close", 0) or 0)
+            PV = Cfg.get("point_value", 1)
             Direction = "LONG" if Qty > 0 else "SHORT"
+            AbsQty = abs(Qty)
+
             if Direction == "LONG":
                 AvgPrice = float(Pos.get("buyavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
-                Pnl = (Ltp - AvgPrice) * abs(Qty) * Cfg.get("point_value", 1)
             else:
                 AvgPrice = float(Pos.get("sellavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
-                Pnl = (AvgPrice - Ltp) * abs(Qty) * Cfg.get("point_value", 1)
+
+            Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, PV)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
-                "direction": Direction, "qty": abs(Qty),
-                "avg_entry": round(AvgPrice, 2), "ltp": round(Ltp, 2),
-                "point_value": Cfg.get("point_value", 1), "pnl": round(Pnl, 2),
+                "direction": Direction, "qty": AbsQty,
+                "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
+                "ltp": round(Ltp, 2), "point_value": PV,
+                "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
                 "broker": "ANGEL",
             })
         Logger.info("Angel: %d open NCDEX positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
@@ -224,14 +243,20 @@ def _FetchOpenPositions(FullConfig):
 
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
+            PrevClose = float(Pos.get("close_price", 0) or 0)
+            AbsQty = abs(Qty)
+
             # Options are always short straddles
-            Pnl = (AvgPrice - Ltp) * abs(Qty) * 1.0
+            Pnl = _CalcPnl("SHORT", AvgPrice, Ltp, AbsQty, 1.0)
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            DailySwing = _CalcPnl("SHORT", SwingBase, Ltp, AbsQty, 1.0)
 
             Positions.append({
                 "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
-                "direction": "SHORT", "qty": abs(Qty),
-                "avg_entry": round(AvgPrice, 2), "ltp": round(Ltp, 2),
-                "point_value": 1.0, "pnl": round(Pnl, 2),
+                "direction": "SHORT", "qty": AbsQty,
+                "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
+                "ltp": round(Ltp, 2), "point_value": 1.0,
+                "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
                 "broker": "ZERODHA",
             })
         Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
@@ -330,9 +355,10 @@ def _FetchTodayOrders(FullConfig):
 def _BuildReportHtml(D):
     """Build the full HTML email."""
     DateDisplay = datetime.strptime(D["date"], "%Y-%m-%d").strftime("%d %b %Y")
+    DailySwing = D["total_daily_swing"]
     TotalPnl = D["total_pnl"]
-    HeroColor = _PnlColor(TotalPnl)
-    HeroBg = "#0d3320" if TotalPnl >= 0 else "#3b1119"
+    HeroColor = _PnlColor(DailySwing)
+    HeroBg = "#0d3320" if DailySwing >= 0 else "#3b1119"
 
     DarkStyle = """
     @media (prefers-color-scheme: dark) {
@@ -354,13 +380,14 @@ def _BuildReportHtml(D):
         <div style="margin-top:14px;display:inline-block;background:{HeroBg};
             padding:10px 28px;border-radius:10px;">
             <span style="font-size:28px;font-weight:800;color:{HeroColor};
-                letter-spacing:0.5px;">\u20b9{_FmtINR(TotalPnl)}</span>
+                letter-spacing:0.5px;">\u20b9{_FmtINR(DailySwing)}</span>
         </div>
         <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px;">
-            TOTAL UNREALIZED P&L</div>
+            TODAY'S P&L SWING</div>
     </div>"""
 
     # ── Quick Stats ──
+    UnrealizedColor = _PnlColor(TotalPnl)
     StatsHtml = f"""
     <table style="width:100%;border-collapse:collapse;border-bottom:1px solid {BORDER};">
         <tr>
@@ -373,8 +400,8 @@ def _BuildReportHtml(D):
                 <div style="font-size:17px;font-weight:700;color:{NAVY};">{D["trade_count"]}</div>
             </td>
             <td style="width:33%;text-align:center;padding:14px 8px;">
-                <div style="font-size:11px;color:{SLATE};text-transform:uppercase;">Total P&L</div>
-                <div style="font-size:17px;font-weight:700;color:{HeroColor};">\u20b9{_FmtINR(TotalPnl)}</div>
+                <div style="font-size:11px;color:{SLATE};text-transform:uppercase;">Total Unrealized</div>
+                <div style="font-size:17px;font-weight:700;color:{UnrealizedColor};">\u20b9{_FmtINR(TotalPnl)}</div>
             </td>
         </tr>
     </table>"""
@@ -392,12 +419,13 @@ def _BuildReportHtml(D):
     OptPos = [P for P in D["positions"] if "_OPT_" in P["instrument"]]
     OptHtml = _SectionHeader("Open Options")
     if OptPos:
-        ByUnderlying = defaultdict(lambda: {"pnl": 0, "legs": []})
+        ByUnderlying = defaultdict(lambda: {"pnl": 0, "daily_swing": 0, "legs": []})
         for P in OptPos:
             Parts = P["instrument"].split("_OPT_")
             Underlying = Parts[0]
             Leg = Parts[1] if len(Parts) > 1 else "?"
             ByUnderlying[Underlying]["pnl"] += P["pnl"]
+            ByUnderlying[Underlying]["daily_swing"] += P["daily_swing"]
             LtpStr = f"{P['ltp']:.2f}" if P["ltp"] > 0 else "N/A"
             ByUnderlying[Underlying]["legs"].append(
                 f"{Leg}: {P['avg_entry']:.1f} \u2192 {LtpStr} ({P['qty']} qty)")
@@ -413,7 +441,8 @@ def _BuildReportHtml(D):
 
         for Underlying, Combo in ByUnderlying.items():
             PnlColor = _PnlColor(Combo["pnl"])
-            PnlBg = _PnlBg(Combo["pnl"])
+            PnlBgC = _PnlBg(Combo["pnl"])
+            SwingColor = _PnlColor(Combo["daily_swing"])
             Lots = StateInfo.get(Underlying, {}).get("activeLots", "?")
             OptHtml += f"""
             <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
@@ -424,12 +453,16 @@ def _BuildReportHtml(D):
                             font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;
                             margin-left:8px;">{Lots} LOTS</span>
                     </div>
-                    <span style="display:inline-block;background:{PnlBg};color:{PnlColor};
+                    <span style="display:inline-block;background:{PnlBgC};color:{PnlColor};
                         font-size:13px;font-weight:600;padding:3px 10px;border-radius:6px;">
                         \u20b9{_FmtINR(Combo["pnl"])}</span>
                 </div>
                 <div style="margin-top:4px;font-size:12px;color:{SLATE};">
                     {" &middot; ".join(_html.escape(l) for l in Combo["legs"])}
+                </div>
+                <div style="margin-top:4px;">
+                    <span style="font-size:12px;color:{SLATE};">Today: </span>
+                    <b style="font-size:12px;color:{SwingColor};">\u20b9{_FmtINR(Combo["daily_swing"])}</b>
                 </div>
             </td></tr>"""
     else:
@@ -530,7 +563,9 @@ def _PositionRow(P):
     DirBg = "#f0fdf4" if P["direction"] == "LONG" else "#fef2f2"
     PnlColor = _PnlColor(P["pnl"])
     PnlBgColor = _PnlBg(P["pnl"])
+    SwingColor = _PnlColor(P["daily_swing"])
     LtpStr = f"{P['ltp']:.2f}" if P["ltp"] > 0 else "N/A"
+    PrevCloseStr = f"{P['prev_close']:.2f}" if P["prev_close"] > 0 else "N/A"
     return f"""
     <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -544,10 +579,15 @@ def _PositionRow(P):
                 font-size:13px;font-weight:600;padding:3px 10px;border-radius:6px;">
                 \u20b9{_FmtINR(P["pnl"])}</span>
         </div>
-        <div style="margin-top:6px;display:flex;gap:24px;">
+        <div style="margin-top:6px;display:flex;gap:16px;flex-wrap:wrap;">
             <span style="font-size:12px;color:{SLATE};">Qty: <b style="color:{NAVY};">{P["qty"]}</b></span>
             <span style="font-size:12px;color:{SLATE};">Entry: <b style="color:{NAVY};">{P["avg_entry"]:.2f}</b></span>
+            <span style="font-size:12px;color:{SLATE};">Prev Close: <b style="color:{NAVY};">{PrevCloseStr}</b></span>
             <span style="font-size:12px;color:{SLATE};">LTP: <b style="color:{NAVY};">{LtpStr}</b></span>
+        </div>
+        <div style="margin-top:4px;">
+            <span style="font-size:12px;color:{SLATE};">Today: </span>
+            <b style="font-size:12px;color:{SwingColor};">\u20b9{_FmtINR(P["daily_swing"])}</b>
         </div>
     </td></tr>"""
 
@@ -592,20 +632,25 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     Positions = _FetchOpenPositions(FullConfig)
     FuturesOrders, OptionsOrders = _FetchTodayOrders(FullConfig)
 
-    # Total P&L = sum of (LTP - Entry) x Qty x PV across all open positions
+    # Total unrealized P&L = sum of (LTP - Entry) across all positions
     TotalPnl = sum(P["pnl"] for P in Positions)
-    Logger.info("Total P&L across %d positions: %.2f", len(Positions), TotalPnl)
+    # Daily swing = sum of (LTP - Prev Close) across all positions
+    TotalDailySwing = sum(P["daily_swing"] for P in Positions)
+
+    Logger.info("Total unrealized: %.2f | Daily swing: %.2f", TotalPnl, TotalDailySwing)
 
     # Log each position for verification
     for P in Positions:
-        Logger.info("  %s | %s | qty=%d | entry=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f",
+        Logger.info("  %s | %s | qty=%d | entry=%.2f | prev_close=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f | swing=%.2f",
                      P["instrument"], P["direction"], P["qty"],
-                     P["avg_entry"], P["ltp"], P["point_value"], P["pnl"])
+                     P["avg_entry"], P["prev_close"], P["ltp"],
+                     P["point_value"], P["pnl"], P["daily_swing"])
 
     ReportData = {
         "date": DateStr,
         "positions": Positions,
         "total_pnl": TotalPnl,
+        "total_daily_swing": TotalDailySwing,
         "position_count": len(Positions),
         "trade_count": len(FuturesOrders) + len(OptionsOrders),
         "futures_orders": FuturesOrders,
@@ -614,7 +659,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
 
     Html = _BuildReportHtml(ReportData)
     DateDisplay = datetime.strptime(DateStr, "%Y-%m-%d").strftime("%d %b %Y")
-    Subject = f"Daily P&L Report | {DateDisplay} | \u20b9{_FmtINR(TotalPnl)}"
+    Subject = f"Daily P&L Report | {DateDisplay} | \u20b9{_FmtINR(TotalDailySwing)}"
 
     if DryRun:
         print(Html)
