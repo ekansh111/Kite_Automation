@@ -106,6 +106,14 @@ def _MatchToInstrument(TradingSymbol, Exchange, Broker, Instruments):
             if Cfg.get("exchange") == Exchange:
                 return InstName, Cfg
 
+    # Fallback: match via ReconciliationPrefixes (e.g. TMCFGRNZM → TURMERIC)
+    for InstName, Cfg in Instruments.items():
+        Prefixes = Cfg.get("order_routing", {}).get("ReconciliationPrefixes", [])
+        for Prefix in Prefixes:
+            if TradingSymbol.upper().startswith(Prefix.upper()):
+                if Cfg.get("exchange") == Exchange:
+                    return InstName, Cfg
+
     return None, None
 
 
@@ -196,10 +204,22 @@ def _FetchOpenPositions(FullConfig):
             Direction = "LONG" if Qty > 0 else "SHORT"
             AbsQty = abs(Qty)
 
+            # For carry-forward positions, use cfbuyavgprice/cfsellavgprice (the
+            # carried-over entry). buyavgprice/sellavgprice are today-only.
             if Direction == "LONG":
-                AvgPrice = float(Pos.get("buyavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
+                AvgPrice = float(
+                    Pos.get("cfbuyavgprice", 0) or
+                    Pos.get("buyavgprice", 0) or
+                    Pos.get("totalbuyavgprice", 0) or
+                    Pos.get("avgnetprice", 0) or 0
+                )
             else:
-                AvgPrice = float(Pos.get("sellavgprice", 0) or Pos.get("avgnetprice", 0) or 0)
+                AvgPrice = float(
+                    Pos.get("cfsellavgprice", 0) or
+                    Pos.get("sellavgprice", 0) or
+                    Pos.get("totalsellavgprice", 0) or
+                    Pos.get("avgnetprice", 0) or 0
+                )
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
