@@ -175,13 +175,17 @@ def _FetchOpenPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
+            OvernightQty = int(Pos.get("overnight_quantity", 0))
             PV = Cfg.get("point_value", 1)
             Direction = "LONG" if Qty > 0 else "SHORT"
             AbsQty = abs(Qty)
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
-            # Daily swing: if no prev close (new position today), fall back to entry
-            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            # Daily swing: use entry for positions opened today (overnight_qty=0)
+            if OvernightQty == 0:
+                SwingBase = AvgPrice
+            else:
+                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, PV)
 
             Positions.append({
@@ -190,7 +194,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
-                "broker": "ZERODHA",
+                "broker": "ZERODHA", "is_new_today": OvernightQty == 0,
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
     except Exception as e:
@@ -229,23 +233,31 @@ def _FetchOpenPositions(FullConfig):
 
             # For carry-forward positions, use cfbuyavgprice/cfsellavgprice (the
             # carried-over entry). buyavgprice/sellavgprice are today-only.
+            CfBuyPrice = float(Pos.get("cfbuyavgprice", 0) or 0)
+            CfSellPrice = float(Pos.get("cfsellavgprice", 0) or 0)
             if Direction == "LONG":
                 AvgPrice = float(
-                    Pos.get("cfbuyavgprice", 0) or
+                    CfBuyPrice or
                     Pos.get("buyavgprice", 0) or
                     Pos.get("totalbuyavgprice", 0) or
                     Pos.get("avgnetprice", 0) or 0
                 )
             else:
                 AvgPrice = float(
-                    Pos.get("cfsellavgprice", 0) or
+                    CfSellPrice or
                     Pos.get("sellavgprice", 0) or
                     Pos.get("totalsellavgprice", 0) or
                     Pos.get("avgnetprice", 0) or 0
                 )
 
+            # Detect new-today: no carry-forward price means opened today
+            IsNewToday = (CfBuyPrice == 0 and CfSellPrice == 0)
+
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, Lots, PV)
-            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            if IsNewToday:
+                SwingBase = AvgPrice
+            else:
+                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             DailySwing = _CalcPnl(Direction, SwingBase, Ltp, Lots, PV)
 
             Positions.append({
@@ -254,7 +266,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
-                "broker": "ANGEL",
+                "broker": "ANGEL", "is_new_today": IsNewToday,
             })
         Logger.info("Angel: %d open NCDEX positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
     except Exception as e:
@@ -287,11 +299,15 @@ def _FetchOpenPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
+            OvernightQty = int(Pos.get("overnight_quantity", 0))
             AbsQty = abs(Qty)
             Direction = "LONG" if Qty > 0 else "SHORT"
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
-            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            if OvernightQty == 0:
+                SwingBase = AvgPrice
+            else:
+                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, 1.0)
 
             Positions.append({
@@ -300,7 +316,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": 1.0,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
-                "broker": "ZERODHA",
+                "broker": "ZERODHA", "is_new_today": OvernightQty == 0,
             })
         Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
     except Exception as e:
@@ -609,6 +625,10 @@ def _PositionRow(P):
     SwingColor = _PnlColor(P["daily_swing"])
     LtpStr = f"{P['ltp']:.2f}" if P["ltp"] > 0 else "N/A"
     PrevCloseStr = f"{P['prev_close']:.2f}" if P["prev_close"] > 0 else "N/A"
+    IsNew = P.get("is_new_today", False)
+    NewBadge = (f'<span style="display:inline-block;background:#fef3c7;color:#92400e;'
+                f'font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;'
+                f'margin-left:6px;">NEW</span>') if IsNew else ""
     return f"""
     <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -616,7 +636,7 @@ def _PositionRow(P):
                 <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(P["instrument"])}</span>
                 <span style="display:inline-block;background:{DirBg};color:{DirColor};
                     font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;
-                    margin-left:8px;">{P["direction"]}</span>
+                    margin-left:8px;">{P["direction"]}</span>{NewBadge}
             </div>
             <span style="display:inline-block;background:{PnlBgColor};color:{PnlColor};
                 font-size:13px;font-weight:600;padding:3px 10px;border-radius:6px;">
@@ -685,10 +705,11 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     # Log each position for verification
     for P in Positions:
         LotsStr = f" | lots={P['lots']}" if "lots" in P else ""
-        Logger.info("  %s | %s | qty=%d%s | entry=%.2f | prev_close=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f | swing=%.2f",
+        NewStr = " | NEW_TODAY" if P.get("is_new_today") else ""
+        Logger.info("  %s | %s | qty=%d%s | entry=%.2f | prev_close=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f | swing=%.2f%s",
                      P["instrument"], P["direction"], P["qty"], LotsStr,
                      P["avg_entry"], P["prev_close"], P["ltp"],
-                     P["point_value"], P["pnl"], P["daily_swing"])
+                     P["point_value"], P["pnl"], P["daily_swing"], NewStr)
 
     ReportData = {
         "date": DateStr,
