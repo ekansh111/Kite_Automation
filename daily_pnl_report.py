@@ -38,6 +38,7 @@ import logging
 import argparse
 import sys
 import html as _html
+import traceback
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from collections import defaultdict
@@ -155,6 +156,7 @@ def _FetchOpenPositions(FullConfig):
     """
     Instruments = FullConfig.get("instruments", {})
     Positions = []
+    FetchErrors = []  # Track broker fetch failures for email warning
 
     # ── Kite YD6016 — MCX futures ──
     try:
@@ -217,7 +219,8 @@ def _FetchOpenPositions(FullConfig):
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
     except Exception as e:
-        Logger.error("Kite YD6016 fetch failed: %s", e)
+        Logger.error("Kite YD6016 fetch failed: %s\n%s", e, traceback.format_exc())
+        FetchErrors.append(f"Kite YD6016 (MCX): {e}")
 
     # ── Angel AABM826021 — NCDEX futures ──
     try:
@@ -314,7 +317,8 @@ def _FetchOpenPositions(FullConfig):
             })
         Logger.info("Angel: %d open NCDEX positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
     except Exception as e:
-        Logger.error("Angel positions fetch failed: %s", e)
+        Logger.error("Angel positions fetch failed: %s\n%s", e, traceback.format_exc())
+        FetchErrors.append(f"Angel AABM826021 (NCDEX): {e}")
 
     # ── Kite OFS653 — Options (NFO/BFO) ──
     try:
@@ -381,10 +385,11 @@ def _FetchOpenPositions(FullConfig):
             })
         Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
     except Exception as e:
-        Logger.warning("Options fetch failed: %s", e)
+        Logger.error("Options fetch failed: %s\n%s", e, traceback.format_exc())
+        FetchErrors.append(f"Kite OFS653 (Options): {e}")
 
     Logger.info("Total open positions: %d", len(Positions))
-    return Positions
+    return Positions, FetchErrors
 
 
 # ─── Realized P&L Accumulator ───────────────────────────────────
@@ -407,7 +412,7 @@ def _FetchDailyRealizedPnl():
         Result["YD6016"] = round(Total, 2)
         Logger.info("Kite YD6016 realized today: %.2f", Total)
     except Exception as e:
-        Logger.error("Kite YD6016 realized fetch failed: %s", e)
+        Logger.error("Kite YD6016 realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["YD6016"] = 0.0
 
     # Angel AABM826021 — NCDEX futures
@@ -423,7 +428,7 @@ def _FetchDailyRealizedPnl():
         Result["AABM826021"] = round(Total, 2)
         Logger.info("Angel realized today: %.2f", Total)
     except Exception as e:
-        Logger.error("Angel realized fetch failed: %s", e)
+        Logger.error("Angel realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["AABM826021"] = 0.0
 
     # Kite OFS653 — Options
@@ -435,7 +440,7 @@ def _FetchDailyRealizedPnl():
         Result["OFS653"] = round(Total, 2)
         Logger.info("Kite OFS653 realized today: %.2f", Total)
     except Exception as e:
-        Logger.error("Kite OFS653 realized fetch failed: %s", e)
+        Logger.error("Kite OFS653 realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["OFS653"] = 0.0
 
     return Result
@@ -620,6 +625,21 @@ def _BuildReportHtml(D):
         </tr>
     </table>"""
 
+    # ── Fetch Error Warning ──
+    WarningHtml = ""
+    if D.get("fetch_errors"):
+        ErrorItems = "".join(f"<li>{_html.escape(E)}</li>" for E in D["fetch_errors"])
+        WarningHtml = f"""
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;
+        padding:12px 16px;margin:12px 16px 0;">
+        <div style="font-weight:700;color:#92400e;font-size:13px;">⚠ Broker Fetch Errors</div>
+        <ul style="margin:6px 0 0;padding-left:18px;color:#78350f;font-size:12px;">
+            {ErrorItems}
+        </ul>
+        <div style="font-size:11px;color:#a16207;margin-top:6px;">
+            Positions from failed brokers are missing from this report.</div>
+    </div>"""
+
     # ── Open Futures ──
     FutPos = [P for P in D["positions"] if "_OPT_" not in P["instrument"]]
     FutHtml = _SectionHeader("Open Futures")
@@ -747,6 +767,7 @@ def _BuildReportHtml(D):
     <div class="pnl-wrap" style="background:#ffffff;border-radius:16px;overflow:hidden;
         border:1px solid {BORDER};box-shadow:0 4px 12px rgba(0,0,0,0.08);">
         {HeaderHtml}
+        {WarningHtml}
         {BodyContent}
         <div class="pnl-footer" style="padding:14px;text-align:center;font-size:11px;color:{MUTED};
             border-top:1px solid {BORDER};">
@@ -845,7 +866,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         FullConfig = json.load(f)
 
     # Fetch from brokers
-    Positions = _FetchOpenPositions(FullConfig)
+    Positions, FetchErrors = _FetchOpenPositions(FullConfig)
     FuturesOrders, OptionsOrders = _FetchTodayOrders(FullConfig)
 
     # Total unrealized P&L = sum of (LTP - Entry) across all positions
@@ -877,6 +898,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "trade_count": len(FuturesOrders) + len(OptionsOrders),
         "futures_orders": FuturesOrders,
         "options_orders": OptionsOrders,
+        "fetch_errors": FetchErrors,
     }
 
     Html = _BuildReportHtml(ReportData)
