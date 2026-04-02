@@ -56,6 +56,7 @@ logging.basicConfig(
 
 CONFIG_PATH = Path(__file__).parent / "instrument_config.json"
 STATE_FILE_PATH = Path(workInputRoot) / "v2_state.json"
+REALIZED_PNL_PATH = Path(workInputRoot) / "realized_pnl_accumulator.json"
 
 # ─── Colors ───────────────────────────────────────────────────────
 
@@ -375,6 +376,100 @@ def _FetchOpenPositions(FullConfig):
 
     Logger.info("Total open positions: %d", len(Positions))
     return Positions
+
+
+# ─── Realized P&L Accumulator ───────────────────────────────────
+
+def _FetchDailyRealizedPnl():
+    """Fetch today's total realized P&L from all broker accounts.
+
+    Sums the 'realised' field from every position (including closed qty=0).
+    Returns dict: {"YD6016": float, "AABM826021": float, "OFS653": float}
+    """
+    Result = {}
+
+    # Kite YD6016 — MCX futures
+    try:
+        Kite = _EstablishKiteSession("YD6016")
+        Total = sum(float(P.get("realised", 0))
+                    for P in Kite.positions().get("net", [])
+                    if P.get("product") == "NRML"
+                    and not _IsIndexOption(P.get("tradingsymbol", "")))
+        Result["YD6016"] = round(Total, 2)
+        Logger.info("Kite YD6016 realized today: %.2f", Total)
+    except Exception as e:
+        Logger.error("Kite YD6016 realized fetch failed: %s", e)
+        Result["YD6016"] = 0.0
+
+    # Angel AABM826021 — NCDEX futures
+    try:
+        SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
+        RawResponse = SmartApi.position()
+        RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
+        if RawPositions is None:
+            RawPositions = []
+        Total = sum(float(P.get("realised", 0))
+                    for P in RawPositions
+                    if P.get("producttype") == "CARRYFORWARD")
+        Result["AABM826021"] = round(Total, 2)
+        Logger.info("Angel realized today: %.2f", Total)
+    except Exception as e:
+        Logger.error("Angel realized fetch failed: %s", e)
+        Result["AABM826021"] = 0.0
+
+    # Kite OFS653 — Options
+    try:
+        Kite = _EstablishKiteSession("OFS653")
+        Total = sum(float(P.get("realised", 0))
+                    for P in Kite.positions().get("net", [])
+                    if P.get("product") == "NRML")
+        Result["OFS653"] = round(Total, 2)
+        Logger.info("Kite OFS653 realized today: %.2f", Total)
+    except Exception as e:
+        Logger.error("Kite OFS653 realized fetch failed: %s", e)
+        Result["OFS653"] = 0.0
+
+    return Result
+
+
+def _UpdateRealizedPnlAccumulator(DailyByAccount, DateStr, EodUnrealized):
+    """Write today's realized P&L into the accumulator JSON.
+
+    Idempotent: overwrites today's entry if called multiple times.
+    The cumulative total is recomputed from all daily entries each time.
+    """
+    if REALIZED_PNL_PATH.exists():
+        with open(REALIZED_PNL_PATH, "r") as f:
+            Data = json.load(f)
+    else:
+        Data = {
+            "fy_start": "2026-04-01",
+            "cumulative_realized_pnl": 0.0,
+            "eod_unrealized": 0.0,
+            "last_updated": "",
+            "daily_entries": {},
+        }
+
+    DailyTotal = round(sum(DailyByAccount.values()), 2)
+    Entry = dict(DailyByAccount)
+    Entry["total"] = DailyTotal
+    Data["daily_entries"][DateStr] = Entry
+
+    # Recompute cumulative from all daily entries (safe against drift)
+    Data["cumulative_realized_pnl"] = round(
+        sum(E["total"] for E in Data["daily_entries"].values()), 2
+    )
+    Data["eod_unrealized"] = round(EodUnrealized, 2)
+    Data["last_updated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Atomic write
+    TmpPath = REALIZED_PNL_PATH.with_suffix(".tmp")
+    with open(TmpPath, "w") as f:
+        json.dump(Data, f, indent=2)
+    TmpPath.replace(REALIZED_PNL_PATH)
+
+    Logger.info("Realized P&L accumulator: date=%s daily=%.2f cumulative=%.2f unrealized=%.2f",
+                DateStr, DailyTotal, Data["cumulative_realized_pnl"], EodUnrealized)
 
 
 # ─── Fetch Today's Orders ────────────────────────────────────────
@@ -748,6 +843,10 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     TotalPnl = sum(P["pnl"] for P in Positions)
     # Daily swing = sum of (LTP - Prev Close) across all positions
     TotalDailySwing = sum(P["daily_swing"] for P in Positions)
+
+    # Accumulate realized P&L into JSON for capital tracking
+    DailyRealized = _FetchDailyRealizedPnl()
+    _UpdateRealizedPnlAccumulator(DailyRealized, DateStr, TotalPnl)
 
     Logger.info("Total unrealized: %.2f | Daily swing: %.2f", TotalPnl, TotalDailySwing)
 
