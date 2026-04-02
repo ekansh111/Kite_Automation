@@ -204,6 +204,11 @@ def _FetchOpenPositions(FullConfig):
             Direction = "LONG" if Qty > 0 else "SHORT"
             AbsQty = abs(Qty)
 
+            # Angel netqty is in units, but point_value is per lot.
+            # Divide by QuantityMultiplier to get lots.
+            QtyMult = Cfg.get("order_routing", {}).get("QuantityMultiplier", 1)
+            Lots = AbsQty / QtyMult if QtyMult else AbsQty
+
             # For carry-forward positions, use cfbuyavgprice/cfsellavgprice (the
             # carried-over entry). buyavgprice/sellavgprice are today-only.
             if Direction == "LONG":
@@ -221,13 +226,13 @@ def _FetchOpenPositions(FullConfig):
                     Pos.get("avgnetprice", 0) or 0
                 )
 
-            Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
+            Pnl = _CalcPnl(Direction, AvgPrice, Ltp, Lots, PV)
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
-            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, PV)
+            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, Lots, PV)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
-                "direction": Direction, "qty": AbsQty,
+                "direction": Direction, "qty": AbsQty, "lots": Lots,
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
@@ -600,7 +605,7 @@ def _PositionRow(P):
                 \u20b9{_FmtINR(P["pnl"])}</span>
         </div>
         <div style="margin-top:6px;display:flex;gap:16px;flex-wrap:wrap;">
-            <span style="font-size:12px;color:{SLATE};">Qty: <b style="color:{NAVY};">{P["qty"]}</b></span>
+            <span style="font-size:12px;color:{SLATE};">Qty: <b style="color:{NAVY};">{int(P.get("lots", P["qty"]))}</b></span>
             <span style="font-size:12px;color:{SLATE};">Entry: <b style="color:{NAVY};">{P["avg_entry"]:.2f}</b></span>
             <span style="font-size:12px;color:{SLATE};">Prev Close: <b style="color:{NAVY};">{PrevCloseStr}</b></span>
             <span style="font-size:12px;color:{SLATE};">LTP: <b style="color:{NAVY};">{LtpStr}</b></span>
@@ -661,8 +666,9 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
 
     # Log each position for verification
     for P in Positions:
-        Logger.info("  %s | %s | qty=%d | entry=%.2f | prev_close=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f | swing=%.2f",
-                     P["instrument"], P["direction"], P["qty"],
+        LotsStr = f" | lots={P['lots']}" if "lots" in P else ""
+        Logger.info("  %s | %s | qty=%d%s | entry=%.2f | prev_close=%.2f | ltp=%.2f | pv=%.1f | pnl=%.2f | swing=%.2f",
+                     P["instrument"], P["direction"], P["qty"], LotsStr,
                      P["avg_entry"], P["prev_close"], P["ltp"],
                      P["point_value"], P["pnl"], P["daily_swing"])
 
