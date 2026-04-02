@@ -265,15 +265,15 @@ def _FetchOpenPositions(FullConfig):
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
             AbsQty = abs(Qty)
+            Direction = "LONG" if Qty > 0 else "SHORT"
 
-            # Options are always short straddles
-            Pnl = _CalcPnl("SHORT", AvgPrice, Ltp, AbsQty, 1.0)
+            Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
-            DailySwing = _CalcPnl("SHORT", SwingBase, Ltp, AbsQty, 1.0)
+            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, 1.0)
 
             Positions.append({
                 "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
-                "direction": "SHORT", "qty": AbsQty,
+                "direction": Direction, "qty": AbsQty,
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": 1.0,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
