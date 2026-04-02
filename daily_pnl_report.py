@@ -175,18 +175,32 @@ def _FetchOpenPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
-            OvernightQty = int(Pos.get("overnight_quantity", 0))
+            OvernightQty = abs(int(Pos.get("overnight_quantity", 0)))
+            DayBuyQty = int(Pos.get("day_buy_quantity", 0) or 0)
+            DaySellQty = int(Pos.get("day_sell_quantity", 0) or 0)
+            DayBuyPrice = float(Pos.get("day_buy_price", 0) or 0)
+            DaySellPrice = float(Pos.get("day_sell_price", 0) or 0)
             PV = Cfg.get("point_value", 1)
             Direction = "LONG" if Qty > 0 else "SHORT"
             AbsQty = abs(Qty)
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
-            # Daily swing: use entry for positions opened today (overnight_qty=0)
-            if OvernightQty == 0:
-                SwingBase = AvgPrice
+
+            # ── Split swing: carried lots from prev_close, new lots from entry ──
+            if Direction == "LONG":
+                CarriedQty = max(0, OvernightQty - DaySellQty)
+                NewQty = max(0, AbsQty - CarriedQty)
+                NewEntryPrice = DayBuyPrice
             else:
-                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
-            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, PV)
+                CarriedQty = max(0, OvernightQty - DayBuyQty)
+                NewQty = max(0, AbsQty - CarriedQty)
+                NewEntryPrice = DaySellPrice
+
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, PV)
+            NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, PV) if NewQty > 0 else 0
+            DailySwing = CarriedSwing + NewSwing
+            IsNewToday = (CarriedQty == 0)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
@@ -194,7 +208,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
-                "broker": "ZERODHA", "is_new_today": OvernightQty == 0,
+                "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
     except Exception as e:
@@ -231,34 +245,56 @@ def _FetchOpenPositions(FullConfig):
             QtyMult = Cfg.get("order_routing", {}).get("QuantityMultiplier", 1)
             Lots = AbsQty / QtyMult if QtyMult else AbsQty
 
-            # For carry-forward positions, use cfbuyavgprice/cfsellavgprice (the
-            # carried-over entry). buyavgprice/sellavgprice are today-only.
+            # ── Entry price: use blended average (totalbuyavgprice) to match broker ──
+            # totalbuyavgprice includes both carry-forward AND today's trades.
             CfBuyPrice = float(Pos.get("cfbuyavgprice", 0) or 0)
             CfSellPrice = float(Pos.get("cfsellavgprice", 0) or 0)
             if Direction == "LONG":
                 AvgPrice = float(
+                    Pos.get("totalbuyavgprice", 0) or
                     CfBuyPrice or
                     Pos.get("buyavgprice", 0) or
-                    Pos.get("totalbuyavgprice", 0) or
                     Pos.get("avgnetprice", 0) or 0
                 )
             else:
                 AvgPrice = float(
+                    Pos.get("totalsellavgprice", 0) or
                     CfSellPrice or
                     Pos.get("sellavgprice", 0) or
-                    Pos.get("totalsellavgprice", 0) or
                     Pos.get("avgnetprice", 0) or 0
                 )
 
-            # Detect new-today: no carry-forward price means opened today
-            IsNewToday = (CfBuyPrice == 0 and CfSellPrice == 0)
+            # ── Swing: split carried lots vs new-today lots ──
+            # Carried lots swing from prev_close, new lots swing from today's buy/sell price.
+            CfBuyQty = int(Pos.get("cfbuyqty", 0) or 0)
+            CfSellQty = int(Pos.get("cfsellqty", 0) or 0)
+            BuyQty = int(Pos.get("buyqty", 0) or 0)
+            SellQty = int(Pos.get("sellqty", 0) or 0)
+            TodayBuyPrice = float(Pos.get("buyavgprice", 0) or 0)
+            TodaySellPrice = float(Pos.get("sellavgprice", 0) or 0)
+
+            if Direction == "LONG":
+                # Sells reduce carried qty first (FIFO)
+                CarriedUnits = max(0, CfBuyQty - SellQty)
+                NewUnits = max(0, AbsQty - CarriedUnits)
+                NewEntryPrice = TodayBuyPrice
+            else:
+                CarriedUnits = max(0, CfSellQty - BuyQty)
+                NewUnits = max(0, AbsQty - CarriedUnits)
+                NewEntryPrice = TodaySellPrice
+
+            CarriedLots = CarriedUnits / QtyMult if QtyMult else CarriedUnits
+            NewLots = NewUnits / QtyMult if QtyMult else NewUnits
+            IsNewToday = (CarriedUnits == 0)
+
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedLots, PV)
+            NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewLots, PV) if NewLots > 0 else 0
+            DailySwing = CarriedSwing + NewSwing
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, Lots, PV)
-            if IsNewToday:
-                SwingBase = AvgPrice
-            else:
-                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
-            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, Lots, PV)
+            Logger.debug("  Angel %s: cf_units=%d new_units=%d cf_lots=%.1f new_lots=%.1f",
+                         InstName, CarriedUnits, NewUnits, CarriedLots, NewLots)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
@@ -299,16 +335,31 @@ def _FetchOpenPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
-            OvernightQty = int(Pos.get("overnight_quantity", 0))
+            OvernightQty = abs(int(Pos.get("overnight_quantity", 0)))
+            DayBuyQty = int(Pos.get("day_buy_quantity", 0) or 0)
+            DaySellQty = int(Pos.get("day_sell_quantity", 0) or 0)
+            DayBuyPrice = float(Pos.get("day_buy_price", 0) or 0)
+            DaySellPrice = float(Pos.get("day_sell_price", 0) or 0)
             AbsQty = abs(Qty)
             Direction = "LONG" if Qty > 0 else "SHORT"
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
-            if OvernightQty == 0:
-                SwingBase = AvgPrice
+
+            # Split swing: carried from prev_close, new from today's entry
+            if Direction == "LONG":
+                CarriedQty = max(0, OvernightQty - DaySellQty)
+                NewQty = max(0, AbsQty - CarriedQty)
+                NewEntryPrice = DayBuyPrice
             else:
-                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
-            DailySwing = _CalcPnl(Direction, SwingBase, Ltp, AbsQty, 1.0)
+                CarriedQty = max(0, OvernightQty - DayBuyQty)
+                NewQty = max(0, AbsQty - CarriedQty)
+                NewEntryPrice = DaySellPrice
+
+            SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+            CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, 1.0)
+            NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, 1.0) if NewQty > 0 else 0
+            DailySwing = CarriedSwing + NewSwing
+            IsNewToday = (CarriedQty == 0)
 
             Positions.append({
                 "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
@@ -316,7 +367,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": 1.0,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
-                "broker": "ZERODHA", "is_new_today": OvernightQty == 0,
+                "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
     except Exception as e:
