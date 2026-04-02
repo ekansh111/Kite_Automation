@@ -639,7 +639,7 @@ def _BuildReportHtml(D):
             ByUnderlying[Underlying]["legs"].append(
                 f"{Leg}({DirTag}): {P['avg_entry']:.1f} \u2192 {LtpStr} ({P['qty']} qty)")
 
-        LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 15, "SENSEX": 20, "BANKEX": 15}
+        LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20, "BANKEX": 15}
 
         for Underlying, Combo in ByUnderlying.items():
             PnlColor = _PnlColor(Combo["pnl"])
