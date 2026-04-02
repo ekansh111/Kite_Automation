@@ -1,18 +1,36 @@
 """
 daily_pnl_report.py — End-of-day P&L email report.
 
-Fetches open positions from all broker accounts, computes P&L as:
-    (LTP - Average Entry) x Qty x Point Value
-for each open contract. Shows today's trades from order history.
-
 Everything from the broker. Zero database usage.
+
+Sends a styled HTML email with:
+  1. Daily Swing (hero) — how much the account moved today
+     (LTP - Previous Close) x Lots x Point Value per position, summed.
+  2. Total Unrealized — overall embedded P&L across all open positions
+     (LTP - Average Entry) x Lots x Point Value per position, summed.
+  3. Open Positions — each with Entry, Prev Close, LTP, total P&L badge,
+     and today's swing. Options grouped by underlying.
+  4. Today's Trades — completed orders from broker order history.
+
+Broker Accounts:
+  - YD6016 (Kite/Zerodha)  — MCX futures (SILVERMIC, ZINCMINI, etc.)
+  - AABM826021 (Angel)     — NCDEX futures (GUARSEED, DHANIYA, COCUDAKL, etc.)
+  - OFS653 (Kite/Zerodha)  — Index options NFO/BFO (NIFTY, SENSEX, BANKNIFTY)
+
+Key implementation notes:
+  - Angel netqty is in units; divided by QuantityMultiplier to get lots.
+  - Angel carry-forward entry uses cfbuyavgprice/cfsellavgprice (not buyavgprice).
+  - Kite prev close = close_price field; Angel prev close = close field.
+  - Option direction from qty sign (positive=LONG, negative=SHORT).
+  - TURMERIC matched via ReconciliationPrefixes (TMCFGRNZM -> TURMERIC).
+  - Post-midnight (before 09:00 IST): uses previous trading day.
 
 Usage:
   python daily_pnl_report.py               # send today's report
   python daily_pnl_report.py --dry-run     # print HTML to stdout
-  python daily_pnl_report.py --date 2026-03-28  # report for a specific date
+  python daily_pnl_report.py --date 2026-04-01  # report for a specific date
 
-Cron: 45 23 * * 1-5  (23:45 IST, after MCX close)
+Cron: 45 23 * * 1-5  (23:45 IST, Mon-Fri, after MCX close)
 """
 
 import json
