@@ -529,31 +529,29 @@ def _BuildReportHtml(D):
     OptPos = [P for P in D["positions"] if "_OPT_" in P["instrument"]]
     OptHtml = _SectionHeader("Open Options")
     if OptPos:
-        ByUnderlying = defaultdict(lambda: {"pnl": 0, "daily_swing": 0, "legs": []})
+        ByUnderlying = defaultdict(lambda: {"pnl": 0, "daily_swing": 0, "legs": [], "max_qty": 0})
         for P in OptPos:
             Parts = P["instrument"].split("_OPT_")
             Underlying = Parts[0]
             Leg = Parts[1] if len(Parts) > 1 else "?"
             ByUnderlying[Underlying]["pnl"] += P["pnl"]
             ByUnderlying[Underlying]["daily_swing"] += P["daily_swing"]
+            # Track max qty across legs to derive lot count
+            ByUnderlying[Underlying]["max_qty"] = max(
+                ByUnderlying[Underlying]["max_qty"], P["qty"])
             LtpStr = f"{P['ltp']:.2f}" if P["ltp"] > 0 else "N/A"
+            DirTag = "L" if P["direction"] == "LONG" else "S"
             ByUnderlying[Underlying]["legs"].append(
-                f"{Leg}: {P['avg_entry']:.1f} \u2192 {LtpStr} ({P['qty']} qty)")
+                f"{Leg}({DirTag}): {P['avg_entry']:.1f} \u2192 {LtpStr} ({P['qty']} qty)")
 
-        # Try state file for lot info
-        StateInfo = {}
-        try:
-            if STATE_FILE_PATH.exists():
-                with open(STATE_FILE_PATH) as f:
-                    StateInfo = json.load(f)
-        except Exception:
-            pass
+        LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 15, "SENSEX": 20, "BANKEX": 15}
 
         for Underlying, Combo in ByUnderlying.items():
             PnlColor = _PnlColor(Combo["pnl"])
             PnlBgC = _PnlBg(Combo["pnl"])
             SwingColor = _PnlColor(Combo["daily_swing"])
-            Lots = StateInfo.get(Underlying, {}).get("activeLots", "?")
+            LotSize = LOT_SIZES.get(Underlying, 1)
+            Lots = int(Combo["max_qty"] / LotSize) if LotSize else Combo["max_qty"]
             OptHtml += f"""
             <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
