@@ -43,9 +43,29 @@ logging.basicConfig(
 )
 
 CONFIG_PATH = Path(__file__).parent / "instrument_config.json"
+REALIZED_PNL_PATH = Path(workInputRoot) / "realized_pnl_accumulator.json"
 
 # Email config for reconciliation alerts (uses Directories.py for consistent path)
 EMAIL_CONFIG_PATH = workInputRoot / "email_config.json"
+
+
+def _GetCumulativeRealizedPnlFromJson():
+    """Read cumulative realized P&L + unrealized from the EOD accumulator file.
+
+    Returns (cumulative_realized, eod_unrealized).
+    Falls back to (DB realized, 0) if the JSON file doesn't exist yet.
+    """
+    try:
+        with open(REALIZED_PNL_PATH, "r") as f:
+            Data = json.load(f)
+        Realized = float(Data.get("cumulative_realized_pnl", 0.0))
+        Unrealized = float(Data.get("eod_unrealized", 0.0))
+        Logger.info("Capital from JSON: realized=%.0f unrealized=%.0f (updated %s)",
+                     Realized, Unrealized, Data.get("last_updated", "?"))
+        return Realized, Unrealized
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        Logger.warning("Realized P&L JSON not found (%s), falling back to DB", e)
+        return db.GetCumulativeRealizedPnl(), 0.0
 
 
 class ForecastOrchestrator:
@@ -80,12 +100,12 @@ class ForecastOrchestrator:
         # Ensure the schema exists before any startup reads against optional newer tables.
         db.InitDB()
 
-        # Compute effective capital = base_capital + cumulative realized P&L
+        # Compute effective capital = base + realized + unrealized (from EOD JSON)
         BaseCapital = self.Account["base_capital"]
-        CumulativePnl = db.GetCumulativeRealizedPnl()
-        EffectiveCapital = BaseCapital + CumulativePnl
-        Logger.info("Effective capital: base=%d + pnl=%.0f = %.0f",
-                     BaseCapital, CumulativePnl, EffectiveCapital)
+        CumulativeRealized, EodUnrealized = _GetCumulativeRealizedPnlFromJson()
+        EffectiveCapital = BaseCapital + CumulativeRealized + EodUnrealized
+        Logger.info("Effective capital: base=%d + realized=%.0f + unrealized=%.0f = %.0f",
+                     BaseCapital, CumulativeRealized, EodUnrealized, EffectiveCapital)
 
         # Compute daily vol targets from effective capital + allocation weights
         VolPct = self.Account["annual_vol_target_pct"]

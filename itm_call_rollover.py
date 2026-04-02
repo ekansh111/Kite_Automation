@@ -301,10 +301,27 @@ def LoadVolBudgets():
         Cfg = json.load(F)
     Acct = Cfg["account"]
     BaseCapital = Acct["base_capital"]
-    CumulativePnl = db.GetCumulativeRealizedPnl()
-    EffectiveCapital = BaseCapital + CumulativePnl
-    Logger.info("ITM call effective capital: base=%d + pnl=%.0f = %.0f",
-                BaseCapital, CumulativePnl, EffectiveCapital)
+
+    # Read realized + unrealized from EOD JSON, fall back to DB
+    CumulativeRealized = 0.0
+    EodUnrealized = 0.0
+    _PnlPath = Path(__file__).parent / "realized_pnl_accumulator.json"
+    try:
+        from Directories import workInputRoot
+        _PnlPath = Path(workInputRoot) / "realized_pnl_accumulator.json"
+    except Exception:
+        pass
+    try:
+        with open(_PnlPath, "r") as F2:
+            PnlData = json.load(F2)
+        CumulativeRealized = float(PnlData.get("cumulative_realized_pnl", 0.0))
+        EodUnrealized = float(PnlData.get("eod_unrealized", 0.0))
+    except (FileNotFoundError, json.JSONDecodeError):
+        CumulativeRealized = db.GetCumulativeRealizedPnl()
+
+    EffectiveCapital = BaseCapital + CumulativeRealized + EodUnrealized
+    Logger.info("ITM call effective capital: base=%d + realized=%.0f + unrealized=%.0f = %.0f",
+                BaseCapital, CumulativeRealized, EodUnrealized, EffectiveCapital)
 
     Budgets = {}
     for IndexName, IdxCfg in ITM_CONFIG.items():
