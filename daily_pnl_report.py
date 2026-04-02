@@ -188,12 +188,16 @@ def _FetchOpenPositions(FullConfig):
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
 
             # ── Split swing: carried lots from prev_close, new lots from entry ──
+            # LIFO: today's buys and sells offset each other first,
+            # only excess sells/buys eat into overnight (carried) positions.
             if Direction == "LONG":
-                CarriedQty = max(0, OvernightQty - DaySellQty)
+                ExcessSells = max(0, DaySellQty - DayBuyQty)
+                CarriedQty = max(0, OvernightQty - ExcessSells)
                 NewQty = max(0, AbsQty - CarriedQty)
                 NewEntryPrice = DayBuyPrice
             else:
-                CarriedQty = max(0, OvernightQty - DayBuyQty)
+                ExcessBuys = max(0, DayBuyQty - DaySellQty)
+                CarriedQty = max(0, OvernightQty - ExcessBuys)
                 NewQty = max(0, AbsQty - CarriedQty)
                 NewEntryPrice = DaySellPrice
 
@@ -275,12 +279,15 @@ def _FetchOpenPositions(FullConfig):
             TodaySellPrice = float(Pos.get("sellavgprice", 0) or 0)
 
             if Direction == "LONG":
-                # Sells reduce carried qty first (FIFO)
-                CarriedUnits = max(0, CfBuyQty - SellQty)
+                # LIFO: today's buys and sells offset each other first,
+                # only excess sells eat into carry-forward positions.
+                ExcessSells = max(0, SellQty - BuyQty)
+                CarriedUnits = max(0, CfBuyQty - ExcessSells)
                 NewUnits = max(0, AbsQty - CarriedUnits)
                 NewEntryPrice = TodayBuyPrice
             else:
-                CarriedUnits = max(0, CfSellQty - BuyQty)
+                ExcessBuys = max(0, BuyQty - SellQty)
+                CarriedUnits = max(0, CfSellQty - ExcessBuys)
                 NewUnits = max(0, AbsQty - CarriedUnits)
                 NewEntryPrice = TodaySellPrice
 
@@ -346,13 +353,15 @@ def _FetchOpenPositions(FullConfig):
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
 
-            # Split swing: carried from prev_close, new from today's entry
+            # Split swing: LIFO — today's trades offset each other first
             if Direction == "LONG":
-                CarriedQty = max(0, OvernightQty - DaySellQty)
+                ExcessSells = max(0, DaySellQty - DayBuyQty)
+                CarriedQty = max(0, OvernightQty - ExcessSells)
                 NewQty = max(0, AbsQty - CarriedQty)
                 NewEntryPrice = DayBuyPrice
             else:
-                CarriedQty = max(0, OvernightQty - DayBuyQty)
+                ExcessBuys = max(0, DayBuyQty - DaySellQty)
+                CarriedQty = max(0, OvernightQty - ExcessBuys)
                 NewQty = max(0, AbsQty - CarriedQty)
                 NewEntryPrice = DaySellPrice
 
