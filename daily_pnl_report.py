@@ -574,10 +574,12 @@ def _FetchTodayOrders(FullConfig):
 def _BuildReportHtml(D):
     """Build the full HTML email."""
     DateDisplay = datetime.strptime(D["date"], "%Y-%m-%d").strftime("%d %b %Y")
-    DailySwing = D["total_daily_swing"]
+    DailyMtm = D["total_daily_mtm"]
+    OpenSwing = D["open_swing"]
+    RealizedToday = D["realized_today"]
     TotalPnl = D["total_pnl"]
-    HeroColor = _PnlColor(DailySwing)
-    HeroBg = "#0d3320" if DailySwing >= 0 else "#3b1119"
+    HeroColor = _PnlColor(DailyMtm)
+    HeroBg = "#0d3320" if DailyMtm >= 0 else "#3b1119"
 
     DarkStyle = """
     @media (prefers-color-scheme: dark) {
@@ -599,28 +601,34 @@ def _BuildReportHtml(D):
         <div style="margin-top:14px;display:inline-block;background:{HeroBg};
             padding:10px 28px;border-radius:10px;">
             <span style="font-size:28px;font-weight:800;color:{HeroColor};
-                letter-spacing:0.5px;">\u20b9{_FmtINR(DailySwing)}</span>
+                letter-spacing:0.5px;">\u20b9{_FmtINR(DailyMtm)}</span>
         </div>
         <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px;">
-            TODAY'S P&L SWING</div>
+            TODAY'S DAILY MTM</div>
     </div>"""
 
     # ── Quick Stats ──
     UnrealizedColor = _PnlColor(TotalPnl)
+    SwingColor = _PnlColor(OpenSwing)
+    RealizedColor = _PnlColor(RealizedToday)
     StatsHtml = f"""
     <table style="width:100%;border-collapse:collapse;border-bottom:1px solid {BORDER};">
         <tr>
-            <td style="width:33%;text-align:center;padding:14px 8px;">
-                <div style="font-size:11px;color:{SLATE};text-transform:uppercase;">Positions</div>
-                <div style="font-size:17px;font-weight:700;color:{NAVY};">{D["position_count"]}</div>
+            <td style="width:25%;text-align:center;padding:14px 6px;">
+                <div style="font-size:10px;color:{SLATE};text-transform:uppercase;">Open Swing</div>
+                <div style="font-size:15px;font-weight:700;color:{SwingColor};">\u20b9{_FmtINR(OpenSwing)}</div>
             </td>
-            <td style="width:34%;text-align:center;padding:14px 8px;border-left:1px solid {BORDER};border-right:1px solid {BORDER};">
-                <div style="font-size:11px;color:{SLATE};text-transform:uppercase;">Trades Today</div>
-                <div style="font-size:17px;font-weight:700;color:{NAVY};">{D["trade_count"]}</div>
+            <td style="width:25%;text-align:center;padding:14px 6px;border-left:1px solid {BORDER};">
+                <div style="font-size:10px;color:{SLATE};text-transform:uppercase;">Realized</div>
+                <div style="font-size:15px;font-weight:700;color:{RealizedColor};">\u20b9{_FmtINR(RealizedToday)}</div>
             </td>
-            <td style="width:33%;text-align:center;padding:14px 8px;">
-                <div style="font-size:11px;color:{SLATE};text-transform:uppercase;">Total Unrealized</div>
-                <div style="font-size:17px;font-weight:700;color:{UnrealizedColor};">\u20b9{_FmtINR(TotalPnl)}</div>
+            <td style="width:25%;text-align:center;padding:14px 6px;border-left:1px solid {BORDER};">
+                <div style="font-size:10px;color:{SLATE};text-transform:uppercase;">Unrealized</div>
+                <div style="font-size:15px;font-weight:700;color:{UnrealizedColor};">\u20b9{_FmtINR(TotalPnl)}</div>
+            </td>
+            <td style="width:25%;text-align:center;padding:14px 6px;border-left:1px solid {BORDER};">
+                <div style="font-size:10px;color:{SLATE};text-transform:uppercase;">Trades</div>
+                <div style="font-size:15px;font-weight:700;color:{NAVY};">{D["trade_count"]}</div>
             </td>
         </tr>
     </table>"""
@@ -871,14 +879,19 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
 
     # Total unrealized P&L = sum of (LTP - Entry) across all positions
     TotalPnl = sum(P["pnl"] for P in Positions)
-    # Daily swing = sum of (LTP - Prev Close) across all positions
-    TotalDailySwing = sum(P["daily_swing"] for P in Positions)
+    # Daily swing on open positions = sum of (LTP - Prev Close)
+    OpenSwing = sum(P["daily_swing"] for P in Positions)
 
     # Accumulate realized P&L into JSON for capital tracking
     DailyRealized = _FetchDailyRealizedPnl()
     _UpdateRealizedPnlAccumulator(DailyRealized, DateStr, TotalPnl)
 
-    Logger.info("Total unrealized: %.2f | Daily swing: %.2f", TotalPnl, TotalDailySwing)
+    # Total daily MTM = open position swing + realized from all exits today
+    TotalRealizedToday = sum(DailyRealized.values())
+    TotalDailyMtm = OpenSwing + TotalRealizedToday
+
+    Logger.info("Total unrealized: %.2f | Open swing: %.2f | Realized today: %.2f | Daily MTM: %.2f",
+                TotalPnl, OpenSwing, TotalRealizedToday, TotalDailyMtm)
 
     # Log each position for verification
     for P in Positions:
@@ -893,7 +906,10 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "date": DateStr,
         "positions": Positions,
         "total_pnl": TotalPnl,
-        "total_daily_swing": TotalDailySwing,
+        "total_daily_mtm": TotalDailyMtm,
+        "open_swing": OpenSwing,
+        "realized_today": TotalRealizedToday,
+        "realized_by_account": DailyRealized,
         "position_count": len(Positions),
         "trade_count": len(FuturesOrders) + len(OptionsOrders),
         "futures_orders": FuturesOrders,
@@ -903,7 +919,7 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
 
     Html = _BuildReportHtml(ReportData)
     DateDisplay = datetime.strptime(DateStr, "%Y-%m-%d").strftime("%d %b %Y")
-    Subject = f"Daily P&L Report | {DateDisplay} | \u20b9{_FmtINR(TotalDailySwing)}"
+    Subject = f"Daily P&L Report | {DateDisplay} | \u20b9{_FmtINR(TotalDailyMtm)}"
 
     if DryRun:
         print(Html)
