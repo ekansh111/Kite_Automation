@@ -18,7 +18,7 @@ import time
 import json
 import logging
 import smtplib
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -75,6 +75,13 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
     }
 
     try:
+        # ── Step 0: Holiday / weekend guard ───────────────────────
+        from Holidays import CheckForDateHoliday
+        Today = date.today()
+        if Today.weekday() >= 5 or CheckForDateHoliday(Today):
+            Logger.warning("%s: Refusing to execute on holiday/weekend (%s)", Instrument, Today)
+            return False, None, FillInfo
+
         # ── Step 0a: Market open delay ────────────────────────────
         _WaitForMarketOpen(Exchange, Config)
 

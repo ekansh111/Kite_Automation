@@ -3115,6 +3115,13 @@ def runV2(overrideArg=None, exitArg=None, stateOnly=False, dryRun=False):
     reconcilePositions(kite, state, dryRun=dryRun)
     state = loadState()
 
+    # Skip entries/exits on holidays and weekends
+    today = date.today()
+    if today.weekday() >= 5 or CheckForDateHoliday(today):
+        dayType = "weekend" if today.weekday() >= 5 else f"holiday ({today})"
+        print(f"[V2 RUNNER] {dayType} — skipping entry/exit processing")
+        return
+
     # Parse overrides
     overrides = handleOverride(overrideArg) if overrideArg else []
     overrideNames = {name for name, _ in overrides}
