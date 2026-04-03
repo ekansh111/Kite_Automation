@@ -146,6 +146,29 @@ def _CalcPnl(Direction, Price1, Price2, Qty, PV):
     return (Price1 - Price2) * Qty * PV
 
 
+
+# ─── Exchange Opening Times (IST) ───────────────────────────────
+# MCX opens 9:00, NSE/NFO/BFO opens 9:15, NCDEX opens 10:00.
+# Before an exchange opens, its prices are stale — skip that section.
+EXCHANGE_OPEN = {
+    "MCX":   (9, 0),   # 09:00 IST
+    "NFO":   (9, 15),  # 09:15 IST
+    "NCDEX": (10, 0),  # 10:00 IST
+}
+
+
+class _ExchangeNotOpen(Exception):
+    """Raised to skip a broker section when its exchange hasn't opened yet."""
+    pass
+
+
+def _IsExchangeOpen(ExchangeKey):
+    """Return True if the exchange has opened today (based on current IST time)."""
+    Now = datetime.now()
+    OpenH, OpenM = EXCHANGE_OPEN.get(ExchangeKey, (0, 0))
+    return (Now.hour, Now.minute) >= (OpenH, OpenM)
+
+
 def _FetchOpenPositions(FullConfig):
     """Fetch open positions from all broker accounts.
 
@@ -153,13 +176,21 @@ def _FetchOpenPositions(FullConfig):
       pnl         = (LTP - Entry) x Qty x PV  (total unrealized)
       daily_swing = (LTP - Prev Close) x Qty x PV  (today's movement)
       prev_close  = previous day's closing price from broker
+
+    Exchange time gates (IST):
+      Before 09:00 — no exchanges open, skip all
+      09:00-09:15  — MCX only (Kite YD6016)
+      09:15-10:00  — MCX + NFO/BFO options (Kite OFS653)
+      After 10:00  — all (MCX + Options + Angel NCDEX)
     """
     Instruments = FullConfig.get("instruments", {})
     Positions = []
     FetchErrors = []  # Track broker fetch failures for email warning
 
-    # ── Kite YD6016 — MCX futures ──
+    # ── Kite YD6016 — MCX futures (opens 09:00) ──
     try:
+        if not _IsExchangeOpen("MCX"):
+            raise _ExchangeNotOpen("MCX")
         Kite = _EstablishKiteSession("YD6016")
         for Pos in Kite.positions().get("net", []):
             Qty = Pos.get("quantity", 0)
@@ -218,12 +249,16 @@ def _FetchOpenPositions(FullConfig):
                 "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
+    except _ExchangeNotOpen:
+        Logger.info("Skipping Kite YD6016 — MCX not yet open (opens 09:00)")
     except Exception as e:
         Logger.error("Kite YD6016 fetch failed: %s\n%s", e, traceback.format_exc())
         FetchErrors.append(f"Kite YD6016 (MCX): {e}")
 
-    # ── Angel AABM826021 — NCDEX futures ──
+    # ── Angel AABM826021 — NCDEX futures (opens 10:00) ──
     try:
+        if not _IsExchangeOpen("NCDEX"):
+            raise _ExchangeNotOpen("NCDEX")
         SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
         RawResponse = SmartApi.position()
         RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
@@ -316,12 +351,16 @@ def _FetchOpenPositions(FullConfig):
                 "broker": "ANGEL", "is_new_today": IsNewToday,
             })
         Logger.info("Angel: %d open NCDEX positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
+    except _ExchangeNotOpen:
+        Logger.info("Skipping Angel AABM826021 — NCDEX not yet open (opens 10:00)")
     except Exception as e:
         Logger.error("Angel positions fetch failed: %s\n%s", e, traceback.format_exc())
         FetchErrors.append(f"Angel AABM826021 (NCDEX): {e}")
 
-    # ── Kite OFS653 — Options (NFO/BFO) ──
+    # ── Kite OFS653 — Options NFO/BFO (opens 09:15) ──
     try:
+        if not _IsExchangeOpen("NFO"):
+            raise _ExchangeNotOpen("NFO")
         Kite = _EstablishKiteSession("OFS653")
         for Pos in Kite.positions().get("net", []):
             Qty = Pos.get("quantity", 0)
@@ -384,6 +423,8 @@ def _FetchOpenPositions(FullConfig):
                 "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
+    except _ExchangeNotOpen:
+        Logger.info("Skipping Kite OFS653 — NFO/BFO not yet open (opens 09:15)")
     except Exception as e:
         Logger.error("Options fetch failed: %s\n%s", e, traceback.format_exc())
         FetchErrors.append(f"Kite OFS653 (Options): {e}")
@@ -404,6 +445,8 @@ def _FetchDailyRealizedPnl():
 
     # Kite YD6016 — MCX futures
     try:
+        if not _IsExchangeOpen("MCX"):
+            raise _ExchangeNotOpen("MCX")
         Kite = _EstablishKiteSession("YD6016")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
@@ -425,12 +468,16 @@ def _FetchDailyRealizedPnl():
                 Total += Realised
         Result["YD6016"] = round(Total, 2)
         Logger.info("Kite YD6016 realized today: %.2f", Total)
+    except _ExchangeNotOpen:
+        Result["YD6016"] = 0.0
     except Exception as e:
         Logger.error("Kite YD6016 realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["YD6016"] = 0.0
 
     # Angel AABM826021 — NCDEX futures
     try:
+        if not _IsExchangeOpen("NCDEX"):
+            raise _ExchangeNotOpen("NCDEX")
         SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
         RawResponse = SmartApi.position()
         RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
@@ -441,12 +488,16 @@ def _FetchDailyRealizedPnl():
                     if P.get("producttype") == "CARRYFORWARD")
         Result["AABM826021"] = round(Total, 2)
         Logger.info("Angel realized today: %.2f", Total)
+    except _ExchangeNotOpen:
+        Result["AABM826021"] = 0.0
     except Exception as e:
         Logger.error("Angel realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["AABM826021"] = 0.0
 
     # Kite OFS653 — Options
     try:
+        if not _IsExchangeOpen("NFO"):
+            raise _ExchangeNotOpen("NFO")
         Kite = _EstablishKiteSession("OFS653")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
@@ -465,6 +516,8 @@ def _FetchDailyRealizedPnl():
                 Total += Realised
         Result["OFS653"] = round(Total, 2)
         Logger.info("Kite OFS653 realized today: %.2f", Total)
+    except _ExchangeNotOpen:
+        Result["OFS653"] = 0.0
     except Exception as e:
         Logger.error("Kite OFS653 realized fetch failed: %s\n%s", e, traceback.format_exc())
         Result["OFS653"] = 0.0
@@ -521,7 +574,11 @@ def _FetchTodayOrders(FullConfig):
     OptionsOrders = []
 
     # ── Kite orders — YD6016 + OFS653 ──
+    KiteExchangeMap = {"YD6016": "MCX", "OFS653": "NFO"}
     for KiteUser in ["YD6016", "OFS653"]:
+        ExKey = KiteExchangeMap.get(KiteUser, "MCX")
+        if not _IsExchangeOpen(ExKey):
+            continue
         try:
             Kite = _EstablishKiteSession(KiteUser)
             for O in Kite.orders():
@@ -561,8 +618,10 @@ def _FetchTodayOrders(FullConfig):
         except Exception as e:
             Logger.error("Kite %s orders failed: %s", KiteUser, e)
 
-    # ── Angel orders ──
+    # ── Angel orders (NCDEX opens 10:00) ──
     try:
+        if not _IsExchangeOpen("NCDEX"):
+            raise _ExchangeNotOpen("NCDEX")
         SmartApi = EstablishConnectionAngelAPI({"User": "AABM826021"})
         RawResponse = SmartApi.orderBook()
         RawOrders = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
@@ -589,6 +648,8 @@ def _FetchTodayOrders(FullConfig):
                 "fill_price": AvgPrice, "time": OrderTime, "broker": "ANGEL",
             })
         Logger.info("Angel: orders fetched")
+    except _ExchangeNotOpen:
+        pass
     except Exception as e:
         Logger.error("Angel orders failed: %s", e)
 
