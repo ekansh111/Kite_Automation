@@ -47,7 +47,7 @@ from FetchOptionContractName import (
 )
 from smart_chase import SmartChaseExecute
 from vol_target import compute_daily_vol_target
-from PlaceOptionsSystemsV2 import lookupK, K_TABLE_SINGLE
+from PlaceOptionsSystemsV2 import lookupK, K_TABLE_SINGLE, bsPrice, bsImpliedVol, RISK_FREE_RATE
 import forecast_db as db
 
 Logger = logging.getLogger("itm_call_rollover")
@@ -211,8 +211,15 @@ def ComputeITMCallCandidates(Spot, StrikeStep, ITMPctMin=4.0, ITMPctMax=5.0):
 
 
 def SelectBestITMStrike(Kite, Instruments, IndexName, Exchange, OptSegment,
-                        ExpiryDate, Candidates):
+                        ExpiryDate, Candidates, Spot=None):
     """From candidate strikes, pick the one with tightest bid-ask spread.
+
+    Each candidate is validated against intrinsic value and Black-Scholes
+    theoretical price before being considered. Candidates that fail validation
+    are skipped with a warning.
+
+    Args:
+        Spot: underlying spot price (required for price validation).
 
     Returns (strike, tradingsymbol, lotSize, premium) or raises Exception.
     """
@@ -243,11 +250,9 @@ def SelectBestITMStrike(Kite, Instruments, IndexName, Exchange, OptSegment,
         QuoteKeys.append(Key)
         StrikeToKey[Key] = Strike
 
-    BestStrike = None
-    BestSymbol = None
-    BestLotSize = None
-    BestPremium = None
-    BestSpreadPct = float("inf")
+    # Collect all valid candidates with their scores
+    ValidCandidates = []
+    RejectedStrikes = []
 
     for Chunk in ChunkList(QuoteKeys, 150):
         Quotes = Kite.quote(Chunk)
@@ -266,6 +271,7 @@ def SelectBestITMStrike(Kite, Instruments, IndexName, Exchange, OptSegment,
             if Premium <= 0:
                 continue
 
+            # Compute spread
             Depth = Q.get("depth", {})
             Buys = Depth.get("buy", [])
             Sells = Depth.get("sell", [])
@@ -278,31 +284,205 @@ def SelectBestITMStrike(Kite, Instruments, IndexName, Exchange, OptSegment,
             else:
                 SpreadPct = 999
 
-            if SpreadPct < BestSpreadPct:
-                BestSpreadPct = SpreadPct
-                BestStrike = Strike
-                BestSymbol = Ins["tradingsymbol"]
-                BestLotSize = int(Ins.get("lot_size", 1))
-                BestPremium = Premium
+            # Filter: skip if spread is too wide
+            if SpreadPct > MAX_SPREAD_PCT:
+                Logger.warning("[%s] Strike %d skipped: spread %.1f%% > %.1f%% limit",
+                               IndexName, Strike, SpreadPct, MAX_SPREAD_PCT)
+                continue
 
-    if BestSymbol is None:
-        raise Exception(f"No liquid CE contracts found for {IndexName} expiry={ExpiryDate}")
+            # Validate contract price against intrinsic + BS theoretical
+            if Spot is not None and Spot > 0:
+                ValPassed, ValDetails = ValidateContractPrice(
+                    Spot, Strike, Premium, ExpiryDate, Kite)
+                if not ValPassed:
+                    Logger.warning("[%s] Strike %d REJECTED: %s",
+                                   IndexName, Strike,
+                                   "; ".join(ValDetails["checks_failed"]))
+                    RejectedStrikes.append((Strike, ValDetails))
+                    continue
+            else:
+                ValDetails = {"bs_theo": None}
 
-    Logger.info("[%s] Selected strike=%d symbol=%s premium=%.2f spread=%.1f%% lotSize=%d",
-                IndexName, BestStrike, BestSymbol, BestPremium, BestSpreadPct, BestLotSize)
-    return BestStrike, BestSymbol, BestLotSize, BestPremium
+            # Value score: how cheap is market premium vs BS theoretical?
+            # Lower (more negative) = better value for buyer
+            BsTheo = ValDetails.get("bs_theo") if ValDetails else None
+            if BsTheo and BsTheo > 0:
+                ValuePct = (Premium - BsTheo) / BsTheo * 100  # negative = underpriced
+            else:
+                ValuePct = 0  # no BS data — neutral score
+
+            ValidCandidates.append({
+                "strike": Strike,
+                "symbol": Ins["tradingsymbol"],
+                "lot_size": int(Ins.get("lot_size", 1)),
+                "premium": Premium,
+                "spread_pct": SpreadPct,
+                "value_pct": ValuePct,
+                "bs_theo": BsTheo,
+                "validation": ValDetails,
+            })
+
+    if RejectedStrikes:
+        Logger.warning("[%s] %d candidate(s) rejected by price validation",
+                       IndexName, len(RejectedStrikes))
+
+    if not ValidCandidates:
+        RejectSummary = "; ".join(
+            f"{s}: {'; '.join(d['checks_failed'])}" for s, d in RejectedStrikes
+        )
+        raise Exception(f"No valid CE contracts for {IndexName} expiry={ExpiryDate}. "
+                        f"Rejected: {RejectSummary}")
+
+    # Rank by value: pick the cheapest relative to BS theoretical (most negative value_pct)
+    ValidCandidates.sort(key=lambda c: c["value_pct"])
+    Best = ValidCandidates[0]
+
+    # Log all valid candidates for transparency
+    for C in ValidCandidates:
+        Marker = " <<<" if C is Best else ""
+        Logger.info("[%s]   strike=%d premium=%.2f bs_theo=%s value=%.1f%% spread=%.1f%%%s",
+                    IndexName, C["strike"], C["premium"],
+                    f"{C['bs_theo']:.2f}" if C["bs_theo"] else "N/A",
+                    C["value_pct"], C["spread_pct"], Marker)
+
+    BsTheoVal = Best.get("bs_theo")
+    BsTheoStr = f"{BsTheoVal:.2f}" if isinstance(BsTheoVal, (int, float)) else "N/A"
+    Logger.info("[%s] Selected strike=%d symbol=%s premium=%.2f value=%.1f%% "
+                "spread=%.1f%% lotSize=%d bs_theo=%s",
+                IndexName, Best["strike"], Best["symbol"], Best["premium"],
+                Best["value_pct"], Best["spread_pct"], Best["lot_size"], BsTheoStr)
+
+    SelectionMeta = {
+        "best": Best,
+        "all_candidates": ValidCandidates,
+        "rejected": RejectedStrikes,
+    }
+    return Best["strike"], Best["symbol"], Best["lot_size"], Best["premium"], SelectionMeta
+
+
+# ─── Contract Price Validation ──────────────────────────────────────
+
+# Thresholds for price validation
+INTRINSIC_OVERPAY_MAX_PCT = 35.0    # reject if market premium > intrinsic * (1 + this/100)
+INTRINSIC_UNDERPAY_MIN_PCT = 5.0    # reject if market premium < intrinsic * (1 - this/100)
+BS_DEVIATION_MAX_PCT = 12.0         # reject if |market - BS_theo| > this % of BS_theo
+BS_FALLBACK_IV = 0.15               # 15% annualised — fallback if VIX unavailable
+MAX_SPREAD_PCT = 3.0                # skip candidates with spread wider than this %
+
+
+def ValidateContractPrice(Spot, Strike, Premium, ExpiryDate, Kite=None):
+    """Validate that a quoted option premium is reasonable.
+
+    Two checks:
+      1. Intrinsic value: premium must be between 95-115% of intrinsic
+         (deep ITM calls have small time value relative to intrinsic)
+      2. Black-Scholes: premium must be within 12% of BS theoretical price
+         (uses India VIX for IV if available, else 15% fallback)
+
+    Returns:
+        (passed: bool, details: dict) — details includes intrinsic, bs_theo, iv, reasons
+    """
+    Today = date.today()
+    DaysToExpiry = (ExpiryDate - Today).days
+    T = max(DaysToExpiry / 365.0, 1e-6)
+
+    Intrinsic = max(Spot - Strike, 0.0)
+    TimeValue = Premium - Intrinsic
+
+    Details = {
+        "spot": Spot, "strike": Strike, "premium": Premium,
+        "intrinsic": Intrinsic, "time_value": TimeValue,
+        "days_to_expiry": DaysToExpiry, "T": T,
+        "bs_theo": None, "iv_used": None, "implied_iv": None,
+        "checks_passed": [], "checks_failed": [],
+    }
+
+    # ── Check 1: Intrinsic value bounds ─────────────────────────
+    if Intrinsic > 0:
+        OverpayLimit = Intrinsic * (1 + INTRINSIC_OVERPAY_MAX_PCT / 100)
+        UnderpayLimit = Intrinsic * (1 - INTRINSIC_UNDERPAY_MIN_PCT / 100)
+
+        if Premium > OverpayLimit:
+            Details["checks_failed"].append(
+                f"INTRINSIC_OVERPAY: premium {Premium:.2f} > {OverpayLimit:.2f} "
+                f"({INTRINSIC_OVERPAY_MAX_PCT}% above intrinsic {Intrinsic:.2f})")
+        elif Premium < UnderpayLimit:
+            Details["checks_failed"].append(
+                f"INTRINSIC_UNDERPAY: premium {Premium:.2f} < {UnderpayLimit:.2f} "
+                f"({INTRINSIC_UNDERPAY_MIN_PCT}% below intrinsic {Intrinsic:.2f})")
+        else:
+            Details["checks_passed"].append("INTRINSIC_OK")
+    else:
+        # Strike >= Spot — not really ITM, flag it
+        Details["checks_failed"].append(
+            f"NOT_ITM: strike {Strike} >= spot {Spot:.2f}, intrinsic=0")
+
+    # ── Check 2: Black-Scholes theoretical price ────────────────
+    # Get IV: try India VIX first, then imply from market price, else fallback
+    IV = None
+
+    # Try India VIX as proxy for IV
+    if Kite is not None:
+        try:
+            VixData = Kite.ltp([VIX_LTP_KEY])
+            VixLevel = float(VixData[VIX_LTP_KEY]["last_price"])
+            IV = VixLevel / 100.0  # VIX is in percentage, BS needs decimal
+            Details["iv_used"] = f"VIX={VixLevel:.1f}"
+        except Exception:
+            pass
+
+    # If no VIX, try to imply IV from the market premium itself
+    # (cross-check: compute IV → compute BS price → compare)
+    if IV is None:
+        ImpliedIV = bsImpliedVol(Premium, Spot, Strike, T, "CE")
+        if ImpliedIV is not None:
+            IV = ImpliedIV
+            Details["implied_iv"] = ImpliedIV
+            Details["iv_used"] = f"implied={ImpliedIV:.3f}"
+        else:
+            IV = BS_FALLBACK_IV
+            Details["iv_used"] = f"fallback={BS_FALLBACK_IV}"
+
+    # Compute BS theoretical price
+    try:
+        BsTheo = bsPrice(Spot, Strike, T, IV, "CE")
+        Details["bs_theo"] = BsTheo
+
+        if BsTheo > 0:
+            DeviationPct = abs(Premium - BsTheo) / BsTheo * 100
+            Details["bs_deviation_pct"] = DeviationPct
+
+            if DeviationPct > BS_DEVIATION_MAX_PCT:
+                Details["checks_failed"].append(
+                    f"BS_DEVIATION: premium {Premium:.2f} vs theo {BsTheo:.2f} "
+                    f"(dev={DeviationPct:.1f}% > {BS_DEVIATION_MAX_PCT}%)")
+            else:
+                Details["checks_passed"].append(
+                    f"BS_OK (theo={BsTheo:.2f}, dev={DeviationPct:.1f}%)")
+        else:
+            Details["checks_passed"].append("BS_SKIP (theo<=0)")
+    except Exception as E:
+        Details["checks_failed"].append(f"BS_ERROR: {E}")
+
+    Passed = len(Details["checks_failed"]) == 0
+    return Passed, Details
 
 
 # ─── Position Sizing ────────────────────────────────────────────────
 
 def LoadVolBudgets():
-    """Compute ITM call daily vol budgets from effective capital."""
+    """Compute ITM call daily vol budgets from effective capital.
+
+    Capital formula (shared with PlaceOptionsSystemsV2 and forecast_orchestrator):
+        effective = base_capital + cumulative_realized + eod_unrealized
+    Reads from realized_pnl_accumulator.json (EOD JSON), falls back to DB.
+    """
     with open(CONFIG_PATH) as F:
         Cfg = json.load(F)
     Acct = Cfg["account"]
     BaseCapital = Acct["base_capital"]
 
-    # Read realized + unrealized from EOD JSON, fall back to DB
+    # Read realized + unrealized from EOD JSON accumulator, fall back to DB
     CumulativeRealized = 0.0
     EodUnrealized = 0.0
     _PnlPath = Path(__file__).parent / "realized_pnl_accumulator.json"
@@ -314,8 +494,8 @@ def LoadVolBudgets():
     try:
         with open(_PnlPath, "r") as F2:
             PnlData = json.load(F2)
-        CumulativeRealized = float(PnlData.get("cumulative_realized_pnl", 0.0))
-        EodUnrealized = float(PnlData.get("eod_unrealized", 0.0))
+        CumulativeRealized = float(PnlData.get("cumulative_realized_pnl") or 0.0)
+        EodUnrealized = float(PnlData.get("eod_unrealized") or 0.0)
     except (FileNotFoundError, json.JSONDecodeError):
         CumulativeRealized = db.GetCumulativeRealizedPnl()
 
@@ -343,7 +523,10 @@ def ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget):
     """Compute number of lots for a single ITM call.
 
     dailyVolPerLot = k × premium × lotSize
-    lots = round(budget / dailyVolPerLot)
+    lots = floor(budget / dailyVolPerLot)
+
+    Uses floor (not round) because positions are held to expiry with no
+    stoploss — overshooting the vol budget compounds over ~22 trading days.
     """
     if Premium <= 0 or LotSize <= 0 or KValue <= 0:
         return {"finalLots": 0, "skipped": True, "skipReason": "invalid inputs"}
@@ -352,7 +535,7 @@ def ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget):
     if DailyVolPerLot <= 0:
         return {"finalLots": 0, "skipped": True, "skipReason": "dailyVolPerLot zero"}
 
-    AllowedLots = int(DailyVolBudget / DailyVolPerLot + 0.5)  # round half-up
+    AllowedLots = int(DailyVolBudget / DailyVolPerLot)  # floor — never exceed budget
     FinalLots = max(1, AllowedLots)  # always at least 1 lot
 
     return {
@@ -540,97 +723,500 @@ def BuildOrderDict(IndexName, ContractSymbol, Action, Quantity):
 
 # ─── Email ──────────────────────────────────────────────────────────
 
+def _fmtEmail(val, decimals=2):
+    """Format a number for email display."""
+    if val is None or val == "":
+        return "N/A"
+    try:
+        return f"{float(val):,.{decimals}f}"
+    except (ValueError, TypeError):
+        return str(val)
+
+
 def BuildRolloverEmailHtml(IndexName, Result):
-    """Build detailed HTML email for ITM call rollover."""
+    """Build detailed HTML email for ITM call rollover, matching straddle V2 style."""
     Now = datetime.now()
     IsSuccess = Result.get("success", False)
-    StatusColor = "#27AE60" if IsSuccess else "#E74C3C"
+
+    # ── Colour palette (matches straddle V2) ──
+    navy = "#003366"
+    accent = "#2E75B6"
+    green = "#27AE60"
+    red = "#E74C3C"
+    grey_bg = "#F8F9FA"
+    border_col = "#DEE2E6"
+
+    StatusColor = green if IsSuccess else red
     StatusText = "ROLLOVER COMPLETE" if IsSuccess else "ROLLOVER FAILED"
 
-    Leg1 = Result.get("leg1", {})
-    Leg2 = Result.get("leg2", {})
+    Leg1 = Result.get("leg1") or {}
+    Leg2 = Result.get("leg2") or {}
+    SizeResult = Result.get("size_result") or {}
+    SelectionMeta = Result.get("selection") or {}
+    Best = SelectionMeta.get("best") or {}
+    AllCandidates = SelectionMeta.get("all_candidates") or []
+    RejectedStrikes = SelectionMeta.get("rejected") or []
+
+    DTE = Result.get("dte", "?")
+    KValue = Result.get("k_value", 0)
+    LotSize = Result.get("lot_size", "?")
+    Premium = Result.get("premium", 0)
+    Spot = Result.get("spot", 0)
+    Strike = Result.get("strike", "—")
+    DailyVolBudget = Result.get("daily_vol_budget", 0)
+    EffCapital = Result.get("effective_capital", "?")
+    NextExpiry = Result.get("next_expiry", "?")
+    CurrentExpiry = Result.get("current_expiry", "?")
 
     Html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #ddd;border-radius:8px;overflow:hidden">
-      <div style="background:#003366;color:white;padding:16px 20px">
-        <h2 style="margin:0">ITM Call Rollover — {IndexName}</h2>
-        <p style="margin:4px 0 0;opacity:0.8;font-size:13px">{Now.strftime('%d %b %Y %H:%M:%S')}</p>
-      </div>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#EAECEE;">
+      <div style="max-width:680px;margin:20px auto;background:#FFFFFF;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
 
-      <div style="background:{StatusColor};color:white;padding:10px 20px;font-weight:bold;font-size:15px">
-        {StatusText}
-      </div>
+        <!-- Header -->
+        <div style="background:{navy};padding:20px 28px;">
+          <h1 style="margin:0;color:#FFFFFF;font-size:20px;letter-spacing:0.5px;">
+            ITM Call Rollover &mdash; {IndexName}
+          </h1>
+          <p style="margin:6px 0 0;color:#AAC4E0;font-size:13px;">
+            Monthly Roll &bull; {Now.strftime('%d %b %Y, %I:%M %p')} &bull; {CurrentExpiry} &rarr; {NextExpiry}
+          </p>
+        </div>
 
-      <div style="padding:16px 20px">
-        <table style="width:100%;border-collapse:collapse;font-size:14px">
-          <tr style="border-bottom:1px solid #eee">
-            <td style="padding:8px 4px;color:#666">Vol Budget</td>
-            <td style="padding:8px 4px;font-weight:bold;text-align:right">₹{Result.get('daily_vol_budget', 0):,.0f}</td>
-          </tr>
-          <tr style="border-bottom:1px solid #eee">
-            <td style="padding:8px 4px;color:#666">K Value (DTE={Result.get('dte', '?')})</td>
-            <td style="padding:8px 4px;font-weight:bold;text-align:right">{Result.get('k_value', 0):.3f}</td>
-          </tr>
-          <tr style="border-bottom:1px solid #eee">
-            <td style="padding:8px 4px;color:#666">Spot Price</td>
-            <td style="padding:8px 4px;font-weight:bold;text-align:right">₹{Result.get('spot', 0):,.1f}</td>
-          </tr>
-          <tr style="border-bottom:1px solid #eee">
-            <td style="padding:8px 4px;color:#666">Strike Selected</td>
-            <td style="padding:8px 4px;font-weight:bold;text-align:right">{Result.get('strike', '—')}</td>
-          </tr>
-        </table>
-      </div>
+        <!-- Status Banner -->
+        <div style="background:{StatusColor};padding:10px 28px;">
+          <span style="color:#FFFFFF;font-size:13px;font-weight:600;">
+            {StatusText}
+          </span>
+        </div>
+
+        <!-- Contract & Market Data -->
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Contract &amp; Market Data
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">New Contract</td>
+              <td style="padding:8px 12px;font-family:monospace;">{Result.get('symbol', '—')}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Spot Price</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Spot, 1)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Strike Selected</td>
+              <td style="padding:8px 12px;">{Strike}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">ITM Depth</td>
+              <td style="padding:8px 12px;">{f"{((Spot - Strike) / Spot * 100):.1f}%" if isinstance(Strike, (int, float)) and Spot > 0 else "—"}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Premium (mid)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Premium)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">BS Theoretical</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Best.get('bs_theo'))}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Value Score</td>
+              <td style="padding:8px 12px;font-weight:700;color:{green if Best.get('value_pct', 0) <= 0 else red};">{_fmtEmail(Best.get('value_pct'), 1)}%</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Spread</td>
+              <td style="padding:8px 12px;">{_fmtEmail(Best.get('spread_pct'), 1)}%</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">DTE (trading days)</td>
+              <td style="padding:8px 12px;">{DTE}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Lot Size</td>
+              <td style="padding:8px 12px;">{LotSize}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Effective Capital</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(EffCapital, 0)}</td>
+            </tr>
+          </table>
+        </div>
     """
 
-    # Leg 1 (Exit)
+    # ── Position Sizing Formula ──
+    DailyVolPerLot = SizeResult.get("dailyVolPerLot", 0)
+    AllowedLots = SizeResult.get("allowedLots", "?")
+    FinalLots = SizeResult.get("finalLots", "?")
+    TotalQty = FinalLots * LotSize if isinstance(FinalLots, int) and isinstance(LotSize, int) else "?"
+
+    Html += f"""
+        <!-- Position Sizing Formula -->
+        <div style="padding:20px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Position Sizing Formula
+          </h2>
+
+          <!-- Step 1: dailyVolPerLot -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;margin-bottom:12px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 1: Daily Volatility Per Lot</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">How much P&amp;L volatility does one lot produce on a single day?</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">dailyVolPerLot</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">K &times; premium &times; lotSize</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">{_fmtEmail(KValue, 4)} &times; {_fmtEmail(Premium)} &times; {LotSize}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;font-size:15px;color:{navy};">\u20B9{_fmtEmail(DailyVolPerLot)}</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Step 2: allowedLots -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;margin-bottom:12px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 2: Allowed Lots</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">How many lots fit within the daily volatility budget? Uses floor() &mdash; never exceeds budget.</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">allowedLots</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">floor(budget / dailyVolPerLot)</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">floor(\u20B9{_fmtEmail(DailyVolBudget, 0)} / \u20B9{_fmtEmail(DailyVolPerLot)})</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;font-size:15px;color:{navy};">{AllowedLots} lots</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Step 3: finalLots -->
+          <div style="background:#E8F5E9;border:2px solid {green};border-radius:6px;padding:16px 18px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Step 3: Final Lots (min 1)</p>
+            <p style="margin:0 0 4px;font-size:11px;color:#666;">Always at least 1 lot. No upper cap &mdash; vol budget is the only constraint.</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">finalLots</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#333;">max(1, allowedLots)</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-family:monospace;color:#555;">max(1, {AllowedLots})</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;"></td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-weight:700;font-size:18px;color:{green};">{FinalLots} lots &nbsp;({TotalQty} qty)</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+
+        <!-- K Value -->
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            K Value &mdash; STATIC
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">K for Sizing</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{navy};">{_fmtEmail(KValue, 4)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Source</td>
+              <td style="padding:8px 12px;">K_TABLE_SINGLE (DTE={DTE})</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Daily Vol Budget</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(DailyVolBudget, 0)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Daily Vol / Lot</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(DailyVolPerLot)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Budget Utilisation</td>
+              <td style="padding:8px 12px;">{_fmtEmail(DailyVolPerLot * FinalLots / DailyVolBudget * 100 if DailyVolBudget > 0 and isinstance(FinalLots, int) else 0, 1)}%</td>
+            </tr>
+          </table>
+    """
+
+    # K table with active row highlighted
+    KTableRows = ""
+    for MinDte, MaxDte, KVal in K_TABLE_SINGLE:
+        Label = f"{MinDte} DTE" if MinDte == MaxDte else f"{MinDte}–{MaxDte} DTE"
+        IsActive = isinstance(DTE, int) and MinDte <= DTE <= MaxDte
+        Style = f"background:{accent};color:#FFF;font-weight:600;" if IsActive else ""
+        Arrow = " \u25C0" if IsActive else ""
+        KTableRows += f'<tr><td style="padding:4px 10px;{Style}">{Label}</td><td style="padding:4px 10px;text-align:center;{Style}">{KVal}{Arrow}</td></tr>'
+
+    Html += f"""
+          <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:12px;">
+            <tr style="background:{navy};color:#FFF;"><td style="padding:4px 10px;font-weight:600;" colspan="2">K_TABLE_SINGLE</td></tr>
+            {KTableRows}
+          </table>
+        </div>
+    """
+
+    # ── Strike Selection Candidates ──
+    if AllCandidates or RejectedStrikes:
+        CandidateRows = ""
+        for C in AllCandidates:
+            IsBest = C.get("strike") == Strike
+            RowStyle = f"background:#E8F5E9;font-weight:600;" if IsBest else ""
+            BsT = C.get("bs_theo")
+            BsStr = f"\u20B9{_fmtEmail(BsT)}" if BsT else "N/A"
+            Tag = " \u2705" if IsBest else ""
+            CandidateRows += f"""
+            <tr style="{RowStyle}">
+              <td style="padding:6px 10px;">{C['strike']}{Tag}</td>
+              <td style="padding:6px 10px;">\u20B9{_fmtEmail(C['premium'])}</td>
+              <td style="padding:6px 10px;">{BsStr}</td>
+              <td style="padding:6px 10px;color:{green if C['value_pct'] <= 0 else red};">{_fmtEmail(C['value_pct'], 1)}%</td>
+              <td style="padding:6px 10px;">{_fmtEmail(C['spread_pct'], 1)}%</td>
+            </tr>"""
+
+        for RejStrike, RejDetails in RejectedStrikes:
+            Reasons = "; ".join(RejDetails.get("checks_failed", []))
+            CandidateRows += f"""
+            <tr style="color:#999;text-decoration:line-through;">
+              <td style="padding:6px 10px;">{RejStrike}</td>
+              <td style="padding:6px 10px;" colspan="3">{Reasons}</td>
+              <td style="padding:6px 10px;">\u274C</td>
+            </tr>"""
+
+        Html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Strike Selection &mdash; All Candidates
+          </h2>
+          <p style="margin:0 0 10px;color:#555;font-size:12px;">
+            Ranked by value score (cheapest vs BS theoretical). Max spread: {MAX_SPREAD_PCT}%.
+            Intrinsic band: [{INTRINSIC_UNDERPAY_MIN_PCT}%, +{INTRINSIC_OVERPAY_MAX_PCT}%]. BS deviation limit: {BS_DEVIATION_MAX_PCT}%.
+          </p>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:6px 10px;font-weight:600;">Strike</td>
+              <td style="padding:6px 10px;font-weight:600;">Premium</td>
+              <td style="padding:6px 10px;font-weight:600;">BS Theo</td>
+              <td style="padding:6px 10px;font-weight:600;">Value %</td>
+              <td style="padding:6px 10px;font-weight:600;">Spread %</td>
+            </tr>
+            {CandidateRows}
+          </table>
+        </div>
+        """
+
+    # ── Price Validation Detail for Selected Strike ──
+    BestVal = Best.get("validation") or {}
+    if BestVal:
+        Intrinsic = BestVal.get("intrinsic", "?")
+        IVUsed = BestVal.get("iv_used", "?")
+        BsTheo = BestVal.get("bs_theo")
+
+        Html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Price Validation &mdash; Selected Strike
+          </h2>
+
+          <!-- Layer 1: Intrinsic -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;margin-bottom:12px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Layer 1: Intrinsic Value Check</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;color:#666;width:45%;">Intrinsic (Spot &minus; Strike)</td>
+                <td style="padding:4px 0;font-family:monospace;">\u20B9{_fmtEmail(Intrinsic)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Lower limit ({INTRINSIC_UNDERPAY_MIN_PCT}% below)</td>
+                <td style="padding:4px 0;font-family:monospace;">\u20B9{_fmtEmail(float(Intrinsic) * (1 - INTRINSIC_UNDERPAY_MIN_PCT / 100) if isinstance(Intrinsic, (int, float)) else 0)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Upper limit ({INTRINSIC_OVERPAY_MAX_PCT}% above)</td>
+                <td style="padding:4px 0;font-family:monospace;">\u20B9{_fmtEmail(float(Intrinsic) * (1 + INTRINSIC_OVERPAY_MAX_PCT / 100) if isinstance(Intrinsic, (int, float)) else 0)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Market Premium</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;">\u20B9{_fmtEmail(Premium)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Result</td>
+                <td style="padding:4px 0;font-weight:700;color:{green};">\u2705 PASS</td>
+              </tr>
+            </table>
+          </div>
+
+          <!-- Layer 2: BS Theoretical -->
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">Layer 2: Black-Scholes Check</p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;color:#666;width:45%;">IV Source</td>
+                <td style="padding:4px 0;font-family:monospace;">{IVUsed}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">BS Theoretical Price</td>
+                <td style="padding:4px 0;font-family:monospace;">\u20B9{_fmtEmail(BsTheo)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Market Premium</td>
+                <td style="padding:4px 0;font-family:monospace;font-weight:700;">\u20B9{_fmtEmail(Premium)}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Deviation</td>
+                <td style="padding:4px 0;font-family:monospace;">{_fmtEmail(abs(Premium - BsTheo) / BsTheo * 100 if isinstance(BsTheo, (int, float)) and BsTheo > 0 else 0, 1)}%  (limit: {BS_DEVIATION_MAX_PCT}%)</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;color:#666;">Result</td>
+                <td style="padding:4px 0;font-weight:700;color:{green};">\u2705 PASS</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+        """
+
+    DASH = "\u2014"  # em-dash default (extracted for Python 3.9 f-string compat)
+
+    # ── Leg 1 (Exit) ──
     if Leg1:
         Pnl = Leg1.get("realized_pnl")
-        PnlStr = f"₹{Pnl:+,.0f}" if Pnl is not None else "—"
-        PnlColor = "#27AE60" if Pnl and Pnl >= 0 else "#E74C3C"
+        PnlStr = f"\u20B9{Pnl:+,.0f}" if Pnl is not None else "\u2014"
+        PnlColor = green if Pnl and Pnl >= 0 else red
+        EntryPrice = Leg1.get("entry_price", 0)
+
         Html += f"""
-      <div style="padding:0 20px 16px">
-        <h3 style="color:#003366;margin:12px 0 8px;font-size:14px">LEG 1 — EXIT</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;background:#F8F9FA;border-radius:4px">
-          <tr><td style="padding:6px 8px;color:#666">Contract</td><td style="padding:6px 8px;text-align:right">{Leg1.get('contract', '—')}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Quantity</td><td style="padding:6px 8px;text-align:right">{Leg1.get('quantity', '—')}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Fill Price</td><td style="padding:6px 8px;text-align:right">₹{Leg1.get('fill_price', 0):,.2f}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Slippage</td><td style="padding:6px 8px;text-align:right">{Leg1.get('slippage', 0):+.2f}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Realized P&L</td><td style="padding:6px 8px;text-align:right;color:{PnlColor};font-weight:bold">{PnlStr}</td></tr>
-        </table>
-      </div>
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Leg 1 &mdash; EXIT (Sell Current Month)
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Contract</td>
+              <td style="padding:8px 12px;font-family:monospace;">{Leg1.get('contract', DASH)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Quantity</td>
+              <td style="padding:8px 12px;">{Leg1.get('quantity', DASH)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Fill Price</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Leg1.get('fill_price'))}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Slippage</td>
+              <td style="padding:8px 12px;">{Leg1.get('slippage', 0):+.2f} ticks</td>
+            </tr>
+            <tr style="background:#FFF8E1;">
+              <td style="padding:8px 12px;font-weight:600;">Realized P&amp;L</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{PnlColor};">{PnlStr}</td>
+            </tr>
+          </table>
+        </div>
         """
 
-    # Leg 2 (Entry)
+    # ── Leg 2 (Entry) ──
     if Leg2:
         Html += f"""
-      <div style="padding:0 20px 16px">
-        <h3 style="color:#003366;margin:12px 0 8px;font-size:14px">LEG 2 — ENTRY</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;background:#F8F9FA;border-radius:4px">
-          <tr><td style="padding:6px 8px;color:#666">Contract</td><td style="padding:6px 8px;text-align:right">{Leg2.get('contract', '—')}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Quantity</td><td style="padding:6px 8px;text-align:right">{Leg2.get('quantity', '—')}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Lots</td><td style="padding:6px 8px;text-align:right">{Leg2.get('lots', '—')}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Premium</td><td style="padding:6px 8px;text-align:right">₹{Leg2.get('premium', 0):,.2f}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Fill Price</td><td style="padding:6px 8px;text-align:right">₹{Leg2.get('fill_price', 0):,.2f}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Slippage</td><td style="padding:6px 8px;text-align:right">{Leg2.get('slippage', 0):+.2f}</td></tr>
-          <tr><td style="padding:6px 8px;color:#666">Expiry</td><td style="padding:6px 8px;text-align:right">{Leg2.get('expiry', '—')}</td></tr>
-        </table>
-      </div>
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Leg 2 &mdash; ENTRY (Buy Next Month)
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Contract</td>
+              <td style="padding:8px 12px;font-family:monospace;">{Leg2.get('contract', DASH)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Quantity</td>
+              <td style="padding:8px 12px;">{Leg2.get('quantity', DASH)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Lots</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{navy};">{Leg2.get('lots', DASH)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Premium (mid)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Leg2.get('premium'))}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Fill Price</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Leg2.get('fill_price'))}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Slippage</td>
+              <td style="padding:8px 12px;">{Leg2.get('slippage', 0):+.2f} ticks</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Expiry</td>
+              <td style="padding:8px 12px;">{Leg2.get('expiry', DASH)}</td>
+            </tr>
+          </table>
+        </div>
         """
 
-    # Roll spread
+    # ── Roll Summary ──
     RollSpread = Result.get("roll_spread")
+    Pnl = Leg1.get("realized_pnl") if Leg1 else None
+
+    Html += f"""
+        <div style="padding:24px 28px;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Roll Summary
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    """
     if RollSpread is not None:
         Html += f"""
-      <div style="padding:0 20px 16px">
-        <table style="width:100%;font-size:13px">
-          <tr><td style="padding:6px 4px;color:#666">Roll Spread (entry - exit)</td>
-              <td style="padding:6px 4px;text-align:right;font-weight:bold">₹{RollSpread:+,.2f}</td></tr>
-        </table>
-      </div>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Roll Spread (new &minus; old)</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;">\u20B9{RollSpread:+,.2f}</td>
+            </tr>
         """
+    if Pnl is not None:
+        PnlColor = green if Pnl >= 0 else red
+        Html += f"""
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Realized P&amp;L (closed leg)</td>
+              <td style="padding:8px 12px;font-weight:700;font-size:15px;color:{PnlColor};">\u20B9{Pnl:+,.0f}</td>
+            </tr>
+        """
+    Html += f"""
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Order Tag</td>
+              <td style="padding:8px 12px;font-family:monospace;">{ORDER_TAG}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Account</td>
+              <td style="padding:8px 12px;">{USER} (Zerodha)</td>
+            </tr>
+          </table>
+        </div>
 
-    Html += "</div>"
+        <!-- Footer -->
+        <div style="background:{grey_bg};padding:12px 28px;border-top:1px solid {border_col};font-size:11px;color:#999;">
+          ITM Call Rollover System &bull; Automated &bull; {Now.strftime('%d %b %Y %H:%M')}
+        </div>
+      </div>
+    </body>
+    </html>"""
+
     return Html
 
 
@@ -728,11 +1314,18 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
                                            IdxCfg["itm_pct_min"], IdxCfg["itm_pct_max"])
     Logger.info("%s ITM candidates: %s", Tag, Candidates)
 
-    Strike, Symbol, LotSize, Premium = SelectBestITMStrike(
+    Strike, Symbol, LotSize, Premium, SelectionMeta = SelectBestITMStrike(
         Kite, Instruments, IndexName, IdxCfg["exchange"], OptSegment,
-        NextExpiry, Candidates
+        NextExpiry, Candidates, Spot=Spot
     )
     Result["strike"] = Strike
+    Result["lot_size"] = LotSize
+    Result["premium"] = Premium
+    Result["symbol"] = Symbol
+    Result["selection"] = SelectionMeta
+    Result["effective_capital"] = EffCapital
+    Result["current_expiry"] = str(CurrentExpiry)
+    Result["next_expiry"] = str(NextExpiry)
 
     # ── Step 5: Position sizing ──────────────────────────────────
     DTE = CountTradingDaysUntilExpiry(NextExpiry)
@@ -741,6 +1334,7 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
     Result["k_value"] = KValue
 
     SizeResult = ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget)
+    Result["size_result"] = SizeResult
     if SizeResult["skipped"]:
         Logger.error("%s Position sizing skipped: %s", Tag, SizeResult["skipReason"])
         return Result

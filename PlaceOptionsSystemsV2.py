@@ -1886,6 +1886,13 @@ STRATEGY_CONFIGS = {
 # Daily vol budgets per underlying (INR) — computed from instrument_config.json
 _INSTRUMENT_CONFIG_PATH = Path(__file__).parent / "instrument_config.json"
 
+REALIZED_PNL_PATH = Path(__file__).parent.parent / "Work" / "inputs" / "realized_pnl_accumulator.json"
+try:
+    from Directories import workInputRoot as _workInputRoot
+    REALIZED_PNL_PATH = Path(_workInputRoot) / "realized_pnl_accumulator.json"
+except Exception:
+    pass
+
 
 REALIZED_PNL_PATH = Path(__file__).parent.parent / "Work" / "inputs" / "realized_pnl_accumulator.json"
 try:
@@ -1896,7 +1903,11 @@ except Exception:
 
 
 def _load_vol_budgets():
-    """Compute options daily vol budgets from effective capital."""
+    """Compute options daily vol budgets from effective capital.
+
+    Capital formula: effective = base_capital + cumulative_realized + eod_unrealized
+    Reads from realized_pnl_accumulator.json (EOD JSON), falls back to DB.
+    """
     with open(_INSTRUMENT_CONFIG_PATH) as f:
         cfg = json.load(f)
     acct = cfg["account"]
@@ -1908,8 +1919,8 @@ def _load_vol_budgets():
     try:
         with open(REALIZED_PNL_PATH, "r") as f:
             pnl_data = json.load(f)
-        cumulative_pnl = float(pnl_data.get("cumulative_realized_pnl", 0.0))
-        eod_unrealized = float(pnl_data.get("eod_unrealized", 0.0))
+        cumulative_pnl = float(pnl_data.get("cumulative_realized_pnl") or 0.0)
+        eod_unrealized = float(pnl_data.get("eod_unrealized") or 0.0)
     except (FileNotFoundError, json.JSONDecodeError):
         cumulative_pnl = GetCumulativeRealizedPnl()
 
