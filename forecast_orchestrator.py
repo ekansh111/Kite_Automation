@@ -253,6 +253,12 @@ class ForecastOrchestrator:
                     BrokerQty += Qty
                     break
 
+        # Convert raw broker units to lots for NCDEX instruments
+        Config = self.Instruments.get(Instrument, {})
+        Multiplier = Config.get("order_routing", {}).get("QuantityMultiplier", 1)
+        if Multiplier and Multiplier != 1:
+            BrokerQty = BrokerQty // Multiplier
+
         return BrokerQty
 
     def _SyncInstrumentWithBroker(self, Instrument, Config):
