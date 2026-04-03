@@ -1351,9 +1351,11 @@ class TestExecuteRolloverDryRun(unittest.TestCase):
         instruments = _make_nifty_instruments([exp_apr, exp_may], strikes=[22350])
         _focn.GetInstrumentsCached.return_value = instruments
 
-        mock_kite.quote = MagicMock(return_value={
-            k: _make_quote(bid=1148, ask=1152) for k in ["NFO:NIFTY29MAY2522350CE"]
-        })
+        # Return quotes for both April and May contracts (first-run uses current month)
+        all_quotes = {}
+        for prefix in ["NFO:NIFTY24APR2522350CE", "NFO:NIFTY29MAY2522350CE"]:
+            all_quotes[prefix] = _make_quote(bid=1148, ask=1152)
+        mock_kite.quote = MagicMock(return_value=all_quotes)
 
         state = rollover.LoadState()
         rollover.ExecuteRollover(mock_kite, "NIFTY", state, DryRun=True, FirstRun=True)
@@ -1406,10 +1408,12 @@ class TestExecuteRolloverLive(unittest.TestCase):
         instruments = _make_nifty_instruments([exp_apr, exp_may],
                                               strikes=[22300, 22350, 22400])
         _focn.GetInstrumentsCached.return_value = instruments
-        mock_kite.quote = MagicMock(return_value={
-            k: _make_quote(bid=1148, ask=1152) for k in
-            [f"NFO:NIFTY29MAY25{s}CE" for s in [22300, 22350, 22400]]
-        })
+        # Return quotes for both April and May contracts
+        all_quotes = {}
+        for s in [22300, 22350, 22400]:
+            all_quotes[f"NFO:NIFTY24APR25{s}CE"] = _make_quote(bid=1148, ask=1152)
+            all_quotes[f"NFO:NIFTY29MAY25{s}CE"] = _make_quote(bid=1148, ask=1152)
+        mock_kite.quote = MagicMock(return_value=all_quotes)
         return mock_kite
 
     @patch("itm_call_rollover.GetBestMarketPremium")
