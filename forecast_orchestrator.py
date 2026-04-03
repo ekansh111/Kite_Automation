@@ -58,8 +58,8 @@ def _GetCumulativeRealizedPnlFromJson():
     try:
         with open(REALIZED_PNL_PATH, "r") as f:
             Data = json.load(f)
-        Realized = float(Data.get("cumulative_realized_pnl", 0.0))
-        Unrealized = float(Data.get("eod_unrealized", 0.0))
+        Realized = float(Data.get("cumulative_realized_pnl") or 0.0)
+        Unrealized = float(Data.get("eod_unrealized") or 0.0)
         Logger.info("Capital from JSON: realized=%.0f unrealized=%.0f (updated %s)",
                      Realized, Unrealized, Data.get("last_updated", "?"))
         return Realized, Unrealized
