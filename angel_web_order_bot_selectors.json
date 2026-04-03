@@ -9,6 +9,16 @@
       "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'watchlist')]"
     }
   ],
+  "post_login_got_it_button": [
+    {
+      "by": "xpath",
+      "value": "//*[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'risk disclosures on derivatives')]/ancestor::*[self::div or self::section or @role='dialog'][1]//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'got it')]"
+    },
+    {
+      "by": "xpath",
+      "value": "//*[self::button or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'got it')]"
+    }
+  ],
   "search_input": [
     {
       "by": "xpath",
