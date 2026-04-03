@@ -1029,6 +1029,13 @@ def ExecuteRollover(InstName, InstConfig, ExpiryInfo, Position, DryRun=False):
         # Position hasn't changed, just the contract — keep same quantities
         db.UpdateSystemPosition(InstName, CurrentTarget, CurrentConfirmed)
         Logger.info("%s: system_positions unchanged (qty stays at %d)", InstName, CurrentConfirmed)
+        # Set cost basis from leg2 fill price (new contract, fresh cost basis)
+        Leg2Price = Leg2FillInfo.get("fill_price", 0) if Leg2FillInfo else 0
+        if Leg2Price > 0 and CurrentConfirmed != 0:
+            PointValue = InstConfig.get("point_value", 1)
+            db.UpdateCostBasis(InstName, Leg2Price, abs(CurrentConfirmed), PointValue,
+                               OldQty=0)
+            Logger.info("%s: Rollover cost basis set to leg2 fill=%.2f", InstName, Leg2Price)
     except Exception as e:
         Logger.warning("%s: Could not update system_positions: %s", InstName, e)
 

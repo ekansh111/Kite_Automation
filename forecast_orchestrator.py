@@ -657,6 +657,25 @@ class ForecastOrchestrator:
 
         # Step 10: Avoid resubmitting while a prior browser/LIMIT order is unresolved.
         if PendingTarget != Current:
+            # Force-resolve stale pending states (>30 min) to prevent deadlock
+            PosUpdatedAt = Pos.get("updated_at")
+            if PosUpdatedAt:
+                try:
+                    PendingSince = datetime.fromisoformat(PosUpdatedAt)
+                    StaleMins = (datetime.utcnow() - PendingSince).total_seconds() / 60
+                except (ValueError, TypeError):
+                    StaleMins = 0
+                if StaleMins > 30:
+                    Logger.warning(
+                        "%s: Pending target=%d stale for %.0f min (confirmed=%d); "
+                        "force-resolving to allow new target=%d",
+                        Instrument, PendingTarget, StaleMins, Current, Target
+                    )
+                    db.UpdateSystemPosition(Instrument, Current, Current)
+                    PendingTarget = Current
+                    # Fall through to normal execution below
+
+        if PendingTarget != Current:
             if Target == PendingTarget:
                 Logger.info(
                     "%s: Existing pending target=%d with confirmed=%d; skipping duplicate execution",
@@ -825,7 +844,7 @@ class ForecastOrchestrator:
 
                 if Success:
                     # P&L tracking BEFORE position update (needs old confirmed_qty for direction)
-                    FillPrice = FillInfo.get("fill_price", 0)
+                    FillPrice = FillInfo.get("fill_price") or 0
                     PointValue = Config.get("point_value", 1)
                     if FillPrice > 0:
                         IsFlip = Current != 0 and Target != 0 and (Current > 0) != (Target > 0)
@@ -837,6 +856,9 @@ class ForecastOrchestrator:
                             db.UpdateCostBasis(Instrument, FillPrice, abs(Delta), PointValue)
                         else:
                             db.RealizePnl(Instrument, FillPrice, abs(Delta), PointValue, "futures")
+                    else:
+                        Logger.warning("%s: SmartChase succeeded but fill_price=%s — cost basis NOT recorded",
+                                       Instrument, FillInfo.get("fill_price"))
 
                     db.UpdateConfirmedQty(Instrument, Target)
                     db.UpdateSystemPosition(Instrument, Target, Target)
@@ -899,6 +921,16 @@ class ForecastOrchestrator:
                     "%s: Angel browser LIMIT order submitted (id=%s); awaiting broker fill confirmation",
                     Instrument, BrokerOrderId
                 )
+                # Approximate cost basis from limit price (exact fill price unknown until reconciliation)
+                IsEntry = abs(Target) > abs(Current)
+                if IsEntry:
+                    LimitPrice = OrderDict.get("price") or OrderDict.get("Price") or 0
+                    if LimitPrice > 0:
+                        PointValue = Config.get("point_value", 1)
+                        db.UpdateCostBasis(Instrument, LimitPrice, abs(Delta), PointValue,
+                                           OldQty=abs(Current))
+                        Logger.info("%s: Angel web LIMIT — approximate cost basis from limit_price=%.2f",
+                                    Instrument, LimitPrice)
                 return
 
             # Success: update confirmed_qty to target
@@ -910,13 +942,12 @@ class ForecastOrchestrator:
             Logger.info("%s: Order placed successfully (id=%s), confirmed_qty → %d",
                         Instrument, Result, Target)
 
-            # P&L tracking for legacy orders — fetch fill price after brief wait
+            # P&L tracking for legacy orders — fetch fill price with retries
             # Current/Target captured before position update, safe to use for direction
             PointValue = Config.get("point_value", 1)
             IsEntry = abs(Target) > abs(Current)
             WasLong = Current > 0
             try:
-                time.sleep(3)
                 if Broker == "ZERODHA":
                     LegacySession = KiteHandler.EstablishConnectionKiteAPI(OrderDict)
                 elif Broker == "ANGEL":
@@ -924,24 +955,33 @@ class ForecastOrchestrator:
                 else:
                     LegacySession = None
 
+                Status, AvgPrice = None, 0
                 if LegacySession and Result:
-                    Status, FilledQty, _, AvgPrice = _CheckOrderStatus(LegacySession, str(Result), Broker)
-                    if Status == "COMPLETE" and AvgPrice > 0:
-                        IsFlip = Current != 0 and Target != 0 and (Current > 0) != (Target > 0)
-                        if IsFlip:
-                            db.RealizePnl(Instrument, AvgPrice, abs(Current), PointValue, "futures", WasLong=WasLong)
-                            db.ResetCostBasis(Instrument)
-                            db.UpdateCostBasis(Instrument, AvgPrice, abs(Target), PointValue)
-                        elif IsEntry:
-                            db.UpdateCostBasis(Instrument, AvgPrice, abs(Delta), PointValue,
-                                               OldQty=abs(Current))
-                        else:
-                            db.RealizePnl(Instrument, AvgPrice, abs(Delta), PointValue, "futures", WasLong=WasLong)
+                    for Attempt in range(1, 4):
+                        time.sleep(3)
+                        Status, FilledQty, _, AvgPrice = _CheckOrderStatus(LegacySession, str(Result), Broker)
+                        if Status == "COMPLETE" and AvgPrice > 0:
+                            break
+                        Logger.info("%s: Legacy fill check attempt %d/3: status=%s avg_price=%s",
+                                    Instrument, Attempt, Status, AvgPrice)
+
+                if Status == "COMPLETE" and AvgPrice > 0:
+                    IsFlip = Current != 0 and Target != 0 and (Current > 0) != (Target > 0)
+                    if IsFlip:
+                        db.RealizePnl(Instrument, AvgPrice, abs(Current), PointValue, "futures", WasLong=WasLong)
+                        db.ResetCostBasis(Instrument)
+                        db.UpdateCostBasis(Instrument, AvgPrice, abs(Target), PointValue)
+                    elif IsEntry:
+                        db.UpdateCostBasis(Instrument, AvgPrice, abs(Delta), PointValue,
+                                           OldQty=abs(Current))
                     else:
-                        Logger.warning("%s: Legacy order status=%s avg_price=%.2f, skipping P&L",
-                                       Instrument, Status, AvgPrice)
+                        db.RealizePnl(Instrument, AvgPrice, abs(Delta), PointValue, "futures", WasLong=WasLong)
+                else:
+                    Logger.error("%s: Legacy order fill price NOT confirmed after 3 attempts "
+                                 "(status=%s, avg_price=%s) — cost basis NOT recorded",
+                                 Instrument, Status, AvgPrice)
             except Exception as PnlErr:
-                Logger.warning("%s: Failed to track P&L for legacy order: %s", Instrument, PnlErr)
+                Logger.error("%s: Failed to track P&L for legacy order: %s", Instrument, PnlErr)
 
         except Exception as e:
             # Failure: confirmed_qty stays at current value (will retry on next signal)
@@ -1109,6 +1149,12 @@ class ForecastOrchestrator:
                     Logger.info(
                         "%s: Broker position reached target during reconciliation; confirmed_qty synced to %d",
                         InstName, BrokerQty
+                    )
+                    Logger.error(
+                        "%s: ALERT — pending mismatch resolved by reconciliation "
+                        "(target=%d, was confirmed=%d, now=%d). "
+                        "Signals received while pending were BLOCKED and may need manual review.",
+                        InstName, TargetQty, SystemQty, BrokerQty
                     )
 
         if Mismatches:

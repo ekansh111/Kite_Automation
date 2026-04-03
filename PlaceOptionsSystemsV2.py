@@ -2767,6 +2767,9 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
                 UpdateCostBasis(f"{underlying}_OPT_CE", ceFillPrice, totalQuantity, 1.0)
         else:
             ceOrderId = order(ceOrderDetails)
+            # Approximate cost basis from pre-order LTP (exact fill unknown for legacy path)
+            if callPremium > 0:
+                UpdateCostBasis(f"{underlying}_OPT_CE", callPremium, totalQuantity, 1.0)
         contracts.append(ceSymbol)
         print(f"[ENTRY] {strategyName}: CE {ceSymbol} placed, orderId={ceOrderId}"
               f"{' (smart chase)' if useSmartChase else ''}")
@@ -2798,6 +2801,9 @@ def executeEntry(strategyName, config, state, kite, dte, expiryDate, dryRun=Fals
                 UpdateCostBasis(f"{underlying}_OPT_PE", peFillPrice, totalQuantity, 1.0)
         else:
             peOrderId = order(peOrderDetails)
+            # Approximate cost basis from pre-order LTP (exact fill unknown for legacy path)
+            if putPremium > 0:
+                UpdateCostBasis(f"{underlying}_OPT_PE", putPremium, totalQuantity, 1.0)
         contracts.append(peSymbol)
         print(f"[ENTRY] {strategyName}: PE {peSymbol} placed, orderId={peOrderId}"
               f"{' (smart chase)' if useSmartChase else ''}")
