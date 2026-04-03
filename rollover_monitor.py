@@ -776,14 +776,29 @@ def SendDailySummaryEmail(Results, UpcomingRollovers):
         })
 
     if UpcomingRollovers:
+        Sorted = sorted(UpcomingRollovers, key=lambda u: u["days_left"])
         Rows = []
-        for U in UpcomingRollovers:
+        for U in Sorted:
+            DaysLeft = U["days_left"]
+            AlertDays = U.get("alert_days", 4)
+            if DaysLeft <= AlertDays:
+                Color = "#ff1744"
+            elif DaysLeft <= AlertDays + 3:
+                Color = "#ff9100"
+            else:
+                Color = None
             Rows.append((
                 U["instrument"],
-                f"Expires {U['expiry']} — {U['days_left']} trading days left",
-                "#ff9100" if U["days_left"] <= 3 else None,
+                f"Expires {U['expiry']} — {DaysLeft} trading days left",
+                Color,
             ))
-        Cards.append({"title": "Upcoming Rollovers (next 7 days)", "icon": "\U0001f4c5", "rows": Rows})
+        Cards.append({"title": "All Position Expiry Status", "icon": "\U0001f4c5", "rows": Rows})
+    else:
+        Cards.append({
+            "title": "All Position Expiry Status",
+            "icon": "\U0001f4c5",
+            "rows": [("Status", "No open positions found")],
+        })
 
     Subject = f"\U0001f4ca [Rollover Summary] {date.today().strftime('%Y-%m-%d')} — {len(Results)} rollover(s)"
     Html = _BuildEmailHtml(
@@ -1272,15 +1287,15 @@ def main():
 
         TradingDaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"])
 
-        # Track upcoming rollovers for summary
+        # Track all positions for daily summary
         RollCfg = InstCfg.get("rollover", {})
         AlertDays = RollCfg.get("alert_days_before_expiry", 4)
-        if TradingDaysLeft <= AlertDays + 3:
-            UpcomingRollovers.append({
-                "instrument": InstName,
-                "expiry": ExpiryInfo["current_expiry"].strftime("%Y-%m-%d"),
-                "days_left": TradingDaysLeft,
-            })
+        UpcomingRollovers.append({
+            "instrument": InstName,
+            "expiry": ExpiryInfo["current_expiry"].strftime("%Y-%m-%d"),
+            "days_left": TradingDaysLeft,
+            "alert_days": AlertDays,
+        })
 
         # Check for recovery from incomplete rollover
         ExpiryStr = ExpiryInfo["current_expiry"].strftime("%Y-%m-%d")
@@ -1330,9 +1345,8 @@ def main():
                 "success": Success,
             })
 
-    # Send daily summary
-    if Results or UpcomingRollovers:
-        SendDailySummaryEmail(Results, UpcomingRollovers)
+    # Send daily summary (always, even when no rollovers are due)
+    SendDailySummaryEmail(Results, UpcomingRollovers)
 
     Logger.info("Rollover Monitor finished. %d rollovers executed.", len(Results))
 
