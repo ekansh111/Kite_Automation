@@ -117,6 +117,12 @@ if __name__ == '__main__':
     except TimeoutOccurred:
         Override = False
 
+    # Skip on holidays and weekends
+    if date.today().weekday() >= 5 or CheckForDateHoliday(date.today()):
+        dayType = "weekend" if date.today().weekday() >= 5 else f"holiday ({date.today()})"
+        print(f"[FNO] {dayType} — skipping order placement")
+        exit(0)
+
     print('Waiting to hit the entry time')
     while one_shot_flag == True:
         PrevWkDy = dt.now().weekday() - 1

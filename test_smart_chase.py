@@ -22,11 +22,14 @@ import sqlite3
 import unittest
 from tempfile import TemporaryDirectory
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 # ── Make project root importable ──────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
 _MISSING = object()
+
+# A known trading day used to bypass the holiday guard in tests
+_TRADING_DAY = date(2026, 4, 6)  # Monday
 
 
 def _snapshot_modules(names):
@@ -468,6 +471,13 @@ class TestSpreadGate(unittest.TestCase):
 
 class TestSmartChaseExecute(unittest.TestCase):
     """End-to-end tests with mocked broker calls."""
+
+    def setUp(self):
+        patcher = patch("smart_chase.date")
+        self._mock_date = patcher.start()
+        self._mock_date.today.return_value = _TRADING_DAY
+        self._mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        self.addCleanup(patcher.stop)
 
     def _mock_session(self, quote_data, ohlc_data, order_id="ORD123",
                       order_statuses=None):
@@ -2287,6 +2297,13 @@ class TestHandleWebhook(unittest.TestCase):
 class TestFillInfoCompleteness(unittest.TestCase):
     """Verify FillInfo dict has all expected keys after execution."""
 
+    def setUp(self):
+        patcher = patch("smart_chase.date")
+        self._mock_date = patcher.start()
+        self._mock_date.today.return_value = _TRADING_DAY
+        self._mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        self.addCleanup(patcher.stop)
+
     @patch("smart_chase._SendOrderEmail")
     @patch("smart_chase._PlaceLimitOrder", return_value="ORD_FI")
     @patch("smart_chase._WaitForMarketOpen")
@@ -2342,6 +2359,13 @@ class TestFillInfoCompleteness(unittest.TestCase):
 
 class TestSlippageCalculation(unittest.TestCase):
 
+    def setUp(self):
+        patcher = patch("smart_chase.date")
+        self._mock_date = patcher.start()
+        self._mock_date.today.return_value = _TRADING_DAY
+        self._mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        self.addCleanup(patcher.stop)
+
     @patch("smart_chase._SendOrderEmail")
     @patch("smart_chase._PlaceLimitOrder", return_value="ORD_SL")
     @patch("smart_chase._WaitForMarketOpen")
@@ -2386,6 +2410,13 @@ class TestSlippageCalculation(unittest.TestCase):
 
 class TestExecutionModeOverride(unittest.TestCase):
     """Verify that execution_mode_override in config bypasses volatility assessment."""
+
+    def setUp(self):
+        patcher = patch("smart_chase.date")
+        self._mock_date = patcher.start()
+        self._mock_date.today.return_value = _TRADING_DAY
+        self._mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        self.addCleanup(patcher.stop)
 
     @patch("smart_chase._SendOrderEmail")
     @patch("smart_chase.time.sleep")
@@ -2645,6 +2676,13 @@ class TestAssessMomentum(unittest.TestCase):
 class TestMomentumOverride(unittest.TestCase):
     """Tests for momentum override integration in SmartChaseExecute."""
 
+    def setUp(self):
+        patcher = patch("smart_chase.date")
+        self._mock_date = patcher.start()
+        self._mock_date.today.return_value = _TRADING_DAY
+        self._mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        self.addCleanup(patcher.stop)
+
     @patch("smart_chase._SendOrderEmail")
     @patch("smart_chase._CheckOrderStatus", return_value=("COMPLETE", 1, 0, 100.0))
     @patch("smart_chase._PlaceLimitOrder", return_value="ORD123")
@@ -2836,6 +2874,53 @@ class TestMomentumOverride(unittest.TestCase):
         success, oid, info = SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
         self.assertEqual(info["execution_mode"], "C")
         self.assertFalse(info["momentum_override"])
+
+
+# ══════════════════════════════════════════════════════════════════
+# Holiday / Weekend Guard
+# ══════════════════════════════════════════════════════════════════
+
+class TestHolidayGuard(unittest.TestCase):
+    """SmartChaseExecute must refuse to run on holidays and weekends."""
+
+    def _run(self, fake_date):
+        """Helper: call SmartChaseExecute with date.today() mocked."""
+        with patch("smart_chase.date") as mock_date:
+            mock_date.today.return_value = fake_date
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            cfg = _make_config()
+            od = _make_order_details()
+            return SmartChaseExecute(MagicMock(), od, cfg, True, "ZERODHA", 500)
+
+    def test_rejects_on_good_friday_2026(self):
+        from datetime import date
+        success, oid, info = self._run(date(2026, 4, 3))  # Good Friday
+        self.assertFalse(success)
+        self.assertIsNone(oid)
+
+    def test_rejects_on_saturday(self):
+        from datetime import date
+        success, oid, info = self._run(date(2026, 4, 4))  # Saturday
+        self.assertFalse(success)
+        self.assertIsNone(oid)
+
+    def test_rejects_on_sunday(self):
+        from datetime import date
+        success, oid, info = self._run(date(2026, 4, 5))  # Sunday
+        self.assertFalse(success)
+        self.assertIsNone(oid)
+
+    @patch("smart_chase._WaitForMarketOpen")
+    @patch("smart_chase._FetchQuote")
+    def test_allows_on_normal_trading_day(self, mock_quote, mock_market):
+        """On a normal trading day, the guard should NOT block — execution proceeds past it."""
+        from datetime import date
+        # Return None from _FetchQuote so it exits early at Step 0b (quote fail),
+        # but crucially it gets PAST the holiday guard.
+        mock_quote.return_value = None
+        success, oid, info = self._run(date(2026, 4, 6))  # Monday
+        # _FetchQuote was called => holiday guard did NOT block
+        mock_quote.assert_called_once()
 
 
 if __name__ == "__main__":

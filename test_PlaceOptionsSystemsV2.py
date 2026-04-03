@@ -1997,6 +1997,42 @@ class TestIntradayMoveAddon:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Holiday / Weekend Guard in runV2()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRunV2HolidayGuard:
+    """runV2() must skip entry/exit processing on holidays and weekends."""
+
+    @patch.object(V2, "GetKiteClient")
+    @patch.object(V2, "loadState", return_value={"NIFTY": {}, "SENSEX": {}})
+    @patch.object(V2, "reconcilePositions")
+    @patch.object(V2, "getNextExpiryAndDte")
+    def test_skips_on_good_friday(self, mock_expiry, mock_recon, mock_state, mock_kite, capsys):
+        from datetime import date
+        with patch("PlaceOptionsSystemsV2.date") as mock_date:
+            mock_date.today.return_value = date(2026, 4, 3)
+            mock_date.fromisoformat = date.fromisoformat
+            V2.runV2()
+        captured = capsys.readouterr()
+        assert "holiday" in captured.out.lower() or "skipping" in captured.out.lower()
+        mock_expiry.assert_not_called()  # Should never reach underlying processing
+
+    @patch.object(V2, "GetKiteClient")
+    @patch.object(V2, "loadState", return_value={"NIFTY": {}, "SENSEX": {}})
+    @patch.object(V2, "reconcilePositions")
+    @patch.object(V2, "getNextExpiryAndDte")
+    def test_skips_on_weekend(self, mock_expiry, mock_recon, mock_state, mock_kite, capsys):
+        from datetime import date
+        with patch("PlaceOptionsSystemsV2.date") as mock_date:
+            mock_date.today.return_value = date(2026, 4, 4)  # Saturday
+            mock_date.fromisoformat = date.fromisoformat
+            V2.runV2()
+        captured = capsys.readouterr()
+        assert "weekend" in captured.out.lower() or "skipping" in captured.out.lower()
+        mock_expiry.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
