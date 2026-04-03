@@ -405,10 +405,24 @@ def _FetchDailyRealizedPnl():
     # Kite YD6016 — MCX futures
     try:
         Kite = _EstablishKiteSession("YD6016")
-        Total = sum(float(P.get("realised", 0))
-                    for P in Kite.positions().get("net", [])
-                    if P.get("product") == "NRML"
-                    and not _IsIndexOption(P.get("tradingsymbol", "")))
+        AllPositions = Kite.positions().get("net", [])
+        Total = 0.0
+        for P in AllPositions:
+            if P.get("product") != "NRML" or _IsIndexOption(P.get("tradingsymbol", "")):
+                continue
+            Realised = float(P.get("realised", 0))
+            M2m = float(P.get("m2m", 0))
+            Pnl = float(P.get("pnl", 0))
+            Qty = P.get("quantity", 0)
+            Symbol = P.get("tradingsymbol", "")
+            Logger.debug("  Kite YD6016 %s: qty=%s realised=%.2f m2m=%.2f pnl=%.2f",
+                         Symbol, Qty, Realised, M2m, Pnl)
+            # For closed positions (qty=0), use m2m if realised is 0
+            if Qty == 0 and Realised == 0 and M2m != 0:
+                Logger.info("  Kite YD6016 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
+                Total += M2m
+            else:
+                Total += Realised
         Result["YD6016"] = round(Total, 2)
         Logger.info("Kite YD6016 realized today: %.2f", Total)
     except Exception as e:
@@ -434,9 +448,21 @@ def _FetchDailyRealizedPnl():
     # Kite OFS653 — Options
     try:
         Kite = _EstablishKiteSession("OFS653")
-        Total = sum(float(P.get("realised", 0))
-                    for P in Kite.positions().get("net", [])
-                    if P.get("product") == "NRML")
+        AllPositions = Kite.positions().get("net", [])
+        Total = 0.0
+        for P in AllPositions:
+            if P.get("product") != "NRML":
+                continue
+            Realised = float(P.get("realised", 0))
+            M2m = float(P.get("m2m", 0))
+            Qty = P.get("quantity", 0)
+            Symbol = P.get("tradingsymbol", "")
+            Logger.debug("  Kite OFS653 %s: qty=%s realised=%.2f m2m=%.2f", Symbol, Qty, Realised, M2m)
+            if Qty == 0 and Realised == 0 and M2m != 0:
+                Logger.info("  Kite OFS653 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
+                Total += M2m
+            else:
+                Total += Realised
         Result["OFS653"] = round(Total, 2)
         Logger.info("Kite OFS653 realized today: %.2f", Total)
     except Exception as e:
