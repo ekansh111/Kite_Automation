@@ -167,10 +167,11 @@ class ForecastOrchestratorNcDexTests(unittest.TestCase):
         orch._SendReconAlert = MagicMock()
         self.db.UpdateSystemPosition("TURMERIC", 5, 0)
 
+        # Broker returns 25 raw units = 5 lots (QuantityMultiplier=5)
         with patch.object(
             orch,
             "_FetchBrokerPositions",
-            return_value={"TMCFGRNZM20APR2026": 5},
+            return_value={"TMCFGRNZM20APR2026": 25},
         ):
             orch._RunReconciliation()
 
