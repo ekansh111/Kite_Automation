@@ -144,6 +144,32 @@ def _EstablishAngelSession(User):
     return SmartApi
 
 
+def _GetContractLookupName(InstName, InstConfig):
+    """Return the broker-facing root symbol used to identify the instrument."""
+    Routing = InstConfig.get("order_routing", {})
+    return str(Routing.get("ContractLookupName") or InstName)
+
+
+def _GetReconciliationPrefixes(InstName, InstConfig):
+    """Return broker symbol prefixes that identify this instrument's live positions."""
+    Routing = InstConfig.get("order_routing", {})
+    Prefixes = Routing.get("ReconciliationPrefixes")
+
+    if Prefixes is None:
+        Prefixes = [_GetContractLookupName(InstName, InstConfig), InstName]
+    elif isinstance(Prefixes, str):
+        Prefixes = [Prefixes]
+
+    Normalized = []
+    Seen = set()
+    for Prefix in Prefixes:
+        PrefixText = str(Prefix).strip().upper()
+        if PrefixText and PrefixText not in Seen:
+            Seen.add(PrefixText)
+            Normalized.append(PrefixText)
+    return Normalized
+
+
 INDEX_NAMES = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY", "BANKEX"}
 
 
@@ -165,10 +191,16 @@ def ScanAllPositions(InstrumentConfig):
 
     Returns list of dicts with unified schema.
     """
-    # Hardcoded active accounts — do NOT derive from config
-    # OFS653 (Eshita) + YD6016 (Rashmi) on Zerodha, AABM826021 (Eshita) on Angel
-    ZerodhaUsers = {"OFS653", "YD6016"}
-    AngelUsers = {"AABM826021"}
+    ZerodhaUsers = {
+        Cfg["user"]
+        for Cfg in InstrumentConfig.values()
+        if Cfg.get("enabled", True) and Cfg.get("broker") == "ZERODHA"
+    }
+    AngelUsers = {
+        Cfg["user"]
+        for Cfg in InstrumentConfig.values()
+        if Cfg.get("enabled", True) and Cfg.get("broker") == "ANGEL"
+    }
 
     Positions = []
 
@@ -251,7 +283,7 @@ def MatchPositionToInstrument(Position, InstrumentConfig):
             if not Match.empty:
                 Name = Match.iloc[0]["name"]
                 for InstName, Cfg in InstrumentConfig.items():
-                    if InstName == Name and Cfg.get("exchange") == Exchange:
+                    if _GetContractLookupName(InstName, Cfg) == Name and Cfg.get("exchange") == Exchange:
                         return InstName, Cfg
         except Exception as e:
             Logger.error("Error matching Zerodha position %s: %s", TradingSymbol, e)
@@ -266,14 +298,15 @@ def MatchPositionToInstrument(Position, InstrumentConfig):
             if not Match.empty:
                 Name = Match.iloc[0]["name"]
                 for InstName, Cfg in InstrumentConfig.items():
-                    if InstName == Name and Cfg.get("exchange") == Exchange:
+                    if _GetContractLookupName(InstName, Cfg) == Name and Cfg.get("exchange") == Exchange:
                         return InstName, Cfg
         except Exception as e:
             Logger.error("Error matching Angel position %s: %s", TradingSymbol, e)
 
     # Fallback: try direct match on instrument name prefix
     for InstName, Cfg in InstrumentConfig.items():
-        if TradingSymbol.upper().startswith(InstName.upper()):
+        Prefixes = _GetReconciliationPrefixes(InstName, Cfg)
+        if any(TradingSymbol.upper().startswith(Prefix) for Prefix in Prefixes):
             if Cfg.get("exchange") == Exchange:
                 return InstName, Cfg
 
@@ -291,6 +324,7 @@ def ResolveExpiryInfo(InstName, InstConfig, Position):
     Exchange = InstConfig["exchange"]
     Broker = Position["broker"]
     Today = datetime.now()
+    LookupName = _GetContractLookupName(InstName, InstConfig)
 
     HeldSymbol = Position.get("tradingsymbol", "")
 
@@ -314,7 +348,7 @@ def ResolveExpiryInfo(InstName, InstConfig, Position):
 
             # Find next month contract (expiry strictly after held contract's expiry)
             FutContracts = Df[
-                (Df["name"] == InstName) &
+                (Df["name"] == LookupName) &
                 (Df["exch_seg"] == Exchange) &
                 (Df["instrumenttype"] == "FUT") &
                 (Df["expiry"] > HeldExpiry)
@@ -354,7 +388,7 @@ def ResolveExpiryInfo(InstName, InstConfig, Position):
 
             # Find next month contract (expiry strictly after held contract's expiry)
             FutContracts = Df[
-                (Df["name"] == InstName) &
+                (Df["name"] == LookupName) &
                 (Df["exch_seg"] == Exchange) &
                 (Df["instrumenttype"].isin(["FUTCOM", "FUTIDX"])) &
                 (Df["expiry"] > HeldExpiry)
@@ -412,6 +446,15 @@ def EvaluateRolloverNeed(InstName, InstConfig, ExpiryInfo, Position):
             return "RECOVER_LEG2"
         if Row["status"] == "ABORTED":
             continue  # Ignore aborted attempts
+
+    if InstConfig.get("broker") == "ANGEL" and InstConfig.get("exchange") == "NCDEX":
+        if TradingDaysLeft <= AlertDays:
+            Logger.info(
+                "%s: Angel NCDEX rollover remains alert-only for now; skipping auto-execution",
+                InstName
+            )
+            return "ALERT_ONLY"
+        return "NO_ACTION"
 
     if TradingDaysLeft <= ExecuteDays:
         return "EXECUTE_NOW"
