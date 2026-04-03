@@ -1309,14 +1309,19 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
 
     Logger.info("%s Current monthly expiry=%s, next=%s", Tag, CurrentExpiry, NextExpiry)
 
-    # ── Step 4: Select ITM strike for next month ─────────────────
+    # ── Step 4: Select ITM strike ────────────────────────────────
+    # First run buys current month (liquid); normal rollover buys next month
+    TargetExpiry = CurrentExpiry if FirstRun else NextExpiry
+    Logger.info("%s Target expiry for entry: %s (%s)",
+                Tag, TargetExpiry, "first-run → current month" if FirstRun else "rollover → next month")
+
     Candidates = ComputeITMCallCandidates(Spot, IdxCfg["strike_step"],
                                            IdxCfg["itm_pct_min"], IdxCfg["itm_pct_max"])
     Logger.info("%s ITM candidates: %s", Tag, Candidates)
 
     Strike, Symbol, LotSize, Premium, SelectionMeta = SelectBestITMStrike(
         Kite, Instruments, IndexName, IdxCfg["exchange"], OptSegment,
-        NextExpiry, Candidates, Spot=Spot
+        TargetExpiry, Candidates, Spot=Spot
     )
     Result["strike"] = Strike
     Result["lot_size"] = LotSize
@@ -1328,7 +1333,7 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
     Result["next_expiry"] = str(NextExpiry)
 
     # ── Step 5: Position sizing ──────────────────────────────────
-    DTE = CountTradingDaysUntilExpiry(NextExpiry)
+    DTE = CountTradingDaysUntilExpiry(TargetExpiry)
     KValue = lookupK(DTE, K_TABLE_SINGLE)
     Result["dte"] = DTE
     Result["k_value"] = KValue
@@ -1472,7 +1477,7 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
     Result["leg2"] = {
         "contract": Symbol, "quantity": Quantity, "lots": FinalLots,
         "premium": Premium, "fill_price": Leg2FillPrice, "slippage": Leg2Slippage,
-        "expiry": str(NextExpiry),
+        "expiry": str(TargetExpiry),
     }
     Result["roll_spread"] = RollSpread
     Result["success"] = True
@@ -1481,7 +1486,7 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
     State[IndexName] = {
         "status": "HOLDING",
         "current_contract": Symbol,
-        "current_expiry": str(NextExpiry),
+        "current_expiry": str(TargetExpiry),
         "lots": FinalLots,
         "quantity": Quantity,
         "entry_price": Leg2FillPrice,
