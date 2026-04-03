@@ -282,9 +282,18 @@ def SelectBestITMStrike(Kite, Instruments, IndexName, Exchange, OptSegment,
                 Mid = (Bid + Ask) / 2
                 SpreadPct = (Ask - Bid) / Mid * 100 if Mid > 0 else 999
             else:
-                SpreadPct = 999
+                # No order book depth — use LTP if available (post-hours / thin book)
+                Ltp = float(Q.get("last_price", 0))
+                if Ltp > 0:
+                    Mid = Ltp
+                    SpreadPct = -1  # signal: no live depth, using LTP
+                    Premium = Ltp   # override premium to LTP
+                    Logger.warning("[%s] Strike %d: no order book depth, using LTP %.2f",
+                                   IndexName, Strike, Ltp)
+                else:
+                    SpreadPct = 999
 
-            # Filter: skip if spread is too wide
+            # Filter: skip if spread is too wide (SpreadPct=-1 means LTP fallback, allow through)
             if SpreadPct > MAX_SPREAD_PCT:
                 Logger.warning("[%s] Strike %d skipped: spread %.1f%% > %.1f%% limit",
                                IndexName, Strike, SpreadPct, MAX_SPREAD_PCT)
