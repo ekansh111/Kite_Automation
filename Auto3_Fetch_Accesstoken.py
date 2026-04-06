@@ -116,19 +116,27 @@ class ZerodhaLogin:
 
         # 4. Enter TOTP
         totp_element = WebDriverWait(self.driver, 10).until(
-            lambda x: x.find_element(by=By.ID, value='userid')
+            lambda x: x.find_element(by=By.XPATH, value='//label[contains(text(),"TOTP")]/following-sibling::input[1]')
         )
         authkey = pyotp.TOTP(self.totp_key)
         totp_element.send_keys(authkey.now())
 
-        # Give some buffer time for login processing and redirect
-        time.sleep(10)
+        # 5. Click submit button if present (Zerodha may require explicit submit)
+        try:
+            submit_btn = WebDriverWait(self.driver, 5).until(
+                lambda x: x.find_element(by=By.XPATH, value='//button[@type="submit"]')
+            )
+            submit_btn.click()
+        except Exception:
+            pass  # auto-submit may have already triggered
 
-        # 5. Extract the request_token from the current URL
+        # 6. Wait for redirect with request_token in URL
+        WebDriverWait(self.driver, 20).until(
+            lambda x: 'request_token=' in x.current_url
+        )
+
+        # 7. Extract the request_token from the current URL
         current_url = self.driver.current_url
-        if 'request_token=' not in current_url:
-            raise Exception(f"Could not find 'request_token' in URL. Current URL: {current_url}")
-
         initial_token = current_url.split('request_token=')[1]
         request_token = initial_token.split('&')[0]
         print("Request token -->", request_token)

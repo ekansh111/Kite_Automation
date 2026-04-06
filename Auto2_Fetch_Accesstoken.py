@@ -73,17 +73,26 @@ def login_in_zerodha(api_key, api_secret, user_id, user_pwd, totp_key):
         time.sleep(2)
         
         #Field to be updated was changed in front end on 5-9-2023
-        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by = By.ID,value='userid'))
-        #time.sleep(100)
+        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element(by=By.XPATH, value='//label[contains(text(),"TOTP")]/following-sibling::input[1]'))
         authkey = pyotp.TOTP(totp_key)
         totp.send_keys(authkey.now())
-        #print(totp)
-        
-        time.sleep(10)
+
+        # Click submit button if present (Zerodha may require explicit submit)
+        try:
+            submit_btn = WebDriverWait(driver, 5).until(
+                lambda x: x.find_element(by=By.XPATH, value='//button[@type="submit"]')
+            )
+            submit_btn.click()
+        except Exception:
+            pass  # auto-submit may have already triggered
+
+        # Wait for redirect with request_token in URL
+        WebDriverWait(driver, 20).until(
+            lambda x: 'request_token=' in x.current_url
+        )
 
         #To split the Request Token from the returned link in which it is embedded
         url = driver.current_url
-        #print(url)
         initial_token = url.split('request_token=')[1]
         #print(initial_token)
         request_token = initial_token.split('&')[0]
