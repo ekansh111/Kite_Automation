@@ -1688,18 +1688,39 @@ class AngelWebOrderBot:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
 
+        target_tab_text = str(watchlist_index).strip()
         local_deadline = time.time() + self._remaining_timeout(
             deadline,
             fallback_seconds=self.timeout_seconds,
             flow_name=f"Watchlist selection for tab {watchlist_index}",
         )
         while time.time() < local_deadline:
-            for button in self.driver.find_elements(By.CSS_SELECTOR, 'button[role="tab"]'):
-                if button.text.strip() == str(watchlist_index):
+            tab_buttons = self.driver.find_elements(By.CSS_SELECTOR, 'button[role="tab"]')
+            if not tab_buttons:
+                tab_buttons = self.driver.find_elements(
+                    By.XPATH,
+                    (
+                        f"//*[(@role='tab' or self::button) and "
+                        f"normalize-space()='{target_tab_text}']"
+                    ),
+                )
+
+            for button in tab_buttons:
+                if self._normalize_element_text(button.text) == target_tab_text:
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
                     button.click()
                     time.sleep(1)
                     return
+
+            visible_rows = self._find_watchlist_rows(search_mode=False)
+            if visible_rows:
+                LOGGER.warning(
+                    "Watchlist tab '%s' was not found, but %s watchlist rows are already visible; "
+                    "continuing with the current watchlist.",
+                    watchlist_index,
+                    len(visible_rows),
+                )
+                return
             time.sleep(0.25)
         raise TimeoutException(f"Watchlist tab '{watchlist_index}' was not found.")
 

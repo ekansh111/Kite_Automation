@@ -1200,5 +1200,69 @@ class TestPlaceOrderDelays(unittest.TestCase):
         )
 
 
+class _FakeWatchlistButton:
+    def __init__(self, text: str):
+        self.text = text
+        self.clicked = False
+
+    def click(self):
+        self.clicked = True
+
+
+class _FakeWatchlistRow:
+    pass
+
+
+class _FakeWatchlistDriver:
+    def __init__(self, *, tab_buttons=None, xpath_buttons=None, rows=None):
+        self.tab_buttons = list(tab_buttons or [])
+        self.xpath_buttons = list(xpath_buttons or [])
+        self.rows = list(rows or [])
+        self.scripts = []
+
+    def find_elements(self, by, value):
+        if by == bot.By.CSS_SELECTOR and value == 'button[role="tab"]':
+            return self.tab_buttons
+        if by == bot.By.XPATH:
+            return self.xpath_buttons
+        if by == bot.By.CSS_SELECTOR and value == '#wlContainer > li[id^="watchlist-row-"]':
+            return self.rows
+        return []
+
+    def execute_script(self, script, *args):
+        self.scripts.append((script, args))
+
+
+class TestWatchlistSelection(unittest.TestCase):
+    def test_select_watchlist_clicks_exact_tab_button(self):
+        button = _FakeWatchlistButton("4")
+        driver = _FakeWatchlistDriver(tab_buttons=[button])
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        bot_instance.driver = driver
+
+        with patch("angel_web_order_bot.time.sleep", return_value=None):
+            bot_instance._select_watchlist(4)
+
+        self.assertTrue(button.clicked)
+        self.assertTrue(driver.scripts)
+
+    def test_select_watchlist_continues_when_rows_are_already_visible(self):
+        driver = _FakeWatchlistDriver(rows=[_FakeWatchlistRow()])
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        bot_instance.driver = driver
+
+        fake_now = {"value": 1000.0}
+
+        def advance_time():
+            fake_now["value"] += 0.5
+            return fake_now["value"]
+
+        with patch("angel_web_order_bot.time.sleep", return_value=None), patch(
+            "angel_web_order_bot.time.time",
+            side_effect=advance_time,
+        ):
+            bot_instance._select_watchlist(4)
+
+
 if __name__ == "__main__":
     unittest.main()
