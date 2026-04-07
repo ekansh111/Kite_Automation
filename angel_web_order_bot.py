@@ -1915,6 +1915,27 @@ class AngelWebOrderBot:
         except (TimeoutException, KeyError):
             pass
 
+    def _is_toggle_button_selected(self, element: Any) -> bool:
+        try:
+            for attr_name in ("aria-selected", "aria-pressed", "data-state", "data-selected"):
+                attr_value = (element.get_attribute(attr_name) or "").strip().lower()
+                if attr_value in {"true", "on", "active", "selected", "checked"}:
+                    return True
+
+            classes = (element.get_attribute("class") or "").lower()
+            return any(
+                token in classes
+                for token in (
+                    "text-success-default",
+                    "active",
+                    "selected",
+                    "checked",
+                    "toggle-on",
+                )
+            )
+        except Exception:
+            return False
+
     def _read_order_pad_state(self) -> Dict[str, Any]:
         if self.driver is None:
             raise RuntimeError("Browser is not initialized.")
@@ -1942,7 +1963,7 @@ class AngelWebOrderBot:
         for product_key, button_id in PRODUCT_BUTTON_IDS.items():
             try:
                 button = self._find_element_by_id(button_id, timeout_seconds=1)
-                if button.get_attribute("aria-selected") == "true":
+                if self._is_toggle_button_selected(button):
                     state["product"] = product_key
                     break
             except TimeoutException:
@@ -1951,12 +1972,23 @@ class AngelWebOrderBot:
         for order_type_key, button_id in ORDER_TYPE_BUTTON_IDS.items():
             try:
                 button = self._find_element_by_id(button_id, timeout_seconds=1)
-                classes = (button.get_attribute("class") or "").lower()
-                if "text-success-default" in classes:
+                if self._is_toggle_button_selected(button):
                     state["order_type"] = order_type_key
                     break
             except TimeoutException:
                 continue
+
+        # Angel occasionally exposes the correct LIMIT price field but does not
+        # reflect the selected toggle via the earlier class/aria markers.
+        if state["order_type"] is None and state["price"] not in (None, ""):
+            try:
+                price_input = self._find_element_by_id("priceOrderPad", timeout_seconds=1)
+                disabled_attr = (price_input.get_attribute("disabled") or "").strip().lower()
+                readonly_attr = (price_input.get_attribute("readonly") or "").strip().lower()
+                if disabled_attr not in {"true", "disabled"} and readonly_attr != "true":
+                    state["order_type"] = "LIMIT"
+            except TimeoutException:
+                pass
 
         try:
             submit_button = self._find_first("submit_button", timeout_seconds=1)

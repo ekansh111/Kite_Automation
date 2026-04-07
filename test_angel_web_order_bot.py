@@ -976,6 +976,118 @@ class TestInputSetter(unittest.TestCase):
         )
 
 
+class TestOrderPadStateDetection(unittest.TestCase):
+    class DummyElement:
+        def __init__(self, *, value="", attrs=None, enabled=True, displayed=True):
+            self.value = value
+            self.attrs = dict(attrs or {})
+            self.enabled = enabled
+            self.displayed = displayed
+
+        def get_attribute(self, name):
+            if name == "value":
+                return self.value
+            return self.attrs.get(name)
+
+        def is_enabled(self):
+            return self.enabled
+
+        def is_displayed(self):
+            return self.displayed
+
+    def test_is_toggle_button_selected_accepts_aria_markers(self):
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        element = self.DummyElement(attrs={"aria-selected": "true"})
+
+        self.assertTrue(bot_instance._is_toggle_button_selected(element))
+
+    def test_read_order_pad_state_detects_limit_from_aria_selected_toggle(self):
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        bot_instance.driver = object()
+        quantity = self.DummyElement(value="2")
+        price = self.DummyElement(value="13310.0")
+        cf_button = self.DummyElement(attrs={"aria-selected": "true"})
+        int_button = self.DummyElement()
+        limit_button = self.DummyElement(attrs={"aria-selected": "true"})
+        market_button = self.DummyElement()
+        submit_button = self.DummyElement(enabled=True)
+
+        elements = {
+            "quantityOrderPad": quantity,
+            "priceOrderPad": price,
+            "productType1": int_button,
+            "productType2": cf_button,
+            "limtToggleButton": limit_button,
+            "marketToggleButton": market_button,
+        }
+
+        bot_instance._find_element_by_id = lambda element_id, **kwargs: elements[element_id]  # type: ignore[assignment]
+        bot_instance._find_first = lambda selector_key, timeout_seconds=1: submit_button  # type: ignore[assignment]
+
+        state = bot_instance._read_order_pad_state()
+
+        self.assertEqual(state["quantity"], "2")
+        self.assertEqual(state["price"], "13310.0")
+        self.assertEqual(state["product"], "CARRYFORWARD")
+        self.assertEqual(state["order_type"], "LIMIT")
+        self.assertTrue(state["submit_enabled"])
+
+    def test_read_order_pad_state_inferrs_limit_from_editable_price_box(self):
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        bot_instance.driver = object()
+        quantity = self.DummyElement(value="2")
+        price = self.DummyElement(value="13310.0", attrs={"disabled": None, "readonly": None})
+        cf_button = self.DummyElement(attrs={"aria-selected": "true"})
+        int_button = self.DummyElement()
+        limit_button = self.DummyElement()
+        market_button = self.DummyElement()
+        submit_button = self.DummyElement(enabled=True)
+
+        elements = {
+            "quantityOrderPad": quantity,
+            "priceOrderPad": price,
+            "productType1": int_button,
+            "productType2": cf_button,
+            "limtToggleButton": limit_button,
+            "marketToggleButton": market_button,
+        }
+
+        bot_instance._find_element_by_id = lambda element_id, **kwargs: elements[element_id]  # type: ignore[assignment]
+        bot_instance._find_first = lambda selector_key, timeout_seconds=1: submit_button  # type: ignore[assignment]
+
+        state = bot_instance._read_order_pad_state()
+
+        self.assertEqual(state["order_type"], "LIMIT")
+
+    def test_wait_for_submit_ready_is_side_agnostic_for_sell_limit_orders(self):
+        bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
+        bot_instance.driver = object()
+        order = bot.OrderRequest(
+            exchange="NCDEX",
+            symbol="DHANIYA20APR2026",
+            side="SELL",
+            quantity=2,
+            product="CARRYFORWARD",
+            order_type="LIMIT",
+            price=13310.0,
+            submit_live=True,
+        )
+        submit_button = self.DummyElement(enabled=True)
+
+        bot_instance._read_order_pad_state = lambda: {  # type: ignore[assignment]
+            "quantity": "2",
+            "price": "13310.0",
+            "product": "CARRYFORWARD",
+            "order_type": "LIMIT",
+            "submit_enabled": True,
+        }
+        bot_instance._find_first_enabled = lambda selector_key, timeout_seconds=1: submit_button  # type: ignore[assignment]
+
+        result = bot_instance._wait_for_submit_ready(order, timeout_seconds=1)
+
+        self.assertIs(result, submit_button)
+
+
 class TestUiMessageSummary(unittest.TestCase):
     def test_summarize_ui_message_extracts_scheduled_text(self):
         bot_instance = bot.AngelWebOrderBot({"search_input": {"by": "xpath", "value": "//input"}})
