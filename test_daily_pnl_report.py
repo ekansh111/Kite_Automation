@@ -571,6 +571,117 @@ class TestKiteRealizedM2mFallback:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Angel Realized M2M Fallback (NCDEX closed positions)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAngelRealizedM2mFallback:
+    """Test that closed Angel positions use m2m when realised=0."""
+
+    def test_closed_ncdex_position_uses_m2m(self):
+        """Simulate: COCUDAKL closed (netqty=0), realised=0, m2m=-31200."""
+        positions = [
+            {"tradingsymbol": "COCUDAKL20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "0", "realised": "0", "m2m": "-31200"},
+        ]
+        total = 0.0
+        for P in positions:
+            if P.get("producttype") != "CARRYFORWARD":
+                continue
+            realised = float(P.get("realised", 0) or 0)
+            m2m = float(P.get("m2m", 0) or 0)
+            qty = int(P.get("netqty", 0))
+            if qty == 0 and realised == 0 and m2m != 0:
+                total += m2m
+            else:
+                total += realised
+        assert total == -31200.0  # COCUDAKL m2m loss picked up
+
+    def test_closed_position_with_nonzero_realised_uses_realised(self):
+        """If realised is non-zero, use it even for netqty=0."""
+        total = 0.0
+        P = {"netqty": "0", "realised": "8500", "m2m": "8500", "producttype": "CARRYFORWARD"}
+        realised = float(P.get("realised", 0) or 0)
+        m2m = float(P.get("m2m", 0) or 0)
+        qty = int(P.get("netqty", 0))
+        if qty == 0 and realised == 0 and m2m != 0:
+            total += m2m
+        else:
+            total += realised
+        assert total == 8500.0
+
+    def test_open_angel_position_ignores_m2m(self):
+        """Open Angel positions use realised only (m2m includes unrealized)."""
+        total = 0.0
+        P = {"netqty": "10", "realised": "0", "m2m": "4500", "producttype": "CARRYFORWARD"}
+        realised = float(P.get("realised", 0) or 0)
+        m2m = float(P.get("m2m", 0) or 0)
+        qty = int(P.get("netqty", 0))
+        if qty == 0 and realised == 0 and m2m != 0:
+            total += m2m
+        else:
+            total += realised
+        assert total == 0.0  # Open position, realised=0 is correct
+
+    def test_multiple_angel_positions_mixed(self):
+        """Mix of open and closed Angel positions."""
+        positions = [
+            {"tradingsymbol": "COCUDAKL20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "0", "realised": "0", "m2m": "-31200"},
+            {"tradingsymbol": "GUARSEED20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "5", "realised": "2500", "m2m": "7000"},
+            {"tradingsymbol": "DHANIYA20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "0", "realised": "0", "m2m": "15000"},
+        ]
+        total = 0.0
+        for P in positions:
+            if P.get("producttype") != "CARRYFORWARD":
+                continue
+            realised = float(P.get("realised", 0) or 0)
+            m2m = float(P.get("m2m", 0) or 0)
+            qty = int(P.get("netqty", 0))
+            if qty == 0 and realised == 0 and m2m != 0:
+                total += m2m
+            else:
+                total += realised
+        # COCUDAKL: m2m=-31200, GUARSEED: realised=2500 (open), DHANIYA: m2m=15000
+        assert total == (-31200.0 + 2500.0 + 15000.0)
+
+    def test_non_carryforward_skipped(self):
+        """Non-CARRYFORWARD positions are excluded."""
+        positions = [
+            {"tradingsymbol": "INTRADAY", "producttype": "INTRADAY",
+             "netqty": "0", "realised": "0", "m2m": "5000"},
+            {"tradingsymbol": "COCUDAKL20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "0", "realised": "0", "m2m": "-31200"},
+        ]
+        total = 0.0
+        for P in positions:
+            if P.get("producttype") != "CARRYFORWARD":
+                continue
+            realised = float(P.get("realised", 0) or 0)
+            m2m = float(P.get("m2m", 0) or 0)
+            qty = int(P.get("netqty", 0))
+            if qty == 0 and realised == 0 and m2m != 0:
+                total += m2m
+            else:
+                total += realised
+        assert total == -31200.0  # Only CARRYFORWARD counted
+
+    def test_none_values_handled(self):
+        """Angel API sometimes returns None instead of 0."""
+        P = {"netqty": "0", "realised": None, "m2m": "-5000", "producttype": "CARRYFORWARD"}
+        realised = float(P.get("realised", 0) or 0)
+        m2m = float(P.get("m2m", 0) or 0)
+        qty = int(P.get("netqty", 0))
+        total = 0.0
+        if qty == 0 and realised == 0 and m2m != 0:
+            total += m2m
+        else:
+            total += realised
+        assert total == -5000.0
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Holiday / Weekend Skip
 # ═══════════════════════════════════════════════════════════════════
 

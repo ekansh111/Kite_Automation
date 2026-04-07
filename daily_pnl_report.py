@@ -483,9 +483,21 @@ def _FetchDailyRealizedPnl():
         RawPositions = RawResponse.get("data", []) if isinstance(RawResponse, dict) else []
         if RawPositions is None:
             RawPositions = []
-        Total = sum(float(P.get("realised", 0))
-                    for P in RawPositions
-                    if P.get("producttype") == "CARRYFORWARD")
+        Total = 0.0
+        for P in RawPositions:
+            if P.get("producttype") != "CARRYFORWARD":
+                continue
+            Realised = float(P.get("realised", 0) or 0)
+            M2m = float(P.get("m2m", 0) or 0)
+            Qty = int(P.get("netqty", 0))
+            Symbol = P.get("tradingsymbol", "")
+            Logger.debug("  Angel %s: qty=%s realised=%.2f m2m=%.2f", Symbol, Qty, Realised, M2m)
+            # For closed positions (qty=0), use m2m if realised is 0
+            if Qty == 0 and Realised == 0 and M2m != 0:
+                Logger.info("  Angel %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
+                Total += M2m
+            else:
+                Total += Realised
         Result["AABM826021"] = round(Total, 2)
         Logger.info("Angel realized today: %.2f", Total)
     except _ExchangeNotOpen:
