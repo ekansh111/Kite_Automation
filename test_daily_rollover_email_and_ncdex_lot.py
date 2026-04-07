@@ -867,5 +867,161 @@ class DailyRolloverEmailTests(unittest.TestCase):
         self.assertIn("#ff9100", html_body)
 
 
+    # ── Expiry fallback tests (MCX with stale CSV) ──
+
+    def test_parse_expiry_from_position_iso_string(self):
+        """Kite returns expiry as ISO date string."""
+        pos = {"expiry": "2026-04-20"}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertEqual(result, datetime(2026, 4, 20))
+
+    def test_parse_expiry_from_position_datetime_object(self):
+        """Kite may return expiry as datetime object."""
+        dt = datetime(2026, 4, 20, 0, 0)
+        pos = {"expiry": dt}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertEqual(result, dt)
+
+    def test_parse_expiry_from_position_date_object(self):
+        """Date object converted to datetime."""
+        d = date(2026, 4, 20)
+        pos = {"expiry": d}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertEqual(result, datetime(2026, 4, 20))
+
+    def test_parse_expiry_from_position_angel_format(self):
+        """Angel returns expiry like '20APR2026'."""
+        pos = {"expiry": "20APR2026"}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertEqual(result, datetime(2026, 4, 20))
+
+    def test_parse_expiry_from_position_empty(self):
+        """Missing expiry returns None."""
+        pos = {"expiry": ""}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertIsNone(result)
+
+    def test_parse_expiry_from_position_no_key(self):
+        """No expiry key returns None."""
+        pos = {}
+        result = self.rm._ParseExpiryFromPosition(pos)
+        self.assertIsNone(result)
+
+    def test_mcx_position_shown_when_csv_stale(self):
+        """MCX position should appear in daily summary even when ResolveExpiryInfo fails."""
+        self._patch_main_logging()
+        mcx_expiry = datetime(2026, 4, 20)
+        instrument_config = {
+            "GOLDM": {
+                "enabled": True,
+                "exchange": "MCX",
+                "broker": "ZERODHA",
+                "user": "YD6016",
+                "rollover": {
+                    "enabled": True,
+                    "alert_days_before_expiry": 4,
+                    "execute_days_before_expiry": 3,
+                },
+            }
+        }
+        position = {
+            "tradingsymbol": "GOLDM26APRFUT",
+            "exchange": "MCX",
+            "quantity": 1,
+            "last_price": 5000.0,
+            "instrument_token": "12345",
+            "expiry": "2026-04-20",  # Broker provides expiry
+            "product": "NRML",
+            "broker": "ZERODHA",
+            "user": "YD6016",
+            "_session": MagicMock(),
+        }
+
+        with patch.object(self.rm, "ScanAllPositions", return_value=[position]), \
+             patch.object(self.rm, "MatchPositionToInstrument",
+                         return_value=("GOLDM", instrument_config["GOLDM"])), \
+             patch.object(self.rm, "ResolveExpiryInfo", return_value=None), \
+             patch.object(self.rm.db, "GetIncompleteRollovers", return_value=[]), \
+             patch.object(self.rm, "IsTradingDay", return_value=True), \
+             patch.object(self.rm, "SendDailySummaryEmail") as mock_summary, \
+             patch("argparse.ArgumentParser.parse_args",
+                   return_value=MagicMock(dry_run=False, instrument=None, force=False, status=False)):
+            self.rm.main()
+
+        mock_summary.assert_called_once()
+        upcoming = mock_summary.call_args[0][1]
+        # GOLDM should still appear despite ResolveExpiryInfo returning None
+        self.assertEqual(len(upcoming), 1)
+        self.assertEqual(upcoming[0]["instrument"], "GOLDM")
+        self.assertEqual(upcoming[0]["expiry"], "2026-04-20")
+
+    def test_mixed_positions_csv_ok_and_csv_stale(self):
+        """Mix of positions: some with working CSV, some needing fallback."""
+        self._patch_main_logging()
+        ncdex_expiry = datetime.now() + timedelta(days=15)
+        mcx_expiry = datetime(2026, 4, 20)
+
+        ncdex_config = {
+            "enabled": True, "exchange": "NCDEX", "broker": "ANGEL",
+            "user": "AABM826021",
+            "order_routing": {"ContractLookupName": "TMCFGRNZM", "QuantityMultiplier": 5},
+            "rollover": {"enabled": True, "alert_days_before_expiry": 5},
+        }
+        mcx_config = {
+            "enabled": True, "exchange": "MCX", "broker": "ZERODHA",
+            "user": "YD6016",
+            "rollover": {"enabled": True, "alert_days_before_expiry": 4},
+        }
+
+        positions = [
+            {"tradingsymbol": "TMCFGRNZM20APR2026", "exchange": "NCDEX",
+             "quantity": 5, "last_price": 100, "symboltoken": "1",
+             "expiry": "", "product": "CARRYFORWARD", "broker": "ANGEL",
+             "user": "AABM826021", "_session": MagicMock()},
+            {"tradingsymbol": "GOLDM26APRFUT", "exchange": "MCX",
+             "quantity": 1, "last_price": 5000, "instrument_token": "12345",
+             "expiry": "2026-04-20", "product": "NRML", "broker": "ZERODHA",
+             "user": "YD6016", "_session": MagicMock()},
+        ]
+
+        ncdex_expiry_info = {
+            "current_expiry": ncdex_expiry,
+            "current_symbol": "TMCFGRNZM20APR2026", "current_token": "1",
+            "next_symbol": "TMCFGRNZM20MAY2026", "next_token": "2",
+            "next_expiry": ncdex_expiry + timedelta(days=30),
+        }
+
+        def mock_match(pos, cfg):
+            sym = pos["tradingsymbol"]
+            if "TMCFGRNZM" in sym:
+                return ("TURMERIC", ncdex_config)
+            if "GOLDM" in sym:
+                return ("GOLDM", mcx_config)
+            return (None, None)
+
+        def mock_resolve(name, cfg, pos):
+            if name == "TURMERIC":
+                return ncdex_expiry_info
+            return None  # GOLDM CSV stale
+
+        with patch.object(self.rm, "ScanAllPositions", return_value=positions), \
+             patch.object(self.rm, "MatchPositionToInstrument", side_effect=mock_match), \
+             patch.object(self.rm, "ResolveExpiryInfo", side_effect=mock_resolve), \
+             patch.object(self.rm.db, "GetIncompleteRollovers", return_value=[]), \
+             patch.object(self.rm, "IsTradingDay", return_value=True), \
+             patch.object(self.rm, "SendDailySummaryEmail") as mock_summary, \
+             patch.object(self.rm, "SendAlertEmail"), \
+             patch("argparse.ArgumentParser.parse_args",
+                   return_value=MagicMock(dry_run=False, instrument=None, force=False, status=False)):
+            self.rm.main()
+
+        upcoming = mock_summary.call_args[0][1]
+        instruments = {u["instrument"] for u in upcoming}
+        # Both TURMERIC (CSV ok) and GOLDM (CSV stale, fallback) should appear
+        self.assertIn("TURMERIC", instruments)
+        self.assertIn("GOLDM", instruments)
+        self.assertEqual(len(upcoming), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

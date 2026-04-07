@@ -173,6 +173,30 @@ def _GetReconciliationPrefixes(InstName, InstConfig):
 INDEX_NAMES = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY", "BANKEX"}
 
 
+def _ParseExpiryFromPosition(Position):
+    """Extract expiry date from broker position data.
+
+    Kite returns a datetime/date object or ISO string in the 'expiry' field.
+    Angel returns a date string (e.g. '20APR2026') or ISO format.
+    Returns a datetime object, or None if parsing fails.
+    """
+    Raw = Position.get("expiry", "")
+    if not Raw:
+        return None
+    if isinstance(Raw, datetime):
+        return Raw
+    if isinstance(Raw, date):
+        return datetime.combine(Raw, datetime.min.time())
+    RawStr = str(Raw).strip()
+    # Try ISO format first (Kite: "2026-04-20")
+    for Fmt in ("%Y-%m-%d", "%d%b%Y", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(RawStr, Fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _IsIndexOption(TradingSymbol):
     """Return True if the symbol is an index option (CE/PE). Stock options return False."""
     SymUpper = TradingSymbol.upper()
@@ -222,6 +246,7 @@ def ScanAllPositions(InstrumentConfig):
                         "quantity": Qty,
                         "last_price": Pos.get("last_price", 0),
                         "instrument_token": Pos.get("instrument_token", ""),
+                        "expiry": Pos.get("expiry", ""),
                         "product": Product,
                         "broker": "ZERODHA",
                         "user": User,
@@ -251,6 +276,7 @@ def ScanAllPositions(InstrumentConfig):
                         "quantity": Qty,
                         "last_price": float(Pos.get("ltp", 0)),
                         "symboltoken": Pos.get("symboltoken", ""),
+                        "expiry": Pos.get("expiry", ""),
                         "product": ProdType,
                         "broker": "ANGEL",
                         "user": User,
@@ -1281,21 +1307,32 @@ def main():
 
         # Resolve expiry
         ExpiryInfo = ResolveExpiryInfo(InstName, InstCfg, Position)
-        if ExpiryInfo is None:
-            Logger.warning("%s: Could not resolve expiry info", InstName)
-            continue
 
-        TradingDaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"])
-
-        # Track all positions for daily summary
+        # Track all positions for daily summary (even if CSV is stale)
         RollCfg = InstCfg.get("rollover", {})
         AlertDays = RollCfg.get("alert_days_before_expiry", 4)
-        UpcomingRollovers.append({
-            "instrument": InstName,
-            "expiry": ExpiryInfo["current_expiry"].strftime("%Y-%m-%d"),
-            "days_left": TradingDaysLeft,
-            "alert_days": AlertDays,
-        })
+
+        if ExpiryInfo is not None:
+            CurrentExpiry = ExpiryInfo["current_expiry"]
+        else:
+            # Fallback: parse expiry from broker position data
+            CurrentExpiry = _ParseExpiryFromPosition(Position)
+
+        if CurrentExpiry is not None:
+            TradingDaysLeft = CountTradingDaysUntilExpiry(CurrentExpiry)
+            UpcomingRollovers.append({
+                "instrument": InstName,
+                "expiry": CurrentExpiry.strftime("%Y-%m-%d"),
+                "days_left": TradingDaysLeft,
+                "alert_days": AlertDays,
+            })
+        else:
+            Logger.warning("%s: Could not determine expiry from CSV or broker data", InstName)
+
+        if ExpiryInfo is None:
+            Logger.warning("%s: Could not resolve full expiry info (stale CSV?), "
+                          "skipping rollover evaluation", InstName)
+            continue
 
         # Check for recovery from incomplete rollover
         ExpiryStr = ExpiryInfo["current_expiry"].strftime("%Y-%m-%d")
