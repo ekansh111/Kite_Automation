@@ -209,7 +209,8 @@ def _FetchOpenPositions(FullConfig):
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
-            OvernightQty = abs(int(Pos.get("overnight_quantity", 0)))
+            RawOvernightQty = int(Pos.get("overnight_quantity", 0))
+            OvernightQty = abs(RawOvernightQty)
             DayBuyQty = int(Pos.get("day_buy_quantity", 0) or 0)
             DaySellQty = int(Pos.get("day_sell_quantity", 0) or 0)
             DayBuyPrice = float(Pos.get("day_buy_price", 0) or 0)
@@ -223,7 +224,24 @@ def _FetchOpenPositions(FullConfig):
             # ── Split swing: carried lots from prev_close, new lots from entry ──
             # LIFO: today's buys and sells offset each other first,
             # only excess sells/buys eat into overnight (carried) positions.
-            if Direction == "LONG":
+            #
+            # Direction flip detection: if overnight was opposite direction
+            # (e.g. SHORT→LONG), the overnight position was fully closed by
+            # today's trades.  All current qty is new.
+            OvernightFlipped = (
+                (Direction == "LONG" and RawOvernightQty < 0) or
+                (Direction == "SHORT" and RawOvernightQty > 0)
+            )
+
+            if OvernightFlipped:
+                CarriedQty = 0
+                NewQty = AbsQty
+                NewEntryPrice = DayBuyPrice if Direction == "LONG" else DaySellPrice
+                Logger.debug("  %s: direction flipped (%s overnight → %s), "
+                             "all %d lots are new today",
+                             Symbol, "SHORT" if RawOvernightQty < 0 else "LONG",
+                             Direction, AbsQty)
+            elif Direction == "LONG":
                 ExcessSells = max(0, DaySellQty - DayBuyQty)
                 CarriedQty = max(0, OvernightQty - ExcessSells)
                 NewQty = max(0, AbsQty - CarriedQty)

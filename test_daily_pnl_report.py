@@ -906,6 +906,113 @@ class TestEdgeCases:
             assert carried == 0
             assert new == 0
 
+    # ── Direction flip tests ──
+
+    def test_direction_flip_short_to_long(self):
+        """SHORT overnight → LONG today: all current qty should be new."""
+        # Simulates SILVERMIC: was short 2, bought 3, now long 1
+        RawOvernightQty = -2
+        Direction = "LONG"
+        AbsQty = 1
+        DayBuyQty = 3
+        DaySellQty = 0
+        DayBuyPrice = 245639.33
+        Ltp = 242406.0
+        PrevClose = 233952.0
+        PV = 1
+
+        OvernightFlipped = (Direction == "LONG" and RawOvernightQty < 0)
+        assert OvernightFlipped is True
+
+        CarriedQty = 0
+        NewQty = AbsQty  # = 1
+        NewEntryPrice = DayBuyPrice
+
+        SwingBase = PrevClose if PrevClose > 0 else 0
+        CarriedSwing = (Ltp - SwingBase) * CarriedQty * PV  # = 0
+        NewSwing = (Ltp - NewEntryPrice) * NewQty * PV
+        DailySwing = CarriedSwing + NewSwing
+
+        assert CarriedQty == 0
+        assert NewQty == 1
+        assert DailySwing == pytest.approx(-3233.33, abs=0.01)
+
+    def test_direction_flip_long_to_short(self):
+        """LONG overnight → SHORT today: all current qty should be new."""
+        RawOvernightQty = 3
+        Direction = "SHORT"
+        AbsQty = 2
+        DaySellPrice = 500.0
+        Ltp = 490.0
+        PV = 1250
+
+        OvernightFlipped = (Direction == "SHORT" and RawOvernightQty > 0)
+        assert OvernightFlipped is True
+
+        CarriedQty = 0
+        NewQty = AbsQty  # = 2
+        NewEntryPrice = DaySellPrice
+
+        NewSwing = (NewEntryPrice - Ltp) * NewQty * PV
+        DailySwing = NewSwing
+
+        assert CarriedQty == 0
+        assert NewQty == 2
+        assert DailySwing == pytest.approx(25000.0)  # (500-490)*2*1250
+
+    def test_no_flip_same_direction_long(self):
+        """LONG overnight → still LONG: carried qty preserved."""
+        RawOvernightQty = 3
+        Direction = "LONG"
+        AbsQty = 3
+        DayBuyQty = 0
+        DaySellQty = 0
+
+        OvernightFlipped = (Direction == "LONG" and RawOvernightQty < 0)
+        assert OvernightFlipped is False
+
+        OvernightQty = abs(RawOvernightQty)
+        ExcessSells = max(0, DaySellQty - DayBuyQty)
+        CarriedQty = max(0, OvernightQty - ExcessSells)
+        NewQty = max(0, AbsQty - CarriedQty)
+
+        assert CarriedQty == 3
+        assert NewQty == 0
+
+    def test_no_flip_same_direction_short(self):
+        """SHORT overnight → still SHORT: carried qty preserved."""
+        RawOvernightQty = -4
+        Direction = "SHORT"
+        AbsQty = 4
+
+        OvernightFlipped = (Direction == "SHORT" and RawOvernightQty > 0)
+        assert OvernightFlipped is False
+
+        OvernightQty = abs(RawOvernightQty)
+        ExcessBuys = max(0, 0 - 0)
+        CarriedQty = max(0, OvernightQty - ExcessBuys)
+        NewQty = max(0, AbsQty - CarriedQty)
+
+        assert CarriedQty == 4
+        assert NewQty == 0
+
+    def test_no_flip_zero_overnight(self):
+        """No overnight position → all new, no flip."""
+        RawOvernightQty = 0
+        Direction = "LONG"
+        AbsQty = 2
+
+        OvernightFlipped = (Direction == "LONG" and RawOvernightQty < 0)
+        assert OvernightFlipped is False
+
+        OvernightQty = 0
+        ExcessSells = max(0, 0 - 2)
+        CarriedQty = max(0, 0 - ExcessSells)  # = 0
+        NewQty = max(0, 2 - 0)  # = 2
+
+        assert CarriedQty == 0
+        assert NewQty == 2
+
     def test_prev_close_zero_uses_avg_price(self):
         """When prev_close=0, swing base should be avg_price."""
         # This tests the `SwingBase = PrevClose if PrevClose > 0 else AvgPrice` logic
