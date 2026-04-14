@@ -646,17 +646,22 @@ class TestAngelRealizedM2mFallback:
         # COCUDAKL: m2m=-31200, GUARSEED: realised=2500 (open), DHANIYA: m2m=15000
         assert total == (-31200.0 + 2500.0 + 15000.0)
 
-    def test_non_carryforward_skipped(self):
-        """Non-CARRYFORWARD positions are excluded."""
+    def test_intraday_angel_positions_included(self):
+        """Angel INTRADAY positions should be included in realized P&L."""
         positions = [
-            {"tradingsymbol": "INTRADAY", "producttype": "INTRADAY",
-             "netqty": "0", "realised": "0", "m2m": "5000"},
+            {"tradingsymbol": "CASTOR20APR2026", "producttype": "INTRADAY",
+             "netqty": "0", "realised": "-12100", "m2m": "-12100"},
+            {"tradingsymbol": "TMCFGRNZM20APR2026", "producttype": "INTRADAY",
+             "netqty": "0", "realised": "-6700", "m2m": "-6700"},
+            {"tradingsymbol": "DHANIYA20APR2026", "producttype": "INTRADAY",
+             "netqty": "0", "realised": "1100", "m2m": "1100"},
             {"tradingsymbol": "COCUDAKL20APR2026", "producttype": "CARRYFORWARD",
-             "netqty": "0", "realised": "0", "m2m": "-31200"},
+             "netqty": "0", "realised": "0", "m2m": "-1000"},
         ]
         total = 0.0
         for P in positions:
-            if P.get("producttype") != "CARRYFORWARD":
+            prod = P.get("producttype", "")
+            if prod not in ("CARRYFORWARD", "INTRADAY"):
                 continue
             realised = float(P.get("realised", 0) or 0)
             m2m = float(P.get("m2m", 0) or 0)
@@ -665,7 +670,30 @@ class TestAngelRealizedM2mFallback:
                 total += m2m
             else:
                 total += realised
-        assert total == -31200.0  # Only CARRYFORWARD counted
+        # CASTOR: -12100, TMCFGRNZM: -6700, DHANIYA: +1100, COCUDAKL: m2m=-1000
+        assert total == (-12100.0 + -6700.0 + 1100.0 + -1000.0)
+
+    def test_delivery_positions_excluded(self):
+        """Non-futures product types like DELIVERY should be excluded."""
+        positions = [
+            {"tradingsymbol": "SOMETHING", "producttype": "DELIVERY",
+             "netqty": "0", "realised": "5000", "m2m": "5000"},
+            {"tradingsymbol": "COCUDAKL20APR2026", "producttype": "CARRYFORWARD",
+             "netqty": "0", "realised": "0", "m2m": "-31200"},
+        ]
+        total = 0.0
+        for P in positions:
+            prod = P.get("producttype", "")
+            if prod not in ("CARRYFORWARD", "INTRADAY"):
+                continue
+            realised = float(P.get("realised", 0) or 0)
+            m2m = float(P.get("m2m", 0) or 0)
+            qty = int(P.get("netqty", 0))
+            if qty == 0 and realised == 0 and m2m != 0:
+                total += m2m
+            else:
+                total += realised
+        assert total == -31200.0  # Only CARRYFORWARD counted, DELIVERY excluded
 
     def test_none_values_handled(self):
         """Angel API sometimes returns None instead of 0."""

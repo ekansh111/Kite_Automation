@@ -469,7 +469,7 @@ def _FetchDailyRealizedPnl():
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
         for P in AllPositions:
-            if P.get("product") != "NRML" or _IsIndexOption(P.get("tradingsymbol", "")):
+            if P.get("product") not in ("NRML", "MIS") or _IsIndexOption(P.get("tradingsymbol", "")):
                 continue
             Realised = float(P.get("realised", 0))
             M2m = float(P.get("m2m", 0))
@@ -503,13 +503,15 @@ def _FetchDailyRealizedPnl():
             RawPositions = []
         Total = 0.0
         for P in RawPositions:
-            if P.get("producttype") != "CARRYFORWARD":
+            ProdType = P.get("producttype", "")
+            if ProdType not in ("CARRYFORWARD", "INTRADAY"):
                 continue
             Realised = float(P.get("realised", 0) or 0)
             M2m = float(P.get("m2m", 0) or 0)
             Qty = int(P.get("netqty", 0))
             Symbol = P.get("tradingsymbol", "")
-            Logger.debug("  Angel %s: qty=%s realised=%.2f m2m=%.2f", Symbol, Qty, Realised, M2m)
+            Logger.debug("  Angel %s [%s]: qty=%s realised=%.2f m2m=%.2f",
+                         Symbol, ProdType, Qty, Realised, M2m)
             # For closed positions (qty=0), use m2m if realised is 0
             if Qty == 0 and Realised == 0 and M2m != 0:
                 Logger.info("  Angel %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
