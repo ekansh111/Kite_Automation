@@ -19,7 +19,7 @@ else:
 
 CheckForDateHoliday = _real_holidays.CheckForDateHoliday
 MCX_FULL_HOLIDAYS = _real_holidays.MCX_FULL_HOLIDAYS
-COMMODITY_EXCHANGES = _real_holidays.COMMODITY_EXCHANGES
+MCX_EXCHANGES = _real_holidays.MCX_EXCHANGES
 
 
 # ─── CheckForDateHoliday — backwards compatibility (no exchange) ─────
@@ -89,13 +89,17 @@ class TestCheckForDateHolidayMCX:
 # ─── CheckForDateHoliday — NCDEX exchange ────────────────────────────
 
 class TestCheckForDateHolidayNCDEX:
-    """NCDEX follows the same calendar as MCX."""
+    """NCDEX follows the NSE/BSE calendar (closed when NSE is closed)."""
 
-    def test_ambedkar_jayanti_ncdex_is_open(self):
-        assert CheckForDateHoliday("2026-04-14", exchange="NCDEX") is False
+    def test_ambedkar_jayanti_ncdex_is_closed(self):
+        """NCDEX follows NSE — closed on Ambedkar Jayanti."""
+        assert CheckForDateHoliday("2026-04-14", exchange="NCDEX") is True
 
     def test_republic_day_ncdex_is_closed(self):
         assert CheckForDateHoliday("2026-01-26", exchange="NCDEX") is True
+
+    def test_maharashtra_day_ncdex_is_closed(self):
+        assert CheckForDateHoliday("2026-05-01", exchange="NCDEX") is True
 
 
 # ─── CheckForDateHoliday — equity exchanges ──────────────────────────
@@ -147,8 +151,9 @@ class TestMCXFullHolidays:
             # Should parse without error
             date.fromisoformat(d)
 
-    def test_commodity_exchanges_contains_mcx(self):
-        assert "MCX" in COMMODITY_EXCHANGES
+    def test_mcx_exchanges_contains_mcx(self):
+        assert "MCX" in MCX_EXCHANGES
 
-    def test_commodity_exchanges_contains_ncdex(self):
-        assert "NCDEX" in COMMODITY_EXCHANGES
+    def test_ncdex_not_in_mcx_exchanges(self):
+        """NCDEX follows NSE calendar, not MCX."""
+        assert "NCDEX" not in MCX_EXCHANGES

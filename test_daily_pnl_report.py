@@ -47,7 +47,7 @@ def _mock_check_holiday(d, exchange=None):
     return str(d) in holidays
 MockHolidays.CheckForDateHoliday = _mock_check_holiday
 MockHolidays.MCX_FULL_HOLIDAYS = set()
-MockHolidays.COMMODITY_EXCHANGES = {'MCX', 'NCDEX'}
+MockHolidays.MCX_EXCHANGES = {'MCX'}
 sys.modules["Holidays"] = MockHolidays
 
 # Mock rollover_monitor

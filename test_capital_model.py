@@ -60,7 +60,7 @@ _stub_module("Holidays", {
     "CheckForDateHoliday": _holiday_dispatch,
     "_holidays_impl": lambda d: False,
     "MCX_FULL_HOLIDAYS": set(),
-    "COMMODITY_EXCHANGES": {'MCX', 'NCDEX'},
+    "MCX_EXCHANGES": {'MCX'},
 })
 _stub_module("FetchOptionContractName", {
     "GetInstrumentsCached": MagicMock(return_value=[]),

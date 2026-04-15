@@ -1,7 +1,8 @@
 
 
-# MCX/NCDEX full-day closures (both morning + evening sessions closed).
+# MCX full-day closures (both morning + evening sessions closed).
 # On all other NSE/BSE holidays, MCX evening session (5 PM–11:30 PM) remains open.
+# Note: NCDEX follows the NSE/BSE holiday calendar, NOT the MCX calendar.
 # Source: official MCX holiday calendar.
 MCX_FULL_HOLIDAYS = {
     # 2025
@@ -17,7 +18,7 @@ MCX_FULL_HOLIDAYS = {
     '2026-12-25',  # Christmas
 }
 
-COMMODITY_EXCHANGES = {'MCX', 'NCDEX'}
+MCX_EXCHANGES = {'MCX'}
 
 
 def CheckForDateHoliday(HolidayDate, exchange=None):
@@ -30,8 +31,8 @@ def CheckForDateHoliday(HolidayDate, exchange=None):
     exchange : str or None
         Optional exchange code (e.g. 'MCX', 'NFO').
         * None  – returns True if it is an NSE/BSE holiday (backwards compatible).
-        * 'MCX' / 'NCDEX' – returns True **only** on MCX full-closure days.
-        * Any other exchange – same as None (uses the NSE/BSE list).
+        * 'MCX' – returns True **only** on MCX full-closure days.
+        * Any other exchange (including NCDEX) – same as None (uses the NSE/BSE list).
     """
     #Holidays in yyyy-mm-dd format
     ListOfHolidays = {
@@ -74,8 +75,8 @@ def CheckForDateHoliday(HolidayDate, exchange=None):
 
     date_str = str(HolidayDate)
 
-    # For commodity exchanges, only full MCX closures block trading
-    if exchange in COMMODITY_EXCHANGES:
+    # For MCX, only full MCX closures block trading
+    if exchange in MCX_EXCHANGES:
         return date_str in MCX_FULL_HOLIDAYS
 
     # For equity exchanges or unspecified → check the NSE/BSE calendar
