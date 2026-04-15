@@ -78,8 +78,8 @@ def SmartChaseExecute(BrokerSession, OrderDetails, ExecutionConfig, IsEntry, Bro
         # ── Step 0: Holiday / weekend guard ───────────────────────
         from Holidays import CheckForDateHoliday
         Today = date.today()
-        if Today.weekday() >= 5 or CheckForDateHoliday(Today):
-            Logger.warning("%s: Refusing to execute on holiday/weekend (%s)", Instrument, Today)
+        if Today.weekday() >= 5 or CheckForDateHoliday(Today, exchange=Exchange):
+            Logger.warning("%s: Refusing to execute on holiday/weekend (%s, exchange=%s)", Instrument, Today, Exchange)
             return False, None, FillInfo
 
         # ── Step 0a: Market open delay ────────────────────────────

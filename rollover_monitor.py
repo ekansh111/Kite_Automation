@@ -48,16 +48,39 @@ EMAIL_CONFIG_PATH = Path(workInputRoot) / "email_config.json"
 
 # ─── Trading Day Utilities ───────────────────────────────────────────
 
-def IsTradingDay(D):
-    """Return True if D is a weekday and not a market holiday."""
+def IsTradingDay(D, exchange=None):
+    """Return True if D is a weekday and not a market holiday.
+
+    Parameters
+    ----------
+    D : date
+        The date to check.
+    exchange : str or None
+        Optional exchange code (e.g. 'MCX', 'NFO').  Forwarded to
+        CheckForDateHoliday so commodity exchanges only block on MCX
+        full-closure days.
+    """
     if D.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    if CheckForDateHoliday(D):
+    if CheckForDateHoliday(D, exchange=exchange):
         return False
     return True
 
 
-def CountTradingDaysUntilExpiry(ExpiryDate, FromDate=None):
+def IsAnyExchangeOpen(D):
+    """Return True if at least one exchange (equity or commodity) is open on D."""
+    if D.weekday() >= 5:
+        return False
+    # If it's not even an NSE holiday, all exchanges are open
+    if not CheckForDateHoliday(D):
+        return True
+    # NSE is closed — check if MCX is still open (evening session)
+    if not CheckForDateHoliday(D, exchange='MCX'):
+        return True
+    return False
+
+
+def CountTradingDaysUntilExpiry(ExpiryDate, FromDate=None, exchange=None):
     """Count trading days from FromDate (exclusive) to ExpiryDate (inclusive).
 
     Returns 0 if ExpiryDate <= FromDate.
@@ -72,13 +95,13 @@ def CountTradingDaysUntilExpiry(ExpiryDate, FromDate=None):
     Count = 0
     Current = FromDate + timedelta(days=1)
     while Current <= ExpiryDate:
-        if IsTradingDay(Current):
+        if IsTradingDay(Current, exchange=exchange):
             Count += 1
         Current += timedelta(days=1)
     return Count
 
 
-def GetNTradingDaysBefore(ExpiryDate, N):
+def GetNTradingDaysBefore(ExpiryDate, N, exchange=None):
     """Return the calendar date that is N trading days before ExpiryDate."""
     if isinstance(ExpiryDate, datetime):
         ExpiryDate = ExpiryDate.date()
@@ -86,7 +109,7 @@ def GetNTradingDaysBefore(ExpiryDate, N):
     Remaining = N
     while Remaining > 0:
         Current -= timedelta(days=1)
-        if IsTradingDay(Current):
+        if IsTradingDay(Current, exchange=exchange):
             Remaining -= 1
     return Current
 
@@ -450,7 +473,8 @@ def EvaluateRolloverNeed(InstName, InstConfig, ExpiryInfo, Position):
         return "NO_ACTION"
 
     ExpiryDate = ExpiryInfo["current_expiry"]
-    TradingDaysLeft = CountTradingDaysUntilExpiry(ExpiryDate)
+    Exchange = InstConfig.get("exchange", "")
+    TradingDaysLeft = CountTradingDaysUntilExpiry(ExpiryDate, exchange=Exchange)
     AlertDays = RolloverCfg.get("alert_days_before_expiry", 4)
     ExecuteDays = RolloverCfg.get("execute_days_before_expiry", 3)
 
@@ -1211,7 +1235,8 @@ def PrintStatus(InstrumentConfig):
         Lots = RawQty // LotSize if LotSize else RawQty
 
         if ExpiryInfo:
-            DaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"])
+            DaysLeft = CountTradingDaysUntilExpiry(ExpiryInfo["current_expiry"],
+                                                    exchange=Pos.get("exchange", ""))
             ExecDays = RollCfg.get("execute_days_before_expiry", 3)
             AlertDays = RollCfg.get("alert_days_before_expiry", 4)
             Marker = ""
@@ -1268,10 +1293,12 @@ def main():
     LogDir = Path(__file__).parent / "logs"
     LogDir.mkdir(exist_ok=True)
 
-    # Check if today is a trading day
+    # Check if today is a trading day for at least one exchange.
+    # On equity-only holidays (e.g. Ambedkar Jayanti), MCX evening session
+    # is still open so the monitor must run for commodity positions.
     Today = date.today()
-    if not IsTradingDay(Today) and not Args.force:
-        Logger.info("Today (%s) is not a trading day. Exiting.", Today)
+    if not IsAnyExchangeOpen(Today) and not Args.force:
+        Logger.info("Today (%s) is not a trading day for any exchange. Exiting.", Today)
         return
 
     Logger.info("=" * 60)
@@ -1295,6 +1322,14 @@ def main():
     UpcomingRollovers = []
 
     for Position in AllPositions:
+        # Skip positions whose exchange is closed today (e.g. NFO on Ambedkar
+        # Jayanti while MCX evening session is open)
+        PosExchange = Position.get("exchange", "")
+        if not IsTradingDay(Today, exchange=PosExchange):
+            Logger.info("Skipping %s — %s is closed today (%s)",
+                        Position["tradingsymbol"], PosExchange, Today)
+            continue
+
         InstName, InstCfg = MatchPositionToInstrument(Position, InstrumentConfig)
 
         if InstName is None:
@@ -1319,7 +1354,7 @@ def main():
             CurrentExpiry = _ParseExpiryFromPosition(Position)
 
         if CurrentExpiry is not None:
-            TradingDaysLeft = CountTradingDaysUntilExpiry(CurrentExpiry)
+            TradingDaysLeft = CountTradingDaysUntilExpiry(CurrentExpiry, exchange=PosExchange)
             UpcomingRollovers.append({
                 "instrument": InstName,
                 "expiry": CurrentExpiry.strftime("%Y-%m-%d"),

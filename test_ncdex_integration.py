@@ -367,7 +367,8 @@ class RolloverMonitorNcDexTests(unittest.TestCase):
             AngelNararushLoginCred="unused",
             AngelEshitaLoginCred="unused",
         )
-        _install_module("Holidays", CheckForDateHoliday=lambda d: False)
+        _install_module("Holidays", CheckForDateHoliday=lambda d, exchange=None: False,
+                        MCX_FULL_HOLIDAYS=set(), COMMODITY_EXCHANGES={'MCX', 'NCDEX'})
         _install_module(
             "smart_chase",
             SmartChaseExecute=MagicMock(),

@@ -1,9 +1,41 @@
 
 
-def CheckForDateHoliday(HolidayDate):#HolidayDateDifference,entry):
+# MCX/NCDEX full-day closures (both morning + evening sessions closed).
+# On all other NSE/BSE holidays, MCX evening session (5 PM–11:30 PM) remains open.
+# Source: official MCX holiday calendar.
+MCX_FULL_HOLIDAYS = {
+    # 2025
+    '2025-04-18',  # Good Friday
+    '2025-08-15',  # Independence Day
+    '2025-10-02',  # Mahatma Gandhi Jayanti
+    '2025-10-21',  # Diwali Laxmi Pujan
+    '2025-12-25',  # Christmas
+    # 2026
+    '2026-01-26',  # Republic Day
+    '2026-04-03',  # Good Friday
+    '2026-10-02',  # Mahatma Gandhi Jayanti
+    '2026-12-25',  # Christmas
+}
+
+COMMODITY_EXCHANGES = {'MCX', 'NCDEX'}
+
+
+def CheckForDateHoliday(HolidayDate, exchange=None):
+    """Check if *HolidayDate* is a market holiday.
+
+    Parameters
+    ----------
+    HolidayDate : date or str
+        The date to check (converted to str internally).
+    exchange : str or None
+        Optional exchange code (e.g. 'MCX', 'NFO').
+        * None  – returns True if it is an NSE/BSE holiday (backwards compatible).
+        * 'MCX' / 'NCDEX' – returns True **only** on MCX full-closure days.
+        * Any other exchange – same as None (uses the NSE/BSE list).
+    """
     #Holidays in yyyy-mm-dd format
     ListOfHolidays = {
-        # 2025
+        # 2025 (NSE/BSE holidays)
         '2025-02-26': 'MahaShivRatri',
         '2025-03-14': 'Holi',
         '2025-03-31': 'Eid',
@@ -18,7 +50,7 @@ def CheckForDateHoliday(HolidayDate):#HolidayDateDifference,entry):
         '2025-10-22': 'Balipratipada',
         '2025-11-05': 'Guru Nanak Jayanti',
         '2025-12-25': 'Christmas',
-        # 2026 (NSE/BSE/MCX/NCDEX trading holidays)
+        # 2026 (NSE/BSE holidays)
         '2026-01-26': 'Republic Day',
         '2026-02-17': 'MahaShivRatri',
         '2026-03-04': 'Holi',
@@ -39,11 +71,12 @@ def CheckForDateHoliday(HolidayDate):#HolidayDateDifference,entry):
         '2026-11-19': 'Guru Nanak Jayanti',
         '2026-12-25': 'Christmas',
     }
-    #Previousday = str(date.today() + timedelta(HolidayDateDifference))
-    #print(Previousday)
-    for dates in ListOfHolidays:
-        #Convert the date sent in the parameter to string , else will return false for different data type comparision
-        if dates == str(HolidayDate):
-            return True
-    
-    return False
+
+    date_str = str(HolidayDate)
+
+    # For commodity exchanges, only full MCX closures block trading
+    if exchange in COMMODITY_EXCHANGES:
+        return date_str in MCX_FULL_HOLIDAYS
+
+    # For equity exchanges or unspecified → check the NSE/BSE calendar
+    return date_str in ListOfHolidays

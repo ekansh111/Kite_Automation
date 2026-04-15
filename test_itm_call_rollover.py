@@ -61,7 +61,7 @@ def _get_or_stub(name, attrs):
 _kc = _get_or_stub("kiteconnect", {"KiteConnect": MagicMock})
 
 _HOLIDAY_DATES = set()  # mutable, tests can modify
-def _mock_check_holiday(d):
+def _mock_check_holiday(d, exchange=None):
     return d in _HOLIDAY_DATES
 _holidays = _get_or_stub("Holidays", {"CheckForDateHoliday": _mock_check_holiday})
 # Swap in our checker — works whether test_capital_model loaded first or not

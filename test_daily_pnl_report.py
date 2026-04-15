@@ -42,19 +42,26 @@ sys.modules["Directories"] = MockDirs
 
 # Mock Holidays
 MockHolidays = MagicMock()
-def _mock_check_holiday(d):
+def _mock_check_holiday(d, exchange=None):
     holidays = {"2026-04-03", "2026-01-26", "2026-12-25"}
     return str(d) in holidays
 MockHolidays.CheckForDateHoliday = _mock_check_holiday
+MockHolidays.MCX_FULL_HOLIDAYS = set()
+MockHolidays.COMMODITY_EXCHANGES = {'MCX', 'NCDEX'}
 sys.modules["Holidays"] = MockHolidays
 
 # Mock rollover_monitor
 MockRollover = MagicMock()
-def _mock_is_trading_day(d):
+def _mock_is_trading_day(d, exchange=None):
+    if d.weekday() >= 5:
+        return False
+    return not _mock_check_holiday(d, exchange=exchange)
+def _mock_is_any_exchange_open(d):
     if d.weekday() >= 5:
         return False
     return not _mock_check_holiday(d)
 MockRollover.IsTradingDay = _mock_is_trading_day
+MockRollover.IsAnyExchangeOpen = _mock_is_any_exchange_open
 MockRollover._SendEmail = MagicMock()
 MockRollover._EstablishKiteSession = MagicMock()
 sys.modules["rollover_monitor"] = MockRollover
@@ -732,14 +739,14 @@ class TestHolidaySkip:
     def test_christmas_is_holiday(self):
         assert _mock_is_trading_day(date(2026, 12, 25)) is False
 
-    @patch("daily_pnl_report.IsTradingDay", side_effect=_mock_is_trading_day)
+    @patch("daily_pnl_report.IsAnyExchangeOpen", side_effect=_mock_is_any_exchange_open)
     def test_generate_report_skips_holiday(self, _):
         """GenerateDailyReport should return early on a holiday."""
         with patch("daily_pnl_report._FetchOpenPositions") as mock_fetch:
             dpr.GenerateDailyReport(DryRun=True, DateStr="2026-04-03")
             mock_fetch.assert_not_called()
 
-    @patch("daily_pnl_report.IsTradingDay", side_effect=_mock_is_trading_day)
+    @patch("daily_pnl_report.IsAnyExchangeOpen", side_effect=_mock_is_any_exchange_open)
     def test_generate_report_skips_weekend(self, _):
         with patch("daily_pnl_report._FetchOpenPositions") as mock_fetch:
             dpr.GenerateDailyReport(DryRun=True, DateStr="2026-04-04")

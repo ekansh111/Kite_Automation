@@ -46,7 +46,7 @@ from collections import defaultdict
 import pandas as pd
 
 from Server_Order_Handler import EstablishConnectionAngelAPI
-from rollover_monitor import _SendEmail, _EstablishKiteSession, IsTradingDay
+from rollover_monitor import _SendEmail, _EstablishKiteSession, IsTradingDay, IsAnyExchangeOpen
 from Directories import workInputRoot, ZerodhaInstrumentDirectory, AngelInstrumentDirectory
 
 Logger = logging.getLogger("daily_pnl_report")
@@ -987,10 +987,12 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         else:
             DateStr = date.today().strftime("%Y-%m-%d")
 
-    # Skip holidays and weekends — stale prices would produce bogus swing numbers
+    # Skip holidays and weekends — stale prices would produce bogus swing numbers.
+    # Use IsAnyExchangeOpen so the report still runs on equity-only holidays
+    # when MCX evening session is open (positions may have moved).
     ReportDate = datetime.strptime(DateStr, "%Y-%m-%d").date()
-    if not IsTradingDay(ReportDate):
-        Logger.info("Skipping report for %s — not a trading day (holiday/weekend)", DateStr)
+    if not IsAnyExchangeOpen(ReportDate):
+        Logger.info("Skipping report for %s — not a trading day for any exchange (holiday/weekend)", DateStr)
         return
 
     Logger.info("Generating report for %s (dry_run=%s)", DateStr, DryRun)

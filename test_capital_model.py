@@ -53,12 +53,14 @@ def _stub_module(name, attrs):
 
 _stub_module("kiteconnect", {"KiteConnect": MagicMock})
 # Holiday stub uses indirection so other test files can swap the checker after import
-def _holiday_dispatch(d):
+def _holiday_dispatch(d, exchange=None):
     """Delegates to _holidays_impl on the module — swappable by other test files."""
     return sys.modules["Holidays"]._holidays_impl(d)
 _stub_module("Holidays", {
     "CheckForDateHoliday": _holiday_dispatch,
     "_holidays_impl": lambda d: False,
+    "MCX_FULL_HOLIDAYS": set(),
+    "COMMODITY_EXCHANGES": {'MCX', 'NCDEX'},
 })
 _stub_module("FetchOptionContractName", {
     "GetInstrumentsCached": MagicMock(return_value=[]),
