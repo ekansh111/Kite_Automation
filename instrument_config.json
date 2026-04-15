@@ -236,7 +236,17 @@
         "QuantityMultiplier": 1
       },
       "execution": {
-        "use_smart_chase": false
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 3,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 4,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 25,
+        "poll_interval_seconds": 6,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 0.05
       },
       "rollover": {
         "enabled": true,
@@ -765,21 +775,27 @@
       }
     },
     "NIFTY": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NFO",
       "broker": "ZERODHA",
-      "user": "IK6635",
+      "user": "OFS653",
       "point_value": 65,
-      "daily_vol_target": 62156,
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S15A": 0.25,
-        "S15B": 0.25,
-        "S30D": 0.25,
-        "S30C": 0.25
+        "S60D": 0.50
+      },
+      "system_name_map": {
+        "S60D_Nifty": "S60D",
+        "AUTO_S60D_Nifty": "S60D",
+        "AUTO2_NIFTY_S60D": "S60D"
       },
       "order_routing": {
         "InstrumentType": "FUT",
@@ -794,25 +810,53 @@
         "QuantityMultiplier": 65
       },
       "execution": {
-        "use_smart_chase": false
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 2,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 2,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 20,
+        "poll_interval_seconds": 5,
+        "max_chase_seconds_entry": 45,
+        "max_chase_seconds_exit": 30,
+        "tick_size": 0.05
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "09:30",
+        "preferred_window_end": "11:00",
+        "liquidity_urgency": "normal"
       }
     },
     "BANKNIFTY": {
-      "enabled": false,
+      "enabled": true,
       "exchange": "NFO",
       "broker": "ZERODHA",
-      "user": "IK6635",
-      "point_value": 25,
-      "daily_vol_target": 62156,
+      "user": "OFS653",
+      "point_value": 30,
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9
+      },
 
       "FDM": 1.1,
       "forecast_cap": 20,
       "position_inertia_pct": 0.10,
       "subsystems": {
-        "S30A": 0.25,
-        "S30B": 0.25,
-        "S30C": 0.25,
-        "S45A": 0.25
+        "S30C": 0.50,
+        "S60D": 0.50
+      },
+      "system_name_map": {
+        "S30C_BankNifty": "S30C",
+        "S60D_BankNifty": "S60D",
+        "AUTO_S30C_BankNifty": "S30C",
+        "AUTO_S60D_BankNifty": "S60D",
+        "AUTO2_BANKNIFTY_S30C": "S30C",
+        "AUTO2_BANKNIFTY_S60D": "S60D"
       },
       "order_routing": {
         "InstrumentType": "FUT",
@@ -824,10 +868,89 @@
         "ExitSleepDuration": "45",
         "ConvertToMarketOrder": "True",
         "ContractNameProvided": "False",
-        "QuantityMultiplier": 25
+        "QuantityMultiplier": 30
       },
       "execution": {
-        "use_smart_chase": false
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 3,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 3,
+        "chase_step_ticks": 1,
+        "max_chase_ticks": 25,
+        "poll_interval_seconds": 5,
+        "max_chase_seconds_entry": 45,
+        "max_chase_seconds_exit": 30,
+        "tick_size": 0.05
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "09:30",
+        "preferred_window_end": "11:00",
+        "liquidity_urgency": "normal"
+      }
+    },
+    "MIDCPNIFTY": {
+      "enabled": true,
+      "exchange": "NFO",
+      "broker": "ZERODHA",
+      "user": "OFS653",
+      "point_value": 120,
+      "vol_weights": {
+        "sector_weight": 0.3,
+        "asset_weight": 0.17,
+        "asset_DM": 3.9
+      },
+
+      "FDM": 1.1,
+      "forecast_cap": 20,
+      "position_inertia_pct": 0.10,
+      "subsystems": {
+        "S75B": 0.50,
+        "S75A": 0.50
+      },
+      "system_name_map": {
+        "S75B_MidcpNifty": "S75B",
+        "S75A_MidcpNifty": "S75A",
+        "AUTO_S75B_MidcpNifty": "S75B",
+        "AUTO_S75A_MidcpNifty": "S75A",
+        "AUTO2_MIDCPNIFTY_S75B": "S75B",
+        "AUTO2_MIDCPNIFTY_S75A": "S75A"
+      },
+      "order_routing": {
+        "InstrumentType": "FUT",
+        "Variety": "REGULAR",
+        "Product": "NRML",
+        "Validity": "DAY",
+        "DaysPostWhichSelectNextContract": "5",
+        "EntrySleepDuration": "60",
+        "ExitSleepDuration": "45",
+        "ConvertToMarketOrder": "True",
+        "ContractNameProvided": "False",
+        "QuantityMultiplier": 120
+      },
+      "execution": {
+        "use_smart_chase": true,
+        "market_open_delay_seconds": 10,
+        "baseline_spread_ticks": 8,
+        "max_settle_wait_seconds": 30,
+        "buffer_ticks": 5,
+        "chase_step_ticks": 2,
+        "max_chase_ticks": 30,
+        "poll_interval_seconds": 6,
+        "max_chase_seconds_entry": 50,
+        "max_chase_seconds_exit": 35,
+        "tick_size": 0.05
+      },
+      "rollover": {
+        "enabled": true,
+        "alert_days_before_expiry": 4,
+        "execute_days_before_expiry": 3,
+        "preferred_window_start": "09:30",
+        "preferred_window_end": "11:00",
+        "liquidity_urgency": "normal"
       }
     }
   },
