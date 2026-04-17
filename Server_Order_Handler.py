@@ -539,6 +539,75 @@ def PrepareInstrumentContractName(smartAPI, OrderDetails):
         return OrderDetails
 
 
+def _ComputeTradingDaysRolloverDateAngel(Today, N, Exchange):
+    """Return the calendar date that is N trading days after Today for Angel.
+
+    Mirrors the helper used by the Kite handler; keeping the picker
+    calendar aligned with the rollover monitor prevents already-rolled
+    front-month contracts from being reselected across weekends/holidays.
+    """
+    # Deferred import for the same reason as the Kite helper — avoids pulling
+    # Holidays into sys.modules at module load, which would defeat test
+    # harnesses that stub it conditionally.
+    from Holidays import CheckForDateHoliday
+
+    try:
+        N = int(N)
+    except (TypeError, ValueError):
+        N = 0
+    if isinstance(Today, datetime):
+        Current = Today
+    else:
+        Current = datetime.combine(Today, datetime.min.time())
+    Remaining = N
+    while Remaining > 0:
+        Current = Current + timedelta(days=1)
+        if Current.weekday() >= 5:
+            continue
+        if CheckForDateHoliday(Current.date(), exchange=Exchange):
+            continue
+        Remaining -= 1
+    return Current
+
+
+def _FindPinnedRolloverContractAngel(OrderDetails, AngelInstrumentDetails, Today):
+    """If a rollover has already completed for this instrument, return the CSV
+    row for the new_contract.  Empty DataFrame when no pin applies.
+    """
+    try:
+        import forecast_db as _db  # deferred to keep import graph light
+        Rows = _db.GetRecentCompletedRollovers(limit=30, Broker='ANGEL')
+    except Exception as Exc:
+        Logger.warning("Angel rollover DB lookup failed: %s", Exc)
+        return pd.DataFrame()
+
+    if not Rows:
+        return pd.DataFrame()
+
+    TargetName = OrderDetails.get('Tradingsymbol')
+    TargetExchange = OrderDetails.get('Exchange')
+    TargetInstType = OrderDetails.get('InstrumentType')
+
+    for Row in Rows:
+        NewContract = Row.get('new_contract')
+        if not NewContract:
+            continue
+        Match = AngelInstrumentDetails[
+            (AngelInstrumentDetails['symbol'] == NewContract) &
+            (AngelInstrumentDetails['name'] == TargetName) &
+            (AngelInstrumentDetails['exch_seg'] == TargetExchange) &
+            (AngelInstrumentDetails['instrumenttype'] == TargetInstType) &
+            (AngelInstrumentDetails['expiry'] > Today)
+        ]
+        if not Match.empty:
+            Logger.info(
+                "Pinning Angel order for %s to rolled-over contract %s (DB row id=%s)",
+                TargetName, NewContract, Row.get('id')
+            )
+            return Match.sort_values(by='expiry', ascending=True).head(1)
+    return pd.DataFrame()
+
+
 def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
     """
     Reads the instrument details from AngelInstrumentDirectory CSV,
@@ -554,13 +623,33 @@ def PrepareAngelInstrumentContractName(smartAPI,OrderDetails):
         rows=len(AngelInstrumentDetails),
         cached=CacheHit,
     )
-    
+
     # Current datetime for reference
     today = datetime.now()
 
-    # Compute the rollover date by adding 'DaysPostWhichSelectNextContract'
-    # to today's date
-    RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
+    # Compute the rollover date using *trading* days so the picker aligns with
+    # the rollover_monitor's calendar and we don't re-select the front-month
+    # contract after it has already been rolled out.
+    RolloverDate = _ComputeTradingDaysRolloverDateAngel(
+        today,
+        OrderDetails['DaysPostWhichSelectNextContract'],
+        OrderDetails.get('Exchange'),
+    )
+
+    # If rollover_monitor has already completed a rollover for this instrument,
+    # pin the order to the new_contract.  DB is authoritative once status is
+    # COMPLETE.
+    PinnedMatch = _FindPinnedRolloverContractAngel(
+        OrderDetails, AngelInstrumentDetails, today
+    )
+    if not PinnedMatch.empty:
+        _LogAngelStep(
+            "Pinned Angel order to completed-rollover contract",
+            OrderDetails,
+            pinned_symbol=PinnedMatch.iloc[0].get('symbol'),
+            pinned_token=PinnedMatch.iloc[0].get('token'),
+        )
+        return PinnedMatch
 
     AngelInstrumentDetails_filtered = pd.DataFrame()
 

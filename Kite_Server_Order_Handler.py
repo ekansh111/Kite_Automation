@@ -9,6 +9,7 @@ It includes functionality for:
 """
 
 # package import statement
+import logging
 import time
 from datetime import date, datetime, timedelta
 import pandas as pd
@@ -16,9 +17,88 @@ import pytz
 from Directories import *
 from Fetch_Positions_Data import get_order_status
 from Server_Order_Place import *
-
 # For Kite Connect
 from kiteconnect import KiteConnect
+
+_KiteHandlerLogger = logging.getLogger(__name__)
+
+
+def _ComputeTradingDaysRolloverDate(Today, N, Exchange):
+    """Return the calendar date that is N trading days after Today.
+
+    Uses the exchange-aware holiday calendar so weekends and MCX/NSE
+    holidays do not shorten the window.  Matches the trading-day counter
+    that rollover_monitor uses when deciding whether to fire a rollover,
+    so the new-order picker and the rollover engine agree on "3 days
+    before expiry".
+    """
+    # Deferred import keeps import graph light and avoids a hard dependency
+    # at module load time (some test harnesses stub Holidays only after
+    # importing this module).
+    from Holidays import CheckForDateHoliday
+
+    try:
+        N = int(N)
+    except (TypeError, ValueError):
+        N = 0
+    if isinstance(Today, datetime):
+        Current = Today
+    else:
+        Current = datetime.combine(Today, datetime.min.time())
+    Remaining = N
+    while Remaining > 0:
+        Current = Current + timedelta(days=1)
+        if Current.weekday() >= 5:
+            continue
+        if CheckForDateHoliday(Current.date(), exchange=Exchange):
+            continue
+        Remaining -= 1
+    return Current
+
+
+def _FindPinnedRolloverContractKite(OrderDetails, ZerodhaInstrumentDetails, Today):
+    """If a rollover has already completed for this instrument, return the CSV
+    row for the new_contract (as a single-row DataFrame).  Returns an empty
+    DataFrame if no pin applies.
+
+    The rollover_log stores the NEW contract symbol after a successful
+    two-leg rollover.  Without this pin, the legacy filter
+    (expiry > RolloverDate) could silently re-select the just-rolled-out
+    front-month whenever the calendar-day RolloverDate falls before the
+    actual expiry (e.g. across weekends).
+    """
+    try:
+        import forecast_db as _db  # deferred to keep import graph light
+        Rows = _db.GetRecentCompletedRollovers(limit=30, Broker='ZERODHA')
+    except Exception as Exc:
+        _KiteHandlerLogger.warning("Rollover DB lookup failed: %s", Exc)
+        return pd.DataFrame()
+
+    if not Rows:
+        return pd.DataFrame()
+
+    TargetName = OrderDetails.get('Tradingsymbol')
+    TargetExchange = OrderDetails.get('Exchange')
+    TargetInstType = OrderDetails.get('InstrumentType')
+
+    for Row in Rows:
+        NewContract = Row.get('new_contract')
+        if not NewContract:
+            continue
+        Match = ZerodhaInstrumentDetails[
+            (ZerodhaInstrumentDetails['symbol'] == NewContract) &
+            (ZerodhaInstrumentDetails['name'] == TargetName) &
+            (ZerodhaInstrumentDetails['exch_seg'] == TargetExchange) &
+            (ZerodhaInstrumentDetails['instrumenttype'] == TargetInstType) &
+            (ZerodhaInstrumentDetails['expiry'] > Today)
+        ]
+        if not Match.empty:
+            _KiteHandlerLogger.info(
+                "Pinning order for %s to rolled-over contract %s (DB row id=%s)",
+                TargetName, NewContract, Row.get('id')
+            )
+            return Match.sort_values(by='expiry', ascending=True).head(1)
+    return pd.DataFrame()
 
 # Types of Orders
 LimitOrder = 'LIMIT'
@@ -66,16 +146,33 @@ def PrepareKiteInstrumentContractName(kite,OrderDetails):
     # Current datetime for reference
     today = datetime.now()
 
-    # Compute the rollover date by adding 'DaysPostWhichSelectNextContract' to today's date
-    RolloverDate = today + timedelta(days=int(OrderDetails['DaysPostWhichSelectNextContract']))
+    # Compute the rollover date by adding N *trading* days (not calendar days) so
+    # that weekends and exchange holidays don't shrink the window below what the
+    # rollover_monitor used when deciding to fire.  This prevents the front-month
+    # contract from being re-selected after it has already been rolled out.
+    RolloverDate = _ComputeTradingDaysRolloverDate(
+        today,
+        OrderDetails['DaysPostWhichSelectNextContract'],
+        OrderDetails.get('Exchange'),
+    )
 
     # Convert the 'expiry' column to a datetime. Example format: '2025-02-28' => datetime object
     ZerodhaInstrumentDetails['expiry'] = pd.to_datetime(
-        ZerodhaInstrumentDetails['expiry'].str.title(), 
+        ZerodhaInstrumentDetails['expiry'].str.title(),
         format='%Y-%m-%d', # The date format might differ; adjust as needed
         errors='coerce'
     )
     #print(ZerodhaInstrumentDetails)
+
+    # If rollover_monitor has already completed a rollover for this instrument,
+    # pin this order to the new_contract so we never accidentally place on the
+    # just-closed front-month.  The DB is authoritative once the rollover row
+    # is COMPLETE.
+    PinnedMatch = _FindPinnedRolloverContractKite(
+        OrderDetails, ZerodhaInstrumentDetails, today
+    )
+    if not PinnedMatch.empty:
+        return PinnedMatch
 
     ZerodhaInstrumentDetails_filtered = pd.DataFrame()
 
@@ -178,11 +275,13 @@ def CheckIfExistingOldContractSqOffReq(kite, ZerodhaInstrumentDetails, OrderDeta
         # Rename columns in the copied DataFrame
         KitePositionsFiltered.rename(columns={'tradingsymbol': 'symbol', 'instrument_token': 'token'}, inplace=True)
 
-        # Step 3: If there are matching positions, return the filtered positions
-        if not KitePositions.empty:
-            # Rename columns to standardize naming for further processing
-            KitePositionsFiltered.rename(columns={'tradingsymbol': 'symbol', 'instrument_token': 'token'}, inplace=True)
-
+        # Step 3: If there are matching positions in the OLD contract, return
+        # those.  Previously this checked KitePositions.empty (the full positions
+        # DataFrame), which was True whenever the user held any position on Kite
+        # — including the already-rolled-over new month — causing this function
+        # to return an empty DF that fell through to the buggy calendar-day
+        # filter in the caller.
+        if not KitePositionsFiltered.empty:
             return KitePositionsFiltered
         # If the user has positions but none match the old contract criteria, return empty
         return pd.DataFrame()

@@ -632,6 +632,32 @@ def GetRecentRollovers(limit=20):
     return [dict(r) for r in Rows]
 
 
+def GetRecentCompletedRollovers(limit=20, Broker=None):
+    """Return recent COMPLETE rollover rows, optionally filtered by broker.
+
+    Used by the order contract pickers so that once the rollover monitor has
+    closed the front-month and opened the next-month leg, any subsequent new
+    order routes straight to the new_contract instead of being re-matched
+    against the about-to-expire CSV entry.
+    """
+    Conn = _GetConn()
+    if Broker:
+        Rows = Conn.execute(
+            """SELECT * FROM rollover_log
+               WHERE status = 'COMPLETE' AND broker = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (Broker, limit)
+        ).fetchall()
+    else:
+        Rows = Conn.execute(
+            """SELECT * FROM rollover_log
+               WHERE status = 'COMPLETE'
+               ORDER BY created_at DESC LIMIT ?""",
+            (limit,)
+        ).fetchall()
+    return [dict(r) for r in Rows]
+
+
 # ─── ITM Call Rollover ─────────────────────────────────────────────
 
 
