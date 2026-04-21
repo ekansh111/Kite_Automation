@@ -772,7 +772,7 @@ class TestDailyMtm:
              "qty": 1, "avg_entry": 100, "prev_close": 95, "ltp": 105, "point_value": 10,
              "broker": "ZERODHA", "is_new_today": False},
         ], [])
-        mock_realized.return_value = {"YD6016": 20000.0, "AABM826021": 5000.0, "OFS653": 0.0}
+        mock_realized.return_value = ({"YD6016": 20000.0, "AABM826021": 5000.0, "OFS653": 0.0}, {})
 
         dpr.GenerateDailyReport(DryRun=True, DateStr="2026-04-02")
 
@@ -795,7 +795,7 @@ class TestDailyMtm:
              "qty": 4, "avg_entry": 320, "prev_close": 323, "ltp": 325, "point_value": 1000,
              "broker": "ZERODHA", "is_new_today": False},
         ], [])
-        mock_realized.return_value = {"YD6016": 0.0, "AABM826021": 0.0, "OFS653": 0.0}
+        mock_realized.return_value = ({"YD6016": 0.0, "AABM826021": 0.0, "OFS653": 0.0}, {})
 
         dpr.GenerateDailyReport(DryRun=True, DateStr="2026-04-02")
 
@@ -810,7 +810,7 @@ class TestDailyMtm:
 class TestFetchErrors:
     @patch("daily_pnl_report.IsTradingDay", return_value=True)
     @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
-    @patch("daily_pnl_report._FetchDailyRealizedPnl", return_value={"YD6016": 0, "AABM826021": 0, "OFS653": 0})
+    @patch("daily_pnl_report._FetchDailyRealizedPnl", return_value=({"YD6016": 0, "AABM826021": 0, "OFS653": 0}, {}))
     @patch("daily_pnl_report._FetchOpenPositions")
     @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
     @patch("daily_pnl_report._BuildReportHtml", return_value="<html></html>")
@@ -1183,3 +1183,735 @@ class TestExchangeTimeGating:
         """_ExchangeNotOpen is a proper exception."""
         with pytest.raises(dpr._ExchangeNotOpen):
             raise dpr._ExchangeNotOpen("MCX")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Per-instrument Realized P&L Breakdown
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRealizedByInstrument:
+    """Regression tests for the bug that hid per-symbol realized P&L.
+
+    Scenario (DHANIYA, Apr 17 2026):
+      - Carry SHORT 10 units at 12,808 entered pre-Apr-17
+      - Apr 17 bought 15 units at avg 13,064.67 → first 10 covered short
+        for realized loss of -25,667, remaining 5 = new 1-lot LONG
+      - Old report showed DHANIYA line as +8,066 (unrealized only)
+        and hid the -25,667 in the account-level Realized aggregate
+      - New report attributes the -25,667 to DHANIYA on the same row
+    """
+
+    def test_option_underlying_extraction(self):
+        assert dpr._OptionUnderlying("NIFTY26APR24000CE") == "NIFTY"
+        assert dpr._OptionUnderlying("BANKNIFTY26APR52000PE") == "BANKNIFTY"
+        assert dpr._OptionUnderlying("SENSEX2642380000CE") == "SENSEX"
+        assert dpr._OptionUnderlying("BANKEX26APR60000CE") == "BANKEX"
+        assert dpr._OptionUnderlying("RELIANCE") is None
+
+    def test_fetch_returns_tuple_shape(self):
+        """Function signature returns (ByAccount, ByInstrument)."""
+        with patch("daily_pnl_report._EstablishKiteSession") as mock_kite_factory, \
+             patch("daily_pnl_report.EstablishConnectionAngelAPI") as mock_angel_factory, \
+             patch("daily_pnl_report._IsExchangeOpen", return_value=False):
+            by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+            assert isinstance(by_acct, dict)
+            assert isinstance(by_inst, dict)
+            # All accounts present, all zero when nothing fetched
+            assert set(by_acct.keys()) == {"YD6016", "AABM826021", "OFS653"}
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_dhaniya_carry_short_cover_attributed(self, mock_match, mock_open,
+                                                   mock_angel_factory, mock_kite_factory):
+        """Angel DHANIYA with realised=-25667 attributed to 'DHANIYA' bucket."""
+        # Angel returns DHANIYA position with the short-cover realized loss
+        mock_smart = MagicMock()
+        mock_smart.position.return_value = {"data": [
+            {"tradingsymbol": "DHANIYA20MAY2026", "exchange": "NCX",
+             "producttype": "CARRYFORWARD", "netqty": "5",
+             "realised": "-25667", "m2m": "-17601"},
+        ]}
+        mock_angel_factory.return_value = mock_smart
+        # Kite both sides return empty
+        mock_kite = MagicMock()
+        mock_kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = mock_kite
+        mock_match.return_value = ("DHANIYA", {"exchange": "NCX"})
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["AABM826021"] == -25667.0
+        assert by_inst["DHANIYA"] == -25667.0
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    def test_options_bucketed_by_underlying(self, mock_open,
+                                             mock_angel_factory, mock_kite_factory):
+        """NIFTY/SENSEX/BANKNIFTY options keyed by underlying, not full symbol."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "NIFTY26APR24000CE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 0, "realised": 5000, "m2m": 5000},
+                    {"tradingsymbol": "NIFTY26APR23000PE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 130, "realised": -1200, "m2m": 3000},
+                    {"tradingsymbol": "SENSEX2642380000CE", "exchange": "BFO",
+                     "product": "NRML", "quantity": 0, "realised": 10000, "m2m": 10000},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+
+        _, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        # Both NIFTY legs aggregated under "NIFTY"
+        assert by_inst["NIFTY"] == pytest.approx(5000 + -1200)
+        assert by_inst["SENSEX"] == 10000.0
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_m2m_fallback_attributed_per_instrument(self, mock_match, mock_open,
+                                                     mock_angel_factory, mock_kite_factory):
+        """Closed Kite position (qty=0, realised=0, m2m=125800) attributed via m2m."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "YD6016":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "CRUDEOIL26APRFUT", "exchange": "MCX",
+                     "product": "NRML", "quantity": 0, "realised": 0, "m2m": 125800, "pnl": 125800},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("CRUDEOIL", {"exchange": "MCX"})
+
+        _, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_inst["CRUDEOIL"] == 125800.0
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument", return_value=(None, None))
+    def test_unmatched_symbol_still_in_account_total(self, mock_match, mock_open,
+                                                     mock_angel_factory, mock_kite_factory):
+        """Unknown symbols contribute to account total but not to by_instrument map."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "YD6016":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "UNKNOWN26APRFUT", "exchange": "MCX",
+                     "product": "NRML", "quantity": 0, "realised": 500, "m2m": 500, "pnl": 500},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["YD6016"] == 500.0
+        assert "UNKNOWN" not in by_inst
+        # No-op bucket for unmatched — no silent injection under any key
+        assert by_inst == {}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# _PositionRow — Realized / Net Today Display
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPositionRowRealized:
+    def _dhaniya_carry_cover_position(self):
+        """The exact Apr 17 DHANIYA scenario."""
+        return {
+            "instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+            "direction": "LONG", "qty": 5, "lots": 1,
+            "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
+            "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+
+    def test_no_realized_no_extra_lines(self):
+        """When realized=0, only the standard Today line appears."""
+        html = dpr._PositionRow(self._dhaniya_carry_cover_position(), 0)
+        assert "Realized today" not in html
+        assert "Net today" not in html
+        assert "Today" in html
+
+    def test_realized_loss_shown(self):
+        """Dhaniya scenario: realized=-25,667 attributed, Net today= -17,600."""
+        html = dpr._PositionRow(self._dhaniya_carry_cover_position(), -25667.0)
+        assert "Realized today" in html
+        assert "-25,667" in html
+        assert "Net today" in html
+        # 8066.50 + (-25667) = -17,600.50
+        assert "-17,600" in html or "-17,601" in html
+
+    def test_realized_profit_shown(self):
+        """Realized gain on same symbol as open position."""
+        html = dpr._PositionRow(self._dhaniya_carry_cover_position(), 5000.0)
+        assert "+5,000" in html
+        # Net today = 8066.50 + 5000 = 13,066.50
+        assert "+13,066" in html or "+13,067" in html
+
+    def test_subrupee_realized_suppressed(self):
+        """Floating-point noise below 1 rupee is not rendered."""
+        html = dpr._PositionRow(self._dhaniya_carry_cover_position(), 0.3)
+        assert "Realized today" not in html
+
+    def test_existing_fields_preserved(self):
+        """New rendering doesn't break existing layout."""
+        html = dpr._PositionRow(self._dhaniya_carry_cover_position(), -25667)
+        assert "DHANIYA" in html
+        assert "LONG" in html
+        assert "NEW" in html
+        # Entry and LTP are rendered with :.2f (no thousands separator)
+        assert "13064.67" in html
+        assert "13226" in html
+
+
+# ═══════════════════════════════════════════════════════════════════
+# _BuildReportHtml — end-to-end Realized/Closed rendering
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBuildReportHtmlRealized:
+    def _data(self, **overrides):
+        base = {
+            "date": "2026-04-17", "positions": [],
+            "total_pnl": 0, "total_daily_mtm": 0, "open_swing": 0,
+            "realized_today": 0, "realized_by_account": {},
+            "realized_by_instrument": {}, "position_count": 0,
+            "trade_count": 0, "futures_orders": [], "options_orders": [],
+            "fetch_errors": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_open_position_gets_its_realized_attribution(self):
+        """The DHANIYA Apr 17 scenario rendered end-to-end."""
+        dhaniya = {
+            "instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+            "direction": "LONG", "qty": 5, "lots": 1,
+            "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
+            "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        html = dpr._BuildReportHtml(self._data(
+            positions=[dhaniya],
+            realized_by_instrument={"DHANIYA": -25667.0},
+            realized_today=-25667.0, open_swing=8066.50,
+            total_daily_mtm=-17600.50, total_pnl=8066.50,
+        ))
+        assert "Realized today" in html
+        assert "-25,667" in html
+        assert "Net today" in html
+
+    def test_closed_today_section_for_fully_closed_instruments(self):
+        """Instruments with realized != 0 but no open position get their own section."""
+        html = dpr._BuildReportHtml(self._data(
+            positions=[],
+            realized_by_instrument={"CRUDEOIL": 12400.0, "JEERAUNJHA": -3000.0},
+            realized_today=9400.0,
+        ))
+        assert "Closed Today" in html
+        assert "CRUDEOIL" in html
+        assert "+12,400" in html
+        assert "JEERAUNJHA" in html
+        assert "-3,000" in html
+
+    def test_closed_today_skips_instruments_with_open_positions(self):
+        """If a symbol is still open, skip listing it in Closed Today."""
+        guarseed = {
+            "instrument": "GUARSEED", "tradingsymbol": "GUARSEED20MAY2026",
+            "direction": "LONG", "qty": 20, "lots": 4,
+            "avg_entry": 5810, "prev_close": 5724, "ltp": 5863,
+            "point_value": 50, "pnl": 10600, "daily_swing": 10600,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        html = dpr._BuildReportHtml(self._data(
+            positions=[guarseed],
+            realized_by_instrument={"GUARSEED": 2000.0, "CRUDEOIL": 12400.0},
+            realized_today=14400.0,
+        ))
+        # GUARSEED realized shows on the position row, not in Closed Today
+        assert "Closed Today" in html
+        # Find the Closed Today section and verify CRUDEOIL is in it, GUARSEED isn't
+        closed_idx = html.find("Closed Today")
+        after_closed = html[closed_idx:]
+        # First occurrence of an instrument in the Closed section
+        assert "CRUDEOIL" in after_closed
+        # GUARSEED should appear *before* the Closed Today header (on the position row)
+        assert html.find("GUARSEED") < closed_idx
+
+    def test_no_closed_today_section_when_all_open(self):
+        """No Closed Today section when every instrument is attached to an open position."""
+        guarseed = {
+            "instrument": "GUARSEED", "tradingsymbol": "GUARSEED20MAY2026",
+            "direction": "LONG", "qty": 20, "lots": 4,
+            "avg_entry": 5810, "prev_close": 5724, "ltp": 5863,
+            "point_value": 50, "pnl": 10600, "daily_swing": 10600,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        html = dpr._BuildReportHtml(self._data(
+            positions=[guarseed],
+            realized_by_instrument={"GUARSEED": 2000.0},
+        ))
+        assert "Closed Today" not in html
+
+    def test_options_underlying_realized_shown_on_combo_row(self):
+        """Option combo shows its underlying's realized attribution."""
+        nifty_ce = {
+            "instrument": "NIFTY_OPT_CE", "tradingsymbol": "NIFTY26APR24000CE",
+            "direction": "LONG", "qty": 65, "avg_entry": 2030, "prev_close": 1385,
+            "ltp": 1327, "point_value": 1.0, "pnl": -45675, "daily_swing": -3812,
+            "broker": "ZERODHA", "is_new_today": False,
+        }
+        html = dpr._BuildReportHtml(self._data(
+            positions=[nifty_ce],
+            realized_by_instrument={"NIFTY": 8000.0},
+            realized_today=8000.0,
+        ))
+        assert "Realized today" in html
+        assert "+8,000" in html
+        # Net today = -3812 + 8000 = 4188
+        assert "+4,188" in html
+
+    def test_realized_by_instrument_missing_key_defaults_zero(self):
+        """Open position with no realized entry renders like before (no extra lines)."""
+        guarseed = {
+            "instrument": "GUARSEED", "tradingsymbol": "GUARSEED20MAY2026",
+            "direction": "LONG", "qty": 20, "lots": 4,
+            "avg_entry": 5810, "prev_close": 5724, "ltp": 5863,
+            "point_value": 50, "pnl": 10600, "daily_swing": 10600,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        html = dpr._BuildReportHtml(self._data(
+            positions=[guarseed],
+            realized_by_instrument={},  # empty
+        ))
+        assert "Realized today" not in html
+        assert "Net today" not in html
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Edge cases: exception safety, multi-leg sums, INTRADAY, mixed states
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRealizedExceptionSafety:
+    """Verify per-broker exception handling keeps ByAccount and ByInstrument
+    in sync. If a broker's fetch blows up, its contributions must be fully
+    discarded — not left as partial entries under that broker's instruments.
+    """
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_angel_failure_does_not_corrupt_kite_attributions(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """If Angel throws, ByAccount['AABM826021']=0 and no NCDEX instruments in by_inst."""
+        def _kite_side(user):
+            k = MagicMock()
+            if user == "YD6016":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "GOLDM26APRFUT", "exchange": "MCX",
+                     "product": "NRML", "quantity": 0, "realised": 5000, "m2m": 5000},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side
+        # Angel raises
+        mock_angel_factory.side_effect = ConnectionError("Angel API down")
+        mock_match.return_value = ("GOLDM", {"exchange": "MCX"})
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["YD6016"] == 5000.0
+        assert by_acct["AABM826021"] == 0.0  # Angel failed
+        assert by_inst["GOLDM"] == 5000.0
+        # No NCDEX keys should have leaked in — Angel's loop never ran
+        assert "DHANIYA" not in by_inst
+        assert "JEERAUNJHA" not in by_inst
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_mid_loop_exception_discards_partial_attributions(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """Angel loop throws on 2nd position → 1st position's attribution is rolled back.
+
+        Without the local-dict-merge-at-end guard, DHANIYA would sneak into
+        by_instrument even though the broker's overall contribution is 0.
+        """
+        def _kite_side(user):
+            k = MagicMock()
+            k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side
+
+        mock_smart = MagicMock()
+        # Second position has bogus netqty that int() can't parse — mid-loop crash.
+        mock_smart.position.return_value = {"data": [
+            {"tradingsymbol": "DHANIYA20MAY2026", "exchange": "NCX",
+             "producttype": "CARRYFORWARD", "netqty": "5",
+             "realised": "-25667", "m2m": "-17601"},
+            {"tradingsymbol": "JEERAUNJHA20MAY2026", "exchange": "NCX",
+             "producttype": "CARRYFORWARD", "netqty": "not-a-number",
+             "realised": "1000", "m2m": "1000"},
+        ]}
+        mock_angel_factory.return_value = mock_smart
+        mock_match.side_effect = [
+            ("DHANIYA", {"exchange": "NCX"}),
+            ("JEERAUNJHA", {"exchange": "NCX"}),
+        ]
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["AABM826021"] == 0.0
+        # DHANIYA's -25,667 should NOT be in by_inst — partial merge discarded.
+        assert "DHANIYA" not in by_inst
+        assert "JEERAUNJHA" not in by_inst
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_options_failure_isolated_from_futures(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """Options broker fails → futures attributions intact."""
+        def _kite_side(user):
+            if user == "OFS653":
+                raise TimeoutError("Options API timeout")
+            k = MagicMock()
+            k.positions.return_value = {"net": [
+                {"tradingsymbol": "GOLDM26APRFUT", "exchange": "MCX",
+                 "product": "NRML", "quantity": 0, "realised": 3000, "m2m": 3000},
+            ]}
+            return k
+        mock_kite_factory.side_effect = _kite_side
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("GOLDM", {"exchange": "MCX"})
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["YD6016"] == 3000.0
+        assert by_acct["OFS653"] == 0.0
+        assert by_inst == {"GOLDM": 3000.0}
+
+
+class TestIntradayAttribution:
+    """Angel INTRADAY positions (not just CARRYFORWARD) must be attributed per-instrument.
+    Matters because MCX intraday trades get INTRADAY producttype.
+    """
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_intraday_position_bucketed(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        mock_kite = MagicMock()
+        mock_kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = mock_kite
+
+        mock_smart = MagicMock()
+        mock_smart.position.return_value = {"data": [
+            {"tradingsymbol": "CASTOR20APR2026", "exchange": "NCX",
+             "producttype": "INTRADAY", "netqty": "0",
+             "realised": "-12100", "m2m": "-12100"},
+            {"tradingsymbol": "COCUDAKL20APR2026", "exchange": "NCX",
+             "producttype": "INTRADAY", "netqty": "0",
+             "realised": "8500", "m2m": "8500"},
+        ]}
+        mock_angel_factory.return_value = mock_smart
+        mock_match.side_effect = [
+            ("CASTOR", {"exchange": "NCX"}),
+            ("COCUDAKL", {"exchange": "NCX"}),
+        ]
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["AABM826021"] == pytest.approx(-12100 + 8500)
+        assert by_inst["CASTOR"] == -12100.0
+        assert by_inst["COCUDAKL"] == 8500.0
+
+
+class TestSameInstrumentMultipleLegs:
+    """Same canonical instrument across multiple positions (e.g. intraday + carry
+    on same symbol) must sum, not overwrite."""
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_carryforward_plus_intraday_same_symbol_sum(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """DHANIYA CARRYFORWARD realized + DHANIYA INTRADAY realized → summed."""
+        mock_kite = MagicMock()
+        mock_kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = mock_kite
+
+        mock_smart = MagicMock()
+        mock_smart.position.return_value = {"data": [
+            {"tradingsymbol": "DHANIYA20MAY2026", "exchange": "NCX",
+             "producttype": "CARRYFORWARD", "netqty": "5",
+             "realised": "-25667", "m2m": "-17601"},
+            {"tradingsymbol": "DHANIYA20APR2026", "exchange": "NCX",
+             "producttype": "INTRADAY", "netqty": "0",
+             "realised": "3000", "m2m": "3000"},
+        ]}
+        mock_angel_factory.return_value = mock_smart
+        mock_match.side_effect = [
+            ("DHANIYA", {"exchange": "NCX"}),
+            ("DHANIYA", {"exchange": "NCX"}),
+        ]
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        assert by_acct["AABM826021"] == pytest.approx(-25667 + 3000)
+        assert by_inst["DHANIYA"] == pytest.approx(-22667.0)  # summed, not overwritten
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    def test_nifty_ce_and_pe_sum_under_underlying(
+        self, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """NIFTY CE realized + NIFTY PE realized → both under 'NIFTY'."""
+        def _kite_side(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "NIFTY26APR24000CE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 0, "realised": 8000, "m2m": 8000},
+                    {"tradingsymbol": "NIFTY26APR22000PE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 0, "realised": -3500, "m2m": -3500},
+                    {"tradingsymbol": "NIFTY26APR23000CE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 65, "realised": 0, "m2m": 1000},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        # CE +8000, PE -3500 → NIFTY total +4500. The open position has realised=0 so ignored.
+        assert by_inst["NIFTY"] == pytest.approx(8000 - 3500)
+
+
+class TestGenerateDailyReportE2E:
+    """End-to-end: does realized_by_instrument flow from _FetchDailyRealizedPnl
+    all the way into the HTML assembly with correct per-symbol attribution?"""
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_realized_by_instrument_reaches_html(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
+    ):
+        """The DHANIYA Apr 17 scenario — end-to-end."""
+        mock_fetch.return_value = ([
+            {"instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+             "direction": "LONG", "qty": 5, "lots": 1,
+             "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
+             "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+             "broker": "ANGEL", "is_new_today": True},
+        ], [])
+        mock_realized.return_value = (
+            {"YD6016": 0.0, "AABM826021": -25667.0, "OFS653": 0.0},
+            {"DHANIYA": -25667.0},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-17")
+
+        # _SendEmail should have been called with HTML containing per-symbol realized
+        assert mock_email.call_count == 1
+        _, html = mock_email.call_args[0]
+        assert "DHANIYA" in html
+        assert "Realized today" in html
+        assert "-25,667" in html
+        assert "Net today" in html
+        assert "-17,600" in html or "-17,601" in html
+
+        # Accumulator got the account-level dict, not the tuple
+        accum_args = mock_accum.call_args[0]
+        assert isinstance(accum_args[0], dict)
+        assert accum_args[0]["AABM826021"] == -25667.0
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_fully_closed_instruments_appear_in_closed_today(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
+    ):
+        """April expiry closes: COCUDAKL + JEERAUNJHA fully closed → Closed Today."""
+        mock_fetch.return_value = ([], [])  # No open positions
+        mock_realized.return_value = (
+            {"YD6016": 0.0, "AABM826021": 72934.40, "OFS653": 0.0},
+            {"COCUDAKL": 14636.0, "JEERAUNJHA": 58298.40},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-20")
+
+        _, html = mock_email.call_args[0]
+        assert "Closed Today" in html
+        assert "COCUDAKL" in html
+        assert "+14,636" in html
+        assert "JEERAUNJHA" in html
+        assert "+58,298" in html
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_mixed_open_and_fully_closed_attribution(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
+    ):
+        """DHANIYA has open + realized; COCUDAKL fully closed.
+        DHANIYA should show on position row, COCUDAKL in Closed Today."""
+        mock_fetch.return_value = ([
+            {"instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+             "direction": "LONG", "qty": 5, "lots": 1,
+             "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
+             "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+             "broker": "ANGEL", "is_new_today": True},
+        ], [])
+        mock_realized.return_value = (
+            {"YD6016": 0.0, "AABM826021": -11031.0, "OFS653": 0.0},
+            {"DHANIYA": -25667.0, "COCUDAKL": 14636.0},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-17")
+        _, html = mock_email.call_args[0]
+
+        dhaniya_idx = html.find("DHANIYA")
+        closed_idx = html.find("Closed Today")
+        cocudakl_idx = html.find("COCUDAKL")
+
+        assert dhaniya_idx < closed_idx  # DHANIYA on position row first
+        assert closed_idx < cocudakl_idx  # COCUDAKL in Closed Today section
+        assert "Realized today" in html
+        assert "-25,667" in html  # on DHANIYA row
+        assert "+14,636" in html  # on COCUDAKL closed-today row
+
+
+class TestAccumulatorIntegration:
+    """Verify _UpdateRealizedPnlAccumulator keeps working with new tuple caller."""
+
+    def setup_method(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.orig_path = dpr.REALIZED_PNL_PATH
+        dpr.REALIZED_PNL_PATH = Path(self.tmp_dir) / "realized_pnl_accumulator.json"
+
+    def teardown_method(self):
+        dpr.REALIZED_PNL_PATH = self.orig_path
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_tuple_unpacked_correctly_into_accumulator(self):
+        """GenerateDailyReport unpacks tuple → accumulator sees only ByAccount dict."""
+        # Simulate what GenerateDailyReport does:
+        by_account, by_instrument = (
+            {"YD6016": 5000.0, "AABM826021": -25667.0, "OFS653": 0.0},
+            {"GOLDM": 5000.0, "DHANIYA": -25667.0},
+        )
+        dpr._UpdateRealizedPnlAccumulator(by_account, "2026-04-17", 8066.50)
+
+        data = json.loads(dpr.REALIZED_PNL_PATH.read_text())
+        # Accumulator stores only account-level totals
+        assert data["daily_entries"]["2026-04-17"]["YD6016"] == 5000.0
+        assert data["daily_entries"]["2026-04-17"]["AABM826021"] == -25667.0
+        assert data["daily_entries"]["2026-04-17"]["total"] == pytest.approx(-20667.0)
+        # by_instrument is NOT in the accumulator JSON (not its concern)
+        assert "by_instrument" not in data["daily_entries"]["2026-04-17"]
+        assert "DHANIYA" not in str(data)  # per-instrument not leaked in
+
+
+class TestRealizedEdgeCases:
+    """Odds and ends around None handling, zero swings with realized, rounding."""
+
+    def test_zero_swing_but_realized_still_shows(self):
+        """Open position with LTP=Avg (zero swing) but realized from closed legs."""
+        pos = {
+            "instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+            "direction": "LONG", "qty": 5, "lots": 1,
+            "avg_entry": 13226.0, "prev_close": 13226.0, "ltp": 13226.0,
+            "point_value": 50, "pnl": 0.0, "daily_swing": 0.0,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        html = dpr._PositionRow(pos, -25667.0)
+        assert "Realized today" in html
+        assert "-25,667" in html
+        assert "Net today" in html
+        # Net = 0 + (-25667) = -25,667 — same number twice is fine
+        assert html.count("-25,667") >= 2
+
+    def test_none_realized_by_instrument_defaults_safely(self):
+        """If realized_by_instrument key is missing entirely, HTML renders without crashing."""
+        data = {
+            "date": "2026-04-17", "positions": [],
+            "total_pnl": 0, "total_daily_mtm": 0, "open_swing": 0,
+            "realized_today": 0, "realized_by_account": {},
+            # realized_by_instrument intentionally omitted
+            "position_count": 0, "trade_count": 0,
+            "futures_orders": [], "options_orders": [], "fetch_errors": [],
+        }
+        html = dpr._BuildReportHtml(data)
+        assert "<!DOCTYPE html>" in html
+        assert "Closed Today" not in html
+
+    def test_explicit_none_realized_by_instrument(self):
+        """realized_by_instrument=None should be coerced to empty dict."""
+        data = {
+            "date": "2026-04-17", "positions": [],
+            "total_pnl": 0, "total_daily_mtm": 0, "open_swing": 0,
+            "realized_today": 0, "realized_by_account": {},
+            "realized_by_instrument": None,
+            "position_count": 0, "trade_count": 0,
+            "futures_orders": [], "options_orders": [], "fetch_errors": [],
+        }
+        html = dpr._BuildReportHtml(data)
+        assert "<!DOCTYPE html>" in html
+
+    def test_realized_rounded_to_2_decimals_at_output(self):
+        """Floating-point noise in accumulator shouldn't display 15 decimals."""
+        pos = {
+            "instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
+            "direction": "LONG", "qty": 5, "lots": 1,
+            "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
+            "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+            "broker": "ANGEL", "is_new_today": True,
+        }
+        # Typical floating point accumulation: -25667.000000001
+        html = dpr._PositionRow(pos, -25666.999999999)
+        # Should round to whole rupees on output (_FmtINR with default Decimals=0)
+        assert "-25,667" in html
+        # Make sure the float garbage doesn't leak in
+        assert "99999" not in html

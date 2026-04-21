@@ -453,13 +453,51 @@ def _FetchOpenPositions(FullConfig):
 
 # ─── Realized P&L Accumulator ───────────────────────────────────
 
-def _FetchDailyRealizedPnl():
-    """Fetch today's total realized P&L from all broker accounts.
+def _OptionUnderlying(Symbol):
+    """Extract underlying (NIFTY/SENSEX/BANKNIFTY/BANKEX) from an option symbol."""
+    S = Symbol.upper()
+    if S.startswith("BANKNIFTY"): return "BANKNIFTY"
+    if S.startswith("NIFTY"): return "NIFTY"
+    if S.startswith("SENSEX"): return "SENSEX"
+    if S.startswith("BANKEX"): return "BANKEX"
+    return None
 
-    Sums the 'realised' field from every position (including closed qty=0).
-    Returns dict: {"YD6016": float, "AABM826021": float, "OFS653": float}
+
+def _FetchDailyRealizedPnl(FullConfig):
+    """Fetch today's realized P&L from all broker accounts.
+
+    Sums the 'realised' field from every position (including closed qty=0),
+    with m2m fallback for Kite-closed positions that report realised=0.
+
+    Returns (ByAccount, ByInstrument):
+      ByAccount:    {"YD6016": float, "AABM826021": float, "OFS653": float}
+      ByInstrument: {"DHANIYA": -25667.0, "NIFTY": 5000.0, ...}
+                    — keyed by canonical instrument name (futures)
+                    or underlying (options); matches the 'instrument'
+                    bucket used by open positions in the report.
     """
-    Result = {}
+    Instruments = FullConfig.get("instruments", {}) if FullConfig else {}
+    ByAccount = {}
+    ByInstrument = defaultdict(float)
+
+    def _Bucket(Symbol, Exchange, Broker):
+        """Map broker tradingsymbol → canonical bucket; options → underlying."""
+        if _IsIndexOption(Symbol):
+            return _OptionUnderlying(Symbol)
+        Name, _ = _MatchToInstrument(Symbol, Exchange, Broker, Instruments)
+        return Name
+
+    def _MergeContributions(Local):
+        """Merge a broker's per-instrument contributions into the global map.
+
+        Called only after the broker's loop completes without exception —
+        this keeps ByInstrument in sync with ByAccount. If a broker's
+        fetch raises mid-loop, its partial entries are discarded so the
+        per-instrument map never shows attributions for an account that
+        reports 0 in ByAccount.
+        """
+        for K, V in Local.items():
+            ByInstrument[K] += V
 
     # Kite YD6016 — MCX futures
     try:
@@ -468,6 +506,7 @@ def _FetchDailyRealizedPnl():
         Kite = _EstablishKiteSession("YD6016")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
+        LocalByInst = defaultdict(float)
         for P in AllPositions:
             if P.get("product") not in ("NRML", "MIS") or _IsIndexOption(P.get("tradingsymbol", "")):
                 continue
@@ -476,21 +515,27 @@ def _FetchDailyRealizedPnl():
             Pnl = float(P.get("pnl", 0))
             Qty = P.get("quantity", 0)
             Symbol = P.get("tradingsymbol", "")
+            Exchange = P.get("exchange", "")
             Logger.debug("  Kite YD6016 %s: qty=%s realised=%.2f m2m=%.2f pnl=%.2f",
                          Symbol, Qty, Realised, M2m, Pnl)
             # For closed positions (qty=0), use m2m if realised is 0
             if Qty == 0 and Realised == 0 and M2m != 0:
                 Logger.info("  Kite YD6016 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Total += M2m
+                Contribution = M2m
             else:
-                Total += Realised
-        Result["YD6016"] = round(Total, 2)
+                Contribution = Realised
+            Total += Contribution
+            Key = _Bucket(Symbol, Exchange, "ZERODHA")
+            if Key and Contribution:
+                LocalByInst[Key] += Contribution
+        ByAccount["YD6016"] = round(Total, 2)
+        _MergeContributions(LocalByInst)
         Logger.info("Kite YD6016 realized today: %.2f", Total)
     except _ExchangeNotOpen:
-        Result["YD6016"] = 0.0
+        ByAccount["YD6016"] = 0.0
     except Exception as e:
         Logger.error("Kite YD6016 realized fetch failed: %s\n%s", e, traceback.format_exc())
-        Result["YD6016"] = 0.0
+        ByAccount["YD6016"] = 0.0
 
     # Angel AABM826021 — NCDEX futures
     try:
@@ -502,6 +547,7 @@ def _FetchDailyRealizedPnl():
         if RawPositions is None:
             RawPositions = []
         Total = 0.0
+        LocalByInst = defaultdict(float)
         for P in RawPositions:
             ProdType = P.get("producttype", "")
             if ProdType not in ("CARRYFORWARD", "INTRADAY"):
@@ -510,21 +556,27 @@ def _FetchDailyRealizedPnl():
             M2m = float(P.get("m2m", 0) or 0)
             Qty = int(P.get("netqty", 0))
             Symbol = P.get("tradingsymbol", "")
+            Exchange = P.get("exchange", "")
             Logger.debug("  Angel %s [%s]: qty=%s realised=%.2f m2m=%.2f",
                          Symbol, ProdType, Qty, Realised, M2m)
             # For closed positions (qty=0), use m2m if realised is 0
             if Qty == 0 and Realised == 0 and M2m != 0:
                 Logger.info("  Angel %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Total += M2m
+                Contribution = M2m
             else:
-                Total += Realised
-        Result["AABM826021"] = round(Total, 2)
+                Contribution = Realised
+            Total += Contribution
+            Key = _Bucket(Symbol, Exchange, "ANGEL")
+            if Key and Contribution:
+                LocalByInst[Key] += Contribution
+        ByAccount["AABM826021"] = round(Total, 2)
+        _MergeContributions(LocalByInst)
         Logger.info("Angel realized today: %.2f", Total)
     except _ExchangeNotOpen:
-        Result["AABM826021"] = 0.0
+        ByAccount["AABM826021"] = 0.0
     except Exception as e:
         Logger.error("Angel realized fetch failed: %s\n%s", e, traceback.format_exc())
-        Result["AABM826021"] = 0.0
+        ByAccount["AABM826021"] = 0.0
 
     # Kite OFS653 — Options
     try:
@@ -533,6 +585,7 @@ def _FetchDailyRealizedPnl():
         Kite = _EstablishKiteSession("OFS653")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
+        LocalByInst = defaultdict(float)
         for P in AllPositions:
             if P.get("product") != "NRML":
                 continue
@@ -540,21 +593,28 @@ def _FetchDailyRealizedPnl():
             M2m = float(P.get("m2m", 0))
             Qty = P.get("quantity", 0)
             Symbol = P.get("tradingsymbol", "")
+            Exchange = P.get("exchange", "")
             Logger.debug("  Kite OFS653 %s: qty=%s realised=%.2f m2m=%.2f", Symbol, Qty, Realised, M2m)
             if Qty == 0 and Realised == 0 and M2m != 0:
                 Logger.info("  Kite OFS653 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Total += M2m
+                Contribution = M2m
             else:
-                Total += Realised
-        Result["OFS653"] = round(Total, 2)
+                Contribution = Realised
+            Total += Contribution
+            Key = _Bucket(Symbol, Exchange, "ZERODHA")
+            if Key and Contribution:
+                LocalByInst[Key] += Contribution
+        ByAccount["OFS653"] = round(Total, 2)
+        _MergeContributions(LocalByInst)
         Logger.info("Kite OFS653 realized today: %.2f", Total)
     except _ExchangeNotOpen:
-        Result["OFS653"] = 0.0
+        ByAccount["OFS653"] = 0.0
     except Exception as e:
         Logger.error("Kite OFS653 realized fetch failed: %s\n%s", e, traceback.format_exc())
-        Result["OFS653"] = 0.0
+        ByAccount["OFS653"] = 0.0
 
-    return Result
+    ByInstrumentRounded = {K: round(V, 2) for K, V in ByInstrument.items()}
+    return ByAccount, ByInstrumentRounded
 
 
 def _UpdateRealizedPnlAccumulator(DailyByAccount, DateStr, EodUnrealized):
@@ -767,12 +827,14 @@ def _BuildReportHtml(D):
             Positions from failed brokers are missing from this report.</div>
     </div>"""
 
+    RealizedByInstrument = D.get("realized_by_instrument", {}) or {}
+
     # ── Open Futures ──
     FutPos = [P for P in D["positions"] if "_OPT_" not in P["instrument"]]
     FutHtml = _SectionHeader("Open Futures")
     if FutPos:
         for P in FutPos:
-            FutHtml += _PositionRow(P)
+            FutHtml += _PositionRow(P, RealizedByInstrument.get(P["instrument"], 0))
     else:
         FutHtml += _EmptyRow("No open futures")
 
@@ -803,6 +865,23 @@ def _BuildReportHtml(D):
             SwingColor = _PnlColor(Combo["daily_swing"])
             LotSize = LOT_SIZES.get(Underlying, 1)
             Lots = int(Combo["max_qty"] / LotSize) if LotSize else Combo["max_qty"]
+
+            UnderlyingRealized = RealizedByInstrument.get(Underlying, 0)
+            OptRealizedHtml = ""
+            if abs(UnderlyingRealized) >= 1:
+                OptRealizedColor = _PnlColor(UnderlyingRealized)
+                OptNetToday = Combo["daily_swing"] + UnderlyingRealized
+                OptNetColor = _PnlColor(OptNetToday)
+                OptRealizedHtml = f"""
+                <div style="margin-top:2px;">
+                    <span style="font-size:12px;color:{SLATE};">Realized today: </span>
+                    <b style="font-size:12px;color:{OptRealizedColor};">\u20b9{_FmtINR(UnderlyingRealized)}</b>
+                </div>
+                <div style="margin-top:2px;">
+                    <span style="font-size:12px;color:{SLATE};">Net today: </span>
+                    <b style="font-size:12px;color:{OptNetColor};">\u20b9{_FmtINR(OptNetToday)}</b>
+                </div>"""
+
             OptHtml += f"""
             <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -822,10 +901,40 @@ def _BuildReportHtml(D):
                 <div style="margin-top:4px;">
                     <span style="font-size:12px;color:{SLATE};">Today: </span>
                     <b style="font-size:12px;color:{SwingColor};">\u20b9{_FmtINR(Combo["daily_swing"])}</b>
-                </div>
+                </div>{OptRealizedHtml}
             </td></tr>"""
     else:
         OptHtml += _EmptyRow("No open options")
+
+    # ── Closed Today — instruments with realized P&L but no remaining open ──
+    # Covers intraday round-trips and fully-covered carry positions.
+    OpenInstrumentKeys = set()
+    for P in D["positions"]:
+        Inst = P["instrument"]
+        if "_OPT_" in Inst:
+            OpenInstrumentKeys.add(Inst.split("_OPT_")[0])  # underlying
+        else:
+            OpenInstrumentKeys.add(Inst)
+
+    ClosedOnly = [
+        (K, V) for K, V in RealizedByInstrument.items()
+        if K not in OpenInstrumentKeys and abs(V) >= 1
+    ]
+    ClosedHtml = ""
+    if ClosedOnly:
+        ClosedHtml = _SectionHeader("Closed Today")
+        for Key, Amount in sorted(ClosedOnly, key=lambda kv: kv[1]):
+            AmountColor = _PnlColor(Amount)
+            AmountBg = _PnlBg(Amount)
+            ClosedHtml += f"""
+            <tr><td style="padding:10px 20px;border-bottom:1px solid {BORDER};">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(Key)}</span>
+                    <span style="display:inline-block;background:{AmountBg};color:{AmountColor};
+                        font-size:13px;font-weight:600;padding:3px 10px;border-radius:6px;">
+                        \u20b9{_FmtINR(Amount)}</span>
+                </div>
+            </td></tr>"""
 
     # ── Divider ──
     DivHtml = f'<tr><td style="padding:0 20px;"><div style="border-top:1px solid {BORDER};"></div></td></tr>'
@@ -876,6 +985,7 @@ def _BuildReportHtml(D):
         {StatsHtml}
         {FutHtml}
         {OptHtml}
+        {ClosedHtml}
         {DivHtml}
         {FutTradesHtml}
         {OptTradesHtml}
@@ -917,8 +1027,15 @@ def _EmptyRow(Text):
             f'color:{MUTED};font-style:italic;">{_html.escape(Text)}</td></tr>')
 
 
-def _PositionRow(P):
-    """Render one open futures position."""
+def _PositionRow(P, RealizedToday=0):
+    """Render one open futures position.
+
+    RealizedToday is the per-instrument realized P&L from today's closed
+    trades on the same symbol (e.g. a carry short that got covered while
+    the user opened a new long). Shown as separate 'Realized today' and
+    'Net today' lines so the true per-instrument P&L isn't hidden by the
+    account-level aggregate.
+    """
     DirColor = GREEN if P["direction"] == "LONG" else RED
     DirBg = "#f0fdf4" if P["direction"] == "LONG" else "#fef2f2"
     PnlColor = _PnlColor(P["pnl"])
@@ -930,6 +1047,24 @@ def _PositionRow(P):
     NewBadge = (f'<span style="display:inline-block;background:#fef3c7;color:#92400e;'
                 f'font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;'
                 f'margin-left:6px;">NEW</span>') if IsNew else ""
+
+    # Realized / net today — only render when there's a realized leg
+    # to attribute to this instrument (sub-rupee noise suppressed).
+    RealizedHtml = ""
+    if abs(RealizedToday) >= 1:
+        RealizedColor = _PnlColor(RealizedToday)
+        NetToday = P["daily_swing"] + RealizedToday
+        NetColor = _PnlColor(NetToday)
+        RealizedHtml = f"""
+        <div style="margin-top:2px;">
+            <span style="font-size:12px;color:{SLATE};">Realized today: </span>
+            <b style="font-size:12px;color:{RealizedColor};">\u20b9{_FmtINR(RealizedToday)}</b>
+        </div>
+        <div style="margin-top:2px;">
+            <span style="font-size:12px;color:{SLATE};">Net today: </span>
+            <b style="font-size:12px;color:{NetColor};">\u20b9{_FmtINR(NetToday)}</b>
+        </div>"""
+
     return f"""
     <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -952,7 +1087,7 @@ def _PositionRow(P):
         <div style="margin-top:4px;">
             <span style="font-size:12px;color:{SLATE};">Today: </span>
             <b style="font-size:12px;color:{SwingColor};">\u20b9{_FmtINR(P["daily_swing"])}</b>
-        </div>
+        </div>{RealizedHtml}
     </td></tr>"""
 
 
@@ -1010,11 +1145,11 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
     OpenSwing = sum(P["daily_swing"] for P in Positions)
 
     # Accumulate realized P&L into JSON for capital tracking
-    DailyRealized = _FetchDailyRealizedPnl()
-    _UpdateRealizedPnlAccumulator(DailyRealized, DateStr, TotalPnl)
+    DailyRealizedByAccount, DailyRealizedByInstrument = _FetchDailyRealizedPnl(FullConfig)
+    _UpdateRealizedPnlAccumulator(DailyRealizedByAccount, DateStr, TotalPnl)
 
     # Total daily MTM = open position swing + realized from all exits today
-    TotalRealizedToday = sum(DailyRealized.values())
+    TotalRealizedToday = sum(DailyRealizedByAccount.values())
     TotalDailyMtm = OpenSwing + TotalRealizedToday
 
     Logger.info("Total unrealized: %.2f | Open swing: %.2f | Realized today: %.2f | Daily MTM: %.2f",
@@ -1036,7 +1171,8 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "total_daily_mtm": TotalDailyMtm,
         "open_swing": OpenSwing,
         "realized_today": TotalRealizedToday,
-        "realized_by_account": DailyRealized,
+        "realized_by_account": DailyRealizedByAccount,
+        "realized_by_instrument": DailyRealizedByInstrument,
         "position_count": len(Positions),
         "trade_count": len(FuturesOrders) + len(OptionsOrders),
         "futures_orders": FuturesOrders,
