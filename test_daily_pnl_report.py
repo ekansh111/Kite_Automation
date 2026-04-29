@@ -1915,3 +1915,228 @@ class TestRealizedEdgeCases:
         assert "-25,667" in html
         # Make sure the float garbage doesn't leak in
         assert "99999" not in html
+
+
+# ═══════════════════════════════════════════════════════════════════
+# NFO Index Futures (NIFTY/BANKNIFTY/MIDCPNIFTY) on OFS653
+# ═══════════════════════════════════════════════════════════════════
+
+class TestNfoIndexFutures:
+    """Regression tests for the bug where NIFTY/BANKNIFTY/MIDCPNIFTY index
+    futures held in OFS653 were silently dropped from the report:
+
+      - Open positions: filtered out by `_IsIndexOption` (FUT suffix fails)
+      - Realized P&L: bucketed under same key as options, hidden in option card
+      - Closed Today: never surfaced because key collided with open options
+    """
+
+    NIFTY_CFG = {"NIFTY": {"exchange": "NFO", "point_value": 65}}
+    BANKNIFTY_CFG = {"BANKNIFTY": {"exchange": "NFO", "point_value": 30}}
+
+    def test_display_instrument_strips_fut_suffix(self):
+        assert dpr._DisplayInstrument("NIFTY_FUT") == "NIFTY"
+        assert dpr._DisplayInstrument("BANKNIFTY_FUT") == "BANKNIFTY"
+        assert dpr._DisplayInstrument("MIDCPNIFTY_FUT") == "MIDCPNIFTY"
+
+    def test_display_instrument_preserves_non_fut(self):
+        assert dpr._DisplayInstrument("NIFTY") == "NIFTY"
+        assert dpr._DisplayInstrument("DHANIYA") == "DHANIYA"
+        assert dpr._DisplayInstrument("NIFTY_OPT_CE") == "NIFTY_OPT_CE"
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_open_nifty_future_fetched_from_ofs653(self, mock_match, mock_open,
+                                                    mock_angel_factory, mock_kite_factory):
+        """Open NIFTY future (LONG 65 units = 1 lot) from OFS653 reaches Positions."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "NIFTY26APRFUT", "exchange": "NFO",
+                     "product": "NRML", "quantity": 65,
+                     "average_price": 24000.0, "last_price": 24100.0,
+                     "close_price": 23950.0, "overnight_quantity": 65,
+                     "day_buy_quantity": 0, "day_sell_quantity": 0,
+                     "day_buy_price": 0.0, "day_sell_price": 0.0},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("NIFTY", {"exchange": "NFO", "point_value": 65})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": self.NIFTY_CFG})
+        assert len(positions) == 1
+        p = positions[0]
+        assert p["instrument"] == "NIFTY_FUT"
+        assert p["direction"] == "LONG"
+        assert p["qty"] == 65
+        assert p["lots"] == 1.0
+        # P&L = (24100 - 24000) * 65 units * ₹1/unit = ₹6,500
+        assert p["pnl"] == pytest.approx(6500.0)
+        # Carried lot: swing from prev_close (23950) to ltp (24100) = ₹150 * 65 = ₹9,750
+        assert p["daily_swing"] == pytest.approx(9750.0)
+        assert p["broker"] == "ZERODHA"
+        assert "_OPT_" not in p["instrument"]
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_short_banknifty_future_intraday_new(self, mock_match, mock_open,
+                                                  mock_angel_factory, mock_kite_factory):
+        """SHORT BANKNIFTY future opened today (no overnight). Swing from new entry."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "BANKNIFTY26APRFUT", "exchange": "NFO",
+                     "product": "NRML", "quantity": -30,
+                     "average_price": 53000.0, "last_price": 52800.0,
+                     "close_price": 52950.0, "overnight_quantity": 0,
+                     "day_buy_quantity": 0, "day_sell_quantity": 30,
+                     "day_buy_price": 0.0, "day_sell_price": 53000.0},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("BANKNIFTY", {"exchange": "NFO", "point_value": 30})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": self.BANKNIFTY_CFG})
+        assert len(positions) == 1
+        p = positions[0]
+        assert p["instrument"] == "BANKNIFTY_FUT"
+        assert p["direction"] == "SHORT"
+        assert p["qty"] == 30
+        assert p["lots"] == 1.0
+        assert p["is_new_today"] is True
+        # SHORT P&L = (53000 - 52800) * 30 = ₹6,000
+        assert p["pnl"] == pytest.approx(6000.0)
+        # New lot: swing from sell-price (53000) → ltp (52800) = ₹6,000
+        assert p["daily_swing"] == pytest.approx(6000.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_options_and_futures_coexist_on_ofs653(self, mock_match, mock_open,
+                                                    mock_angel_factory, mock_kite_factory):
+        """OFS653 holding both NIFTY options AND a NIFTY future — both surface."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "NIFTY26APR24000CE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 65,
+                     "average_price": 250.0, "last_price": 260.0,
+                     "close_price": 255.0, "overnight_quantity": 65,
+                     "day_buy_quantity": 0, "day_sell_quantity": 0,
+                     "day_buy_price": 0.0, "day_sell_price": 0.0},
+                    {"tradingsymbol": "NIFTY26APRFUT", "exchange": "NFO",
+                     "product": "NRML", "quantity": 65,
+                     "average_price": 24000.0, "last_price": 24100.0,
+                     "close_price": 23950.0, "overnight_quantity": 65,
+                     "day_buy_quantity": 0, "day_sell_quantity": 0,
+                     "day_buy_price": 0.0, "day_sell_price": 0.0},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("NIFTY", {"exchange": "NFO", "point_value": 65})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": self.NIFTY_CFG})
+        instruments = [p["instrument"] for p in positions]
+        assert "NIFTY_OPT_CE" in instruments
+        assert "NIFTY_FUT" in instruments
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_realized_nifty_future_bucketed_separately_from_options(
+            self, mock_match, mock_open, mock_angel_factory, mock_kite_factory):
+        """NIFTY futures realized goes into NIFTY_FUT, NIFTY options into NIFTY."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "OFS653":
+                k.positions.return_value = {"net": [
+                    # Intraday NIFTY future round-trip closed for -13,422
+                    {"tradingsymbol": "NIFTY26APRFUT", "exchange": "NFO",
+                     "product": "NRML", "quantity": 0,
+                     "realised": -13422.0, "m2m": -13422.0},
+                    # NIFTY option realized -27502 (rolled call)
+                    {"tradingsymbol": "NIFTY26APR21700CE", "exchange": "NFO",
+                     "product": "NRML", "quantity": 0,
+                     "realised": -27502.0, "m2m": -27502.0},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        # _Bucket calls _MatchToInstrument for the futures; options never reach it.
+        mock_match.return_value = ("NIFTY", {"exchange": "NFO", "point_value": 65})
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": self.NIFTY_CFG})
+        # Account total = sum of both
+        assert by_acct["OFS653"] == pytest.approx(-13422.0 + -27502.0)
+        # Per-instrument: futures and options are NOT collapsed onto one key
+        assert by_inst["NIFTY_FUT"] == pytest.approx(-13422.0)
+        assert by_inst["NIFTY"] == pytest.approx(-27502.0)
+
+    def test_closed_today_surfaces_nifty_future_when_options_open(self):
+        """Closed-today NIFTY futures appears even when NIFTY options are open.
+
+        Pre-fix: open NIFTY options claimed the 'NIFTY' key in OpenInstrumentKeys,
+        so a futures-only realized row under the same key was filtered out.
+        Post-fix: futures lives under 'NIFTY_FUT' — distinct from options' 'NIFTY'.
+        """
+        data = {
+            "date": "2026-04-28",
+            "positions": [
+                {"instrument": "NIFTY_OPT_CE", "tradingsymbol": "NIFTY26APR24000CE",
+                 "direction": "LONG", "qty": 65,
+                 "avg_entry": 250.0, "prev_close": 245.0, "ltp": 260.0,
+                 "point_value": 1.0, "pnl": 650.0, "daily_swing": 975.0,
+                 "broker": "ZERODHA", "is_new_today": False},
+            ],
+            "total_pnl": 650.0, "total_daily_mtm": 0, "open_swing": 0,
+            "realized_today": -13422.0, "realized_by_account": {"OFS653": -13422.0},
+            "realized_by_instrument": {"NIFTY_FUT": -13422.0},
+            "position_count": 1, "trade_count": 2,
+            "futures_orders": [], "options_orders": [], "fetch_errors": [],
+        }
+        html = dpr._BuildReportHtml(data)
+        assert "Closed Today" in html
+        # The closed-today row shows the user-friendly "NIFTY", not the internal key
+        assert "NIFTY_FUT" not in html
+        assert "-13,422" in html
+
+    def test_open_future_renders_without_fut_suffix(self):
+        """Open NIFTY futures position card displays 'NIFTY', not 'NIFTY_FUT'."""
+        pos = {
+            "instrument": "NIFTY_FUT", "tradingsymbol": "NIFTY26APRFUT",
+            "direction": "LONG", "qty": 65, "lots": 1.0,
+            "avg_entry": 24000.0, "prev_close": 23950.0, "ltp": 24100.0,
+            "point_value": 1.0, "pnl": 6500.0, "daily_swing": 9750.0,
+            "broker": "ZERODHA", "is_new_today": False,
+        }
+        html = dpr._PositionRow(pos)
+        assert "NIFTY_FUT" not in html
+        # Word boundary check — "NIFTY" should appear as the instrument name
+        assert ">NIFTY<" in html
