@@ -107,6 +107,14 @@ def _IsIndexOption(Symbol):
         S.endswith("CE") or S.endswith("PE"))
 
 
+def _DisplayInstrument(Key):
+    """Strip the internal `_FUT` suffix used to disambiguate NFO index
+    futures from same-named options buckets. Used for user-facing display."""
+    if isinstance(Key, str) and Key.endswith("_FUT"):
+        return Key[:-4]
+    return Key
+
+
 def _MatchToInstrument(TradingSymbol, Exchange, Broker, Instruments):
     """Match broker symbol to instrument_config via CSV lookup, then prefix fallback."""
     CsvPath = ZerodhaInstrumentDirectory if Broker == "ZERODHA" else AngelInstrumentDirectory
@@ -375,7 +383,7 @@ def _FetchOpenPositions(FullConfig):
         Logger.error("Angel positions fetch failed: %s\n%s", e, traceback.format_exc())
         FetchErrors.append(f"Angel AABM826021 (NCDEX): {e}")
 
-    # ── Kite OFS653 — Options NFO/BFO (opens 09:15) ──
+    # ── Kite OFS653 — Options NFO/BFO + NFO index futures (opens 09:15) ──
     try:
         if not _IsExchangeOpen("NFO"):
             raise _ExchangeNotOpen("NFO")
@@ -385,26 +393,13 @@ def _FetchOpenPositions(FullConfig):
             if Qty == 0 or Pos.get("product") != "NRML":
                 continue
             Symbol = Pos.get("tradingsymbol", "")
-            if not _IsIndexOption(Symbol):
-                continue
-
-            S = Symbol.upper()
-            if S.startswith("BANKNIFTY"):
-                Underlying = "BANKNIFTY"
-            elif S.startswith("NIFTY"):
-                Underlying = "NIFTY"
-            elif S.startswith("SENSEX"):
-                Underlying = "SENSEX"
-            elif S.startswith("BANKEX"):
-                Underlying = "BANKEX"
-            else:
-                continue
-            Leg = "CE" if S.endswith("CE") else "PE"
+            Exchange = Pos.get("exchange", "")
 
             AvgPrice = float(Pos.get("average_price", 0))
             Ltp = float(Pos.get("last_price", 0))
             PrevClose = float(Pos.get("close_price", 0) or 0)
-            OvernightQty = abs(int(Pos.get("overnight_quantity", 0)))
+            RawOvernightQty = int(Pos.get("overnight_quantity", 0))
+            OvernightQty = abs(RawOvernightQty)
             DayBuyQty = int(Pos.get("day_buy_quantity", 0) or 0)
             DaySellQty = int(Pos.get("day_sell_quantity", 0) or 0)
             DayBuyPrice = float(Pos.get("day_buy_price", 0) or 0)
@@ -412,10 +407,73 @@ def _FetchOpenPositions(FullConfig):
             AbsQty = abs(Qty)
             Direction = "LONG" if Qty > 0 else "SHORT"
 
+            if _IsIndexOption(Symbol):
+                S = Symbol.upper()
+                if S.startswith("BANKNIFTY"):
+                    Underlying = "BANKNIFTY"
+                elif S.startswith("NIFTY"):
+                    Underlying = "NIFTY"
+                elif S.startswith("SENSEX"):
+                    Underlying = "SENSEX"
+                elif S.startswith("BANKEX"):
+                    Underlying = "BANKEX"
+                else:
+                    continue
+                Leg = "CE" if S.endswith("CE") else "PE"
+
+                Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
+
+                # Split swing: LIFO — today's trades offset each other first
+                if Direction == "LONG":
+                    ExcessSells = max(0, DaySellQty - DayBuyQty)
+                    CarriedQty = max(0, OvernightQty - ExcessSells)
+                    NewQty = max(0, AbsQty - CarriedQty)
+                    NewEntryPrice = DayBuyPrice
+                else:
+                    ExcessBuys = max(0, DayBuyQty - DaySellQty)
+                    CarriedQty = max(0, OvernightQty - ExcessBuys)
+                    NewQty = max(0, AbsQty - CarriedQty)
+                    NewEntryPrice = DaySellPrice
+
+                SwingBase = PrevClose if PrevClose > 0 else AvgPrice
+                CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, 1.0)
+                NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, 1.0) if NewQty > 0 else 0
+                DailySwing = CarriedSwing + NewSwing
+                IsNewToday = (CarriedQty == 0)
+
+                Positions.append({
+                    "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
+                    "direction": Direction, "qty": AbsQty,
+                    "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
+                    "ltp": round(Ltp, 2), "point_value": 1.0,
+                    "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
+                    "broker": "ZERODHA", "is_new_today": IsNewToday,
+                })
+                continue
+
+            # NFO index futures (NIFTY/BANKNIFTY/MIDCPNIFTY) — Kite reports
+            # qty in units (lot_size × n_lots); compute P&L as ₹1 per unit per
+            # ₹1 index move (PV = 1.0). LotSize from config's point_value
+            # (numerically equal for NSE index futures since each unit reflects ₹1/point).
+            InstName, Cfg = _MatchToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
+            if not InstName:
+                Logger.warning("Unmatched OFS653 position: %s (%s)", Symbol, Exchange)
+                continue
+
+            LotSize = Cfg.get("point_value", 1) or 1
+            Lots = AbsQty / LotSize if LotSize else AbsQty
+
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
 
-            # Split swing: LIFO — today's trades offset each other first
-            if Direction == "LONG":
+            OvernightFlipped = (
+                (Direction == "LONG" and RawOvernightQty < 0) or
+                (Direction == "SHORT" and RawOvernightQty > 0)
+            )
+            if OvernightFlipped:
+                CarriedQty = 0
+                NewQty = AbsQty
+                NewEntryPrice = DayBuyPrice if Direction == "LONG" else DaySellPrice
+            elif Direction == "LONG":
                 ExcessSells = max(0, DaySellQty - DayBuyQty)
                 CarriedQty = max(0, OvernightQty - ExcessSells)
                 NewQty = max(0, AbsQty - CarriedQty)
@@ -433,19 +491,22 @@ def _FetchOpenPositions(FullConfig):
             IsNewToday = (CarriedQty == 0)
 
             Positions.append({
-                "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
-                "direction": Direction, "qty": AbsQty,
+                "instrument": f"{InstName}_FUT", "tradingsymbol": Symbol,
+                "direction": Direction, "qty": AbsQty, "lots": Lots,
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": 1.0,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
                 "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
-        Logger.info("Kite OFS653: %d open options", sum(1 for p in Positions if "_OPT_" in p["instrument"]))
+        OptCount = sum(1 for p in Positions if "_OPT_" in p["instrument"])
+        FutCount = sum(1 for p in Positions if p["broker"] == "ZERODHA"
+                       and p.get("instrument", "").endswith("_FUT"))
+        Logger.info("Kite OFS653: %d open options, %d open NFO futures", OptCount, FutCount)
     except _ExchangeNotOpen:
         Logger.info("Skipping Kite OFS653 — NFO/BFO not yet open (opens 09:15)")
     except Exception as e:
-        Logger.error("Options fetch failed: %s\n%s", e, traceback.format_exc())
-        FetchErrors.append(f"Kite OFS653 (Options): {e}")
+        Logger.error("OFS653 fetch failed: %s\n%s", e, traceback.format_exc())
+        FetchErrors.append(f"Kite OFS653 (Options/NFO Futures): {e}")
 
     Logger.info("Total open positions: %d", len(Positions))
     return Positions, FetchErrors
@@ -481,10 +542,16 @@ def _FetchDailyRealizedPnl(FullConfig):
     ByInstrument = defaultdict(float)
 
     def _Bucket(Symbol, Exchange, Broker):
-        """Map broker tradingsymbol → canonical bucket; options → underlying."""
+        """Map broker tradingsymbol → canonical bucket; options → underlying.
+
+        NFO futures get a `_FUT` suffix so NIFTY/BANKNIFTY/MIDCPNIFTY index
+        futures realized P&L doesn't collide with the same-named options bucket.
+        """
         if _IsIndexOption(Symbol):
             return _OptionUnderlying(Symbol)
         Name, _ = _MatchToInstrument(Symbol, Exchange, Broker, Instruments)
+        if Name and Exchange == "NFO":
+            return f"{Name}_FUT"
         return Name
 
     def _MergeContributions(Local):
@@ -929,7 +996,7 @@ def _BuildReportHtml(D):
             ClosedHtml += f"""
             <tr><td style="padding:10px 20px;border-bottom:1px solid {BORDER};">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(Key)}</span>
+                    <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(_DisplayInstrument(Key))}</span>
                     <span style="display:inline-block;background:{AmountBg};color:{AmountColor};
                         font-size:13px;font-weight:600;padding:3px 10px;border-radius:6px;">
                         \u20b9{_FmtINR(Amount)}</span>
@@ -1069,7 +1136,7 @@ def _PositionRow(P, RealizedToday=0):
     <tr><td style="padding:12px 20px;border-bottom:1px solid {BORDER};">
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <div>
-                <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(P["instrument"])}</span>
+                <span style="font-size:14px;font-weight:700;color:{NAVY};">{_html.escape(_DisplayInstrument(P["instrument"]))}</span>
                 <span style="display:inline-block;background:{DirBg};color:{DirColor};
                     font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;
                     margin-left:8px;">{P["direction"]}</span>{NewBadge}
