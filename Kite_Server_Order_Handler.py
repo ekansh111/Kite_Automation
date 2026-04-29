@@ -324,9 +324,16 @@ def EstablishConnectionKiteAPI(OrderDetails):
         APIKeyDirectory = KiteEkanshLogin
         AccessTokenDirectory = KiteEkanshLoginAccessToken
 
-    elif str(OrderDetails.get('User')) == 'YD6016':  
+    elif str(OrderDetails.get('User')) == 'YD6016':
         APIKeyDirectory = KiteRashmiLogin
         AccessTokenDirectory = KiteRashmiLoginAccessToken
+
+    elif str(OrderDetails.get('User')) == 'OFS653':
+        APIKeyDirectory = KiteEshitaLogin
+        AccessTokenDirectory = KiteEshitaLoginAccessToken
+
+    else:
+        raise ValueError(f"Unknown Kite user: {OrderDetails.get('User')!r}")
 
     with open(APIKeyDirectory,'r') as InputsFile:
         content = InputsFile.readlines()
