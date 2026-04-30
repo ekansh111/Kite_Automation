@@ -32,7 +32,11 @@ from FetchOptionContractName import (
 from Server_Order_Place import order
 from Set_Gtt_Exit import Set_Gtt
 from Holidays import CheckForDateHoliday
-from Directories import WorkDirectory
+from Directories import (
+    WorkDirectory,
+    EMAIL_NOTIFY_ENABLED, EMAIL_FROM, EMAIL_FROM_PASSWORD,
+    EMAIL_TO, EMAIL_SMTP, EMAIL_PORT,
+)
 from smart_chase import SmartChaseExecute
 from forecast_db import LogOptionsSmartChaseOrder, UpdateCostBasis, RealizePnl, GetCumulativeRealizedPnl
 from vol_target import compute_daily_vol_target
@@ -175,14 +179,9 @@ except FileNotFoundError:
 UNDERLYING_TO_CONFIG_KEY = {"NIFTY": "NIFTY_OPT", "SENSEX": "SENSEX_OPT"}
 
 # ---------------------------------------------------------------------------
-# Email Notification Config
+# Email Notification Config — imported from Directories (password from
+# KITE_EMAIL_PASSWORD env var so it never lands in source/git).
 # ---------------------------------------------------------------------------
-EMAIL_NOTIFY_ENABLED = True
-EMAIL_FROM = "ekansh.n111@gmail.com"
-EMAIL_FROM_PASSWORD = "sgwl lnvt hewf wplo"
-EMAIL_TO = "ekansh.n@gmail.com"
-EMAIL_SMTP = "smtp.gmail.com"
-EMAIL_PORT = 465
 
 
 def _fmt(val, decimals=2):

@@ -37,6 +37,8 @@ from kiteconnect import KiteConnect
 from Directories import (
     WorkDirectory,
     KiteEshitaLogin, KiteEshitaLoginAccessToken,
+    EMAIL_NOTIFY_ENABLED, EMAIL_FROM, EMAIL_FROM_PASSWORD,
+    EMAIL_TO, EMAIL_SMTP, EMAIL_PORT,
 )
 from Holidays import CheckForDateHoliday
 from FetchOptionContractName import (
@@ -84,13 +86,7 @@ ITM_CONFIG = {
 
 VIX_LTP_KEY = "NSE:INDIA VIX"
 
-# Email (same config as PlaceOptionsSystemsV2)
-EMAIL_NOTIFY_ENABLED = True
-EMAIL_FROM = "ekansh.n111@gmail.com"
-EMAIL_FROM_PASSWORD = "sgwl lnvt hewf wplo"
-EMAIL_TO = "ekansh.n@gmail.com"
-EMAIL_SMTP = "smtp.gmail.com"
-EMAIL_PORT = 465
+# Email config is imported from Directories (password from KITE_EMAIL_PASSWORD env var).
 
 
 # ─── Broker Session ─────────────────────────────────────────────────
@@ -490,6 +486,15 @@ def LoadVolBudgets():
         Cfg = json.load(F)
     Acct = Cfg["account"]
     BaseCapital = Acct["base_capital"]
+
+    if BaseCapital <= 0:
+        raise ValueError(f"instrument_config.json base_capital is invalid: {BaseCapital}")
+    if BaseCapital == 9999999:
+        Logger.warning(
+            "instrument_config.json base_capital=%d looks like a placeholder — "
+            "vol budgets will be sized off this value. Update to real account capital.",
+            BaseCapital,
+        )
 
     # Read realized + unrealized from EOD JSON accumulator, fall back to DB
     CumulativeRealized = 0.0
@@ -1456,6 +1461,24 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
                                         leg2_slippage=Leg2Slippage)
         Result["leg2"] = {"contract": Symbol, "quantity": Quantity,
                           "fill_price": Leg2FillPrice, "slippage": Leg2Slippage}
+        # Persist FLAT state so next run won't try to exit a position that no longer exists.
+        State[IndexName] = {
+            "status": "FLAT",
+            "current_contract": None,
+            "current_expiry": None,
+            "lots": 0,
+            "quantity": 0,
+            "entry_price": 0,
+            "entry_date": None,
+            "order_tag": ORDER_TAG,
+            "last_failure": {
+                "kind": "LEG2_FAILED",
+                "intended_contract": Symbol,
+                "intended_quantity": Quantity,
+                "date": str(date.today()),
+            },
+        }
+        SaveState(State)
         SendEmail(f"CRITICAL: {IndexName} ITM Call LEG 2 FAILED — FLAT",
                   BuildRolloverEmailHtml(IndexName, Result))
         return Result
@@ -1581,6 +1604,11 @@ def main():
     Logger.info("=" * 60)
     Logger.info("ITM Call Rollover started | dry_run=%s force=%s first_run=%s index=%s",
                 Args.dry_run, Args.force, Args.first_run, Args.index)
+
+    global EMAIL_NOTIFY_ENABLED
+    if EMAIL_NOTIFY_ENABLED and not EMAIL_FROM_PASSWORD:
+        Logger.warning("KITE_EMAIL_PASSWORD env var not set — email notifications disabled")
+        EMAIL_NOTIFY_ENABLED = False
 
     # Initialize DB
     db.InitDB()
