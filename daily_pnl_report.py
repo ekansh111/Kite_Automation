@@ -4,25 +4,69 @@ daily_pnl_report.py — End-of-day P&L email report.
 Everything from the broker. Zero database usage.
 
 Sends a styled HTML email with:
-  1. Daily Swing (hero) — how much the account moved today
-     (LTP - Previous Close) x Lots x Point Value per position, summed.
+  1. Daily Swing (hero) — how much the account moved today.
   2. Total Unrealized — overall embedded P&L across all open positions
      (LTP - Average Entry) x Lots x Point Value per position, summed.
   3. Open Positions — each with Entry, Prev Close, LTP, total P&L badge,
-     and today's swing. Options grouped by underlying.
-  4. Today's Trades — completed orders from broker order history.
+     today's swing, today's realized slice, and net today.
+  4. Closed Today — instruments fully closed today.
+  5. Today's Trades — completed orders from broker order history.
 
 Broker Accounts:
   - YD6016 (Kite/Zerodha)  — MCX futures (SILVERMIC, ZINCMINI, etc.)
   - AABM826021 (Angel)     — NCDEX futures (GUARSEED, DHANIYA, COCUDAKL, etc.)
-  - OFS653 (Kite/Zerodha)  — Index options NFO/BFO (NIFTY, SENSEX, BANKNIFTY)
+  - OFS653 (Kite/Zerodha)  — Index options + NFO index futures (NIFTY, BANKNIFTY,
+                              MIDCPNIFTY, SENSEX)
 
-Key implementation notes:
+═══════════════════════════════════════════════════════════════════════════════
+DAILY P&L MODEL — read this before changing any swing or realized math
+═══════════════════════════════════════════════════════════════════════════════
+
+The "Daily MTM" hero number is the day-over-day change in account value. For
+each position it decomposes into TWO non-overlapping pieces:
+
+  • daily_swing        — open-portion's contribution today.
+                          carried_qty: (LTP - prev_close) × qty × PV
+                          new_qty:     (LTP - new_entry_price) × qty × PV
+
+  • today_realized_slice — closed-portion's contribution today.
+                          (prev_close - exit_price) × closed_qty × PV  (SHORT)
+                          (exit_price - prev_close) × closed_qty × PV  (LONG)
+
+Daily MTM contribution per position = daily_swing + today_realized_slice
+                                     ≈ broker's `m2m` field for that position
+                                     (cross-checked at fetch time, see
+                                      `_ReconcileWithBrokerM2m`).
+
+WHY NOT broker.realised? Because `realised` is cumulative-since-cost-basis. For
+a carry position closed today, that includes prior days' MTM that's already
+been counted in prior days' Daily MTMs. Adding it to today's daily_swing
+double-counts. The bug that produced the 29 Apr report's wrong JEERA "Net
+today: +44,213" (true value: -33,300) was exactly this double-count.
+
+CARRIED vs NEW classification (the LIFO logic):
+  Day-buys directly close carry-shorts (FIFO-from-carry); day-sells directly
+  close carry-longs. Excess flow opens new same-direction qty. This handles
+  ZINCMINI-style flips correctly:
+    overnight SHORT 4 → today_buy 4 (cover) + today_sell 4 (new) → SHORT 4
+    Result: CarriedQty=0, NewQty=4 (carry was closed; current is new).
+  The previous formula `OvernightQty - max(0, DayBuy - DaySell)` treated
+  this as carry-untouched, producing daily_swing ₹+10,000 instead of ₹+2,760.
+
+CUMULATIVE realised (`realised_by_account`) is still tracked per account in
+the accumulator JSON for tax/capital purposes. Display never adds it to
+Daily MTM — only the per-position slice and ClosedByInstrument do.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Other implementation notes:
   - Angel netqty is in units; divided by QuantityMultiplier to get lots.
-  - Angel carry-forward entry uses cfbuyavgprice/cfsellavgprice (not buyavgprice).
-  - Kite prev close = close_price field; Angel prev close = close field.
+  - Angel carry-forward entry uses cfbuyavgprice/cfsellavgprice.
+  - Kite prev close = close_price; Angel prev close = close.
   - Option direction from qty sign (positive=LONG, negative=SHORT).
   - TURMERIC matched via ReconciliationPrefixes (TMCFGRNZM -> TURMERIC).
+  - NFO index futures bucketed as `<NAME>_FUT` to keep them separate from
+    same-name options (display strips the suffix via `_DisplayInstrument`).
   - Post-midnight (before 09:00 IST): uses previous trading day.
 
 Usage:
@@ -154,6 +198,117 @@ def _CalcPnl(Direction, Price1, Price2, Qty, PV):
     return (Price1 - Price2) * Qty * PV
 
 
+def _ComputeCarriedNew(OvernightQty, AbsQty, Direction,
+                       DayBuyQty, DaySellQty, DayBuyPrice, DaySellPrice,
+                       OvernightFlipped=False):
+    """Classify current qty into carried-from-overnight vs new-today portions.
+
+    Returns (CarriedQty, NewQty, NewEntryPrice, ClosedQty, ExitPrice).
+
+    Day-buys directly close carry-shorts (FIFO from carry); day-sells directly
+    close carry-longs. Day flow beyond what's needed to close carry opens new
+    same-direction qty. This handles intraday flip-and-reopen correctly:
+    overnight SHORT 4 + day_buy 4 (cover) + day_sell 4 (new) → CarriedQty=0,
+    NewQty=4 (the carry was closed, current is new). The previous formula
+    (`OvernightQty - max(0, DayBuyQty - DaySellQty)`) treated this as all
+    carried, producing wrong daily swings for flip cases.
+
+    For direction-flip cases (e.g. overnight SHORT 4, today bought 6 → LONG 2),
+    the carry shorts are closed by today's BUYs at DayBuyPrice and the new LONGs
+    are opened by the SAME buys (same avg price). Symmetric for LONG→SHORT.
+
+    Quantities are in broker-native units (Kite=lots for MCX, units for NFO;
+    Angel=units). Caller scales to lot-level PV after.
+    """
+    if OvernightFlipped:
+        # Carry was closed by trades that drove net qty across zero. The
+        # current direction's defining trade type (BUYs for now-LONG, SELLs
+        # for now-SHORT) priced both the close AND the new open.
+        if Direction == "LONG":
+            ExitPrice = DayBuyPrice    # carry shorts closed by today's buys
+            NewEntryPrice = DayBuyPrice  # new longs opened by same buys
+        else:
+            ExitPrice = DaySellPrice   # carry longs closed by today's sells
+            NewEntryPrice = DaySellPrice
+        return 0, AbsQty, NewEntryPrice, OvernightQty, ExitPrice
+
+    if Direction == "SHORT":
+        CarriedQty = max(0, OvernightQty - DayBuyQty)
+        NewEntryPrice = DaySellPrice
+        ExitPrice = DayBuyPrice
+    else:
+        CarriedQty = max(0, OvernightQty - DaySellQty)
+        NewEntryPrice = DayBuyPrice
+        ExitPrice = DaySellPrice
+    NewQty = max(0, AbsQty - CarriedQty)
+    ClosedQty = OvernightQty - CarriedQty
+    return CarriedQty, NewQty, NewEntryPrice, ClosedQty, ExitPrice
+
+
+def _RealizedSliceForClose(SwingBase, ExitPrice, ClosedQty, ClosedDirection, PV):
+    """Today's daily slice of realized P&L for ClosedQty lots that exited today.
+
+    `ClosedDirection` is the direction of the LOTS being closed (i.e., the
+    overnight position direction for carry-cover; for non-flip cases this
+    equals the current position direction). For a SHORT→LONG flip, the closed
+    lots were SHORT even though the current position is LONG — the slice must
+    use the SHORT formula or the sign will invert.
+
+    SHORT close: (SwingBase - ExitPrice) × ClosedQty × PV — gain when cover below base
+    LONG  close: (ExitPrice - SwingBase) × ClosedQty × PV — gain when sell above base
+
+    SwingBase = prev_close (or avg_entry fallback when prev_close is 0). This
+    isolates the day's P&L contribution from the closed lots — distinct from
+    broker's `realised` field which is cumulative-since-cost-basis and double-
+    counts prior days' MTM if used as a daily figure.
+    """
+    if ClosedQty <= 0 or ExitPrice <= 0 or SwingBase <= 0:
+        return 0.0
+    if ClosedDirection == "SHORT":
+        return (SwingBase - ExitPrice) * ClosedQty * PV
+    return (ExitPrice - SwingBase) * ClosedQty * PV
+
+
+def _ClosedDirectionFromOvernight(RawOvernightQty, CurrentDirection):
+    """Direction of the closed (overnight) portion. Equals current direction
+    when there's no flip; reversed when overnight position was reversed."""
+    if RawOvernightQty < 0:
+        return "SHORT"
+    if RawOvernightQty > 0:
+        return "LONG"
+    return CurrentDirection  # no overnight → no closed portion anyway
+
+
+# Tolerance for cross-checking our split (daily_swing + today_realized_slice)
+# against broker's `m2m` field. ₹100 absorbs rounding and minor settlement-price
+# noise without masking real bugs.
+_M2M_RECONCILE_TOLERANCE = 100.0
+
+
+def _ReconcileWithBrokerM2m(Symbol, Broker, DailySwing, TodayRealizedSlice, BrokerM2m):
+    """Cross-check our split against the broker's `m2m` field. Logs a warning
+    on divergence so future bugs in the LIFO / slice math become visible
+    immediately instead of silently inflating the email totals.
+
+    Broker `m2m` is the authoritative daily contribution for a position
+    (covers carry-mtm + closures + new-opens for the day). Our split into
+    daily_swing (open portion) + today_realized_slice (closed portion) should
+    sum to it within rounding/settlement tolerance.
+    """
+    if BrokerM2m is None or BrokerM2m == 0:
+        return  # broker didn't populate; can't cross-check
+    Computed = DailySwing + TodayRealizedSlice
+    Diff = Computed - BrokerM2m
+    if abs(Diff) > _M2M_RECONCILE_TOLERANCE:
+        Logger.warning(
+            "%s %s: daily-MTM split diverges from broker m2m by ₹%.2f — "
+            "computed=%.2f (swing=%.2f, slice=%.2f) vs broker_m2m=%.2f. "
+            "If this persists, the LIFO classification or slice formula may "
+            "need review for this scenario.",
+            Broker, Symbol, Diff, Computed, DailySwing, TodayRealizedSlice, BrokerM2m,
+        )
+
+
 
 # ─── Exchange Opening Times (IST) ───────────────────────────────
 # MCX opens 9:00, NSE/NFO/BFO opens 9:15, NCDEX opens 10:00.
@@ -229,42 +384,26 @@ def _FetchOpenPositions(FullConfig):
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, PV)
 
-            # ── Split swing: carried lots from prev_close, new lots from entry ──
-            # LIFO: today's buys and sells offset each other first,
-            # only excess sells/buys eat into overnight (carried) positions.
-            #
-            # Direction flip detection: if overnight was opposite direction
-            # (e.g. SHORT→LONG), the overnight position was fully closed by
-            # today's trades.  All current qty is new.
             OvernightFlipped = (
                 (Direction == "LONG" and RawOvernightQty < 0) or
                 (Direction == "SHORT" and RawOvernightQty > 0)
             )
-
-            if OvernightFlipped:
-                CarriedQty = 0
-                NewQty = AbsQty
-                NewEntryPrice = DayBuyPrice if Direction == "LONG" else DaySellPrice
-                Logger.debug("  %s: direction flipped (%s overnight → %s), "
-                             "all %d lots are new today",
-                             Symbol, "SHORT" if RawOvernightQty < 0 else "LONG",
-                             Direction, AbsQty)
-            elif Direction == "LONG":
-                ExcessSells = max(0, DaySellQty - DayBuyQty)
-                CarriedQty = max(0, OvernightQty - ExcessSells)
-                NewQty = max(0, AbsQty - CarriedQty)
-                NewEntryPrice = DayBuyPrice
-            else:
-                ExcessBuys = max(0, DayBuyQty - DaySellQty)
-                CarriedQty = max(0, OvernightQty - ExcessBuys)
-                NewQty = max(0, AbsQty - CarriedQty)
-                NewEntryPrice = DaySellPrice
+            CarriedQty, NewQty, NewEntryPrice, ClosedQty, ExitPrice = _ComputeCarriedNew(
+                OvernightQty, AbsQty, Direction,
+                DayBuyQty, DaySellQty, DayBuyPrice, DaySellPrice,
+                OvernightFlipped,
+            )
+            ClosedDirection = _ClosedDirectionFromOvernight(RawOvernightQty, Direction)
 
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, PV)
             NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, PV) if NewQty > 0 else 0
             DailySwing = CarriedSwing + NewSwing
+            TodayRealizedSlice = _RealizedSliceForClose(SwingBase, ExitPrice, ClosedQty, ClosedDirection, PV)
             IsNewToday = (CarriedQty == 0)
+
+            BrokerM2m = float(Pos.get("m2m", 0) or 0)
+            _ReconcileWithBrokerM2m(Symbol, "Kite YD6016", DailySwing, TodayRealizedSlice, BrokerM2m)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
@@ -272,6 +411,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
+                "today_realized_slice": round(TodayRealizedSlice, 2),
                 "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         Logger.info("Kite YD6016: %d open futures", sum(1 for p in Positions if p["broker"] == "ZERODHA"))
@@ -342,31 +482,41 @@ def _FetchOpenPositions(FullConfig):
             TodayBuyPrice = float(Pos.get("buyavgprice", 0) or 0)
             TodaySellPrice = float(Pos.get("sellavgprice", 0) or 0)
 
-            if Direction == "LONG":
-                # LIFO: today's buys and sells offset each other first,
-                # only excess sells eat into carry-forward positions.
-                ExcessSells = max(0, SellQty - BuyQty)
-                CarriedUnits = max(0, CfBuyQty - ExcessSells)
-                NewUnits = max(0, AbsQty - CarriedUnits)
-                NewEntryPrice = TodayBuyPrice
-            else:
-                ExcessBuys = max(0, BuyQty - SellQty)
-                CarriedUnits = max(0, CfSellQty - ExcessBuys)
-                NewUnits = max(0, AbsQty - CarriedUnits)
-                NewEntryPrice = TodaySellPrice
+            # Angel doesn't expose a signed overnight qty directly, but
+            # CfBuyQty (overnight LONG) vs CfSellQty (overnight SHORT) reveal
+            # which side carried. A flip is detected when the carry side
+            # opposite to current direction has units.
+            OvernightUnits = CfBuyQty if Direction == "LONG" else CfSellQty
+            OppOvernightUnits = CfSellQty if Direction == "LONG" else CfBuyQty
+            OvernightFlipped = OppOvernightUnits > 0 and OvernightUnits == 0
+
+            CarriedUnits, NewUnits, NewEntryPrice, ClosedUnits, ExitPrice = _ComputeCarriedNew(
+                OvernightUnits if not OvernightFlipped else OppOvernightUnits,
+                AbsQty, Direction,
+                BuyQty, SellQty, TodayBuyPrice, TodaySellPrice,
+                OvernightFlipped,
+            )
+            ClosedDirection = ("LONG" if OvernightFlipped and Direction == "SHORT"
+                               else "SHORT" if OvernightFlipped and Direction == "LONG"
+                               else Direction)
 
             CarriedLots = CarriedUnits / QtyMult if QtyMult else CarriedUnits
             NewLots = NewUnits / QtyMult if QtyMult else NewUnits
+            ClosedLots = ClosedUnits / QtyMult if QtyMult else ClosedUnits
             IsNewToday = (CarriedUnits == 0)
 
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedLots, PV)
             NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewLots, PV) if NewLots > 0 else 0
             DailySwing = CarriedSwing + NewSwing
+            TodayRealizedSlice = _RealizedSliceForClose(SwingBase, ExitPrice, ClosedLots, ClosedDirection, PV)
+
+            BrokerM2m = float(Pos.get("m2m", 0) or 0)
+            _ReconcileWithBrokerM2m(Symbol, "Angel", DailySwing, TodayRealizedSlice, BrokerM2m)
 
             Pnl = _CalcPnl(Direction, AvgPrice, Ltp, Lots, PV)
-            Logger.debug("  Angel %s: cf_units=%d new_units=%d cf_lots=%.1f new_lots=%.1f",
-                         InstName, CarriedUnits, NewUnits, CarriedLots, NewLots)
+            Logger.debug("  Angel %s: cf_units=%d new_units=%d cf_lots=%.1f new_lots=%.1f closed_lots=%.1f slice=%.2f",
+                         InstName, CarriedUnits, NewUnits, CarriedLots, NewLots, ClosedLots, TodayRealizedSlice)
 
             Positions.append({
                 "instrument": InstName, "tradingsymbol": Symbol,
@@ -374,6 +524,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": PV,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
+                "today_realized_slice": round(TodayRealizedSlice, 2),
                 "broker": "ANGEL", "is_new_today": IsNewToday,
             })
         Logger.info("Angel: %d open NCDEX positions", sum(1 for p in Positions if p["broker"] == "ANGEL"))
@@ -423,23 +574,26 @@ def _FetchOpenPositions(FullConfig):
 
                 Pnl = _CalcPnl(Direction, AvgPrice, Ltp, AbsQty, 1.0)
 
-                # Split swing: LIFO — today's trades offset each other first
-                if Direction == "LONG":
-                    ExcessSells = max(0, DaySellQty - DayBuyQty)
-                    CarriedQty = max(0, OvernightQty - ExcessSells)
-                    NewQty = max(0, AbsQty - CarriedQty)
-                    NewEntryPrice = DayBuyPrice
-                else:
-                    ExcessBuys = max(0, DayBuyQty - DaySellQty)
-                    CarriedQty = max(0, OvernightQty - ExcessBuys)
-                    NewQty = max(0, AbsQty - CarriedQty)
-                    NewEntryPrice = DaySellPrice
+                OptOvernightFlipped = (
+                    (Direction == "LONG" and RawOvernightQty < 0) or
+                    (Direction == "SHORT" and RawOvernightQty > 0)
+                )
+                CarriedQty, NewQty, NewEntryPrice, ClosedQty, ExitPrice = _ComputeCarriedNew(
+                    OvernightQty, AbsQty, Direction,
+                    DayBuyQty, DaySellQty, DayBuyPrice, DaySellPrice,
+                    OptOvernightFlipped,
+                )
+                ClosedDirection = _ClosedDirectionFromOvernight(RawOvernightQty, Direction)
 
                 SwingBase = PrevClose if PrevClose > 0 else AvgPrice
                 CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, 1.0)
                 NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, 1.0) if NewQty > 0 else 0
                 DailySwing = CarriedSwing + NewSwing
+                TodayRealizedSlice = _RealizedSliceForClose(SwingBase, ExitPrice, ClosedQty, ClosedDirection, 1.0)
                 IsNewToday = (CarriedQty == 0)
+
+                BrokerM2m = float(Pos.get("m2m", 0) or 0)
+                _ReconcileWithBrokerM2m(Symbol, "Kite OFS653 (option)", DailySwing, TodayRealizedSlice, BrokerM2m)
 
                 Positions.append({
                     "instrument": f"{Underlying}_OPT_{Leg}", "tradingsymbol": Symbol,
@@ -447,6 +601,7 @@ def _FetchOpenPositions(FullConfig):
                     "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                     "ltp": round(Ltp, 2), "point_value": 1.0,
                     "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
+                    "today_realized_slice": round(TodayRealizedSlice, 2),
                     "broker": "ZERODHA", "is_new_today": IsNewToday,
                 })
                 continue
@@ -455,6 +610,12 @@ def _FetchOpenPositions(FullConfig):
             # qty in units (lot_size × n_lots); compute P&L as ₹1 per unit per
             # ₹1 index move (PV = 1.0). LotSize from config's point_value
             # (numerically equal for NSE index futures since each unit reflects ₹1/point).
+            #
+            # Defensive: only process NFO. If a non-NFO non-option leaks into
+            # OFS653's positions response, skip rather than mis-price with PV=1.0.
+            if Exchange != "NFO":
+                Logger.warning("OFS653 non-NFO non-option skipped: %s (%s)", Symbol, Exchange)
+                continue
             InstName, Cfg = _MatchToInstrument(Symbol, Exchange, "ZERODHA", Instruments)
             if not InstName:
                 Logger.warning("Unmatched OFS653 position: %s (%s)", Symbol, Exchange)
@@ -469,26 +630,22 @@ def _FetchOpenPositions(FullConfig):
                 (Direction == "LONG" and RawOvernightQty < 0) or
                 (Direction == "SHORT" and RawOvernightQty > 0)
             )
-            if OvernightFlipped:
-                CarriedQty = 0
-                NewQty = AbsQty
-                NewEntryPrice = DayBuyPrice if Direction == "LONG" else DaySellPrice
-            elif Direction == "LONG":
-                ExcessSells = max(0, DaySellQty - DayBuyQty)
-                CarriedQty = max(0, OvernightQty - ExcessSells)
-                NewQty = max(0, AbsQty - CarriedQty)
-                NewEntryPrice = DayBuyPrice
-            else:
-                ExcessBuys = max(0, DayBuyQty - DaySellQty)
-                CarriedQty = max(0, OvernightQty - ExcessBuys)
-                NewQty = max(0, AbsQty - CarriedQty)
-                NewEntryPrice = DaySellPrice
+            CarriedQty, NewQty, NewEntryPrice, ClosedQty, ExitPrice = _ComputeCarriedNew(
+                OvernightQty, AbsQty, Direction,
+                DayBuyQty, DaySellQty, DayBuyPrice, DaySellPrice,
+                OvernightFlipped,
+            )
+            ClosedDirection = _ClosedDirectionFromOvernight(RawOvernightQty, Direction)
 
             SwingBase = PrevClose if PrevClose > 0 else AvgPrice
             CarriedSwing = _CalcPnl(Direction, SwingBase, Ltp, CarriedQty, 1.0)
             NewSwing = _CalcPnl(Direction, NewEntryPrice, Ltp, NewQty, 1.0) if NewQty > 0 else 0
             DailySwing = CarriedSwing + NewSwing
+            TodayRealizedSlice = _RealizedSliceForClose(SwingBase, ExitPrice, ClosedQty, ClosedDirection, 1.0)
             IsNewToday = (CarriedQty == 0)
+
+            BrokerM2m = float(Pos.get("m2m", 0) or 0)
+            _ReconcileWithBrokerM2m(Symbol, "Kite OFS653 (NFO fut)", DailySwing, TodayRealizedSlice, BrokerM2m)
 
             Positions.append({
                 "instrument": f"{InstName}_FUT", "tradingsymbol": Symbol,
@@ -496,6 +653,7 @@ def _FetchOpenPositions(FullConfig):
                 "avg_entry": round(AvgPrice, 2), "prev_close": round(PrevClose, 2),
                 "ltp": round(Ltp, 2), "point_value": 1.0,
                 "pnl": round(Pnl, 2), "daily_swing": round(DailySwing, 2),
+                "today_realized_slice": round(TodayRealizedSlice, 2),
                 "broker": "ZERODHA", "is_new_today": IsNewToday,
             })
         OptCount = sum(1 for p in Positions if "_OPT_" in p["instrument"])
@@ -525,21 +683,30 @@ def _OptionUnderlying(Symbol):
 
 
 def _FetchDailyRealizedPnl(FullConfig):
-    """Fetch today's realized P&L from all broker accounts.
+    """Fetch realized P&L from all broker accounts.
 
-    Sums the 'realised' field from every position (including closed qty=0),
-    with m2m fallback for Kite-closed positions that report realised=0.
+    Returns (ByAccount, ClosedOnlyByInstrument):
 
-    Returns (ByAccount, ByInstrument):
-      ByAccount:    {"YD6016": float, "AABM826021": float, "OFS653": float}
-      ByInstrument: {"DHANIYA": -25667.0, "NIFTY": 5000.0, ...}
-                    — keyed by canonical instrument name (futures)
-                    or underlying (options); matches the 'instrument'
-                    bucket used by open positions in the report.
+      ByAccount: cumulative `realised` field per account (broker's
+        cost-basis-to-exit number). Stays cumulative for the accumulator
+        JSON which tracks total realized P&L since FY start for tax/capital.
+        {"YD6016": float, "AABM826021": float, "OFS653": float}
+
+      ClosedOnlyByInstrument: today's daily SLICE of realized P&L, but only
+        for instruments that are fully closed today (qty=0). Used to surface
+        these in the "Closed Today" section. Today's slice =
+        (exit_price - prev_close) × qty × PV — broker provides this in the
+        `m2m` field for closed positions. This is intentionally separate
+        from cumulative-since-entry so the day-over-day MTM is correct
+        (no double-count of prior days' mark-to-market).
+
+      For partial closes on still-open positions, today's slice lives on
+      each open position's `today_realized_slice` field (computed in
+      `_FetchOpenPositions`). The display layer reads it from there.
     """
     Instruments = FullConfig.get("instruments", {}) if FullConfig else {}
     ByAccount = {}
-    ByInstrument = defaultdict(float)
+    ClosedByInstrument = defaultdict(float)
 
     def _Bucket(Symbol, Exchange, Broker):
         """Map broker tradingsymbol → canonical bucket; options → underlying.
@@ -554,17 +721,23 @@ def _FetchDailyRealizedPnl(FullConfig):
             return f"{Name}_FUT"
         return Name
 
-    def _MergeContributions(Local):
-        """Merge a broker's per-instrument contributions into the global map.
-
-        Called only after the broker's loop completes without exception —
-        this keeps ByInstrument in sync with ByAccount. If a broker's
-        fetch raises mid-loop, its partial entries are discarded so the
-        per-instrument map never shows attributions for an account that
-        reports 0 in ByAccount.
-        """
+    def _MergeClosed(Local):
+        """Flush a broker's closed-only attributions only after success."""
         for K, V in Local.items():
-            ByInstrument[K] += V
+            ClosedByInstrument[K] += V
+
+    def _ClosedSlice(Qty, Realised, M2m):
+        """Today's slice for a fully-closed position (qty == 0).
+
+        Prefers broker `m2m` (= today's prev_close → exit slice) and falls
+        back to `realised` if m2m is missing — for positions that opened AND
+        closed within today, m2m == realised.
+        """
+        if Qty != 0:
+            return 0.0
+        if M2m != 0:
+            return M2m
+        return Realised
 
     # Kite YD6016 — MCX futures
     try:
@@ -573,31 +746,32 @@ def _FetchDailyRealizedPnl(FullConfig):
         Kite = _EstablishKiteSession("YD6016")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
-        LocalByInst = defaultdict(float)
+        LocalClosed = defaultdict(float)
         for P in AllPositions:
             if P.get("product") not in ("NRML", "MIS") or _IsIndexOption(P.get("tradingsymbol", "")):
                 continue
             Realised = float(P.get("realised", 0))
             M2m = float(P.get("m2m", 0))
-            Pnl = float(P.get("pnl", 0))
             Qty = P.get("quantity", 0)
             Symbol = P.get("tradingsymbol", "")
             Exchange = P.get("exchange", "")
-            Logger.debug("  Kite YD6016 %s: qty=%s realised=%.2f m2m=%.2f pnl=%.2f",
-                         Symbol, Qty, Realised, M2m, Pnl)
-            # For closed positions (qty=0), use m2m if realised is 0
+            Logger.debug("  Kite YD6016 %s: qty=%s realised=%.2f m2m=%.2f",
+                         Symbol, Qty, Realised, M2m)
+            # ByAccount: cumulative realised (with m2m fallback for closures
+            # whose realised field broker didn't populate).
             if Qty == 0 and Realised == 0 and M2m != 0:
-                Logger.info("  Kite YD6016 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Contribution = M2m
+                Total += M2m
             else:
-                Contribution = Realised
-            Total += Contribution
-            Key = _Bucket(Symbol, Exchange, "ZERODHA")
-            if Key and Contribution:
-                LocalByInst[Key] += Contribution
+                Total += Realised
+            # ClosedOnlyByInstrument: today's slice for fully-closed only.
+            Slice = _ClosedSlice(Qty, Realised, M2m)
+            if Slice:
+                Key = _Bucket(Symbol, Exchange, "ZERODHA")
+                if Key:
+                    LocalClosed[Key] += Slice
         ByAccount["YD6016"] = round(Total, 2)
-        _MergeContributions(LocalByInst)
-        Logger.info("Kite YD6016 realized today: %.2f", Total)
+        _MergeClosed(LocalClosed)
+        Logger.info("Kite YD6016 realized today (cumulative): %.2f", Total)
     except _ExchangeNotOpen:
         ByAccount["YD6016"] = 0.0
     except Exception as e:
@@ -614,7 +788,7 @@ def _FetchDailyRealizedPnl(FullConfig):
         if RawPositions is None:
             RawPositions = []
         Total = 0.0
-        LocalByInst = defaultdict(float)
+        LocalClosed = defaultdict(float)
         for P in RawPositions:
             ProdType = P.get("producttype", "")
             if ProdType not in ("CARRYFORWARD", "INTRADAY"):
@@ -626,33 +800,32 @@ def _FetchDailyRealizedPnl(FullConfig):
             Exchange = P.get("exchange", "")
             Logger.debug("  Angel %s [%s]: qty=%s realised=%.2f m2m=%.2f",
                          Symbol, ProdType, Qty, Realised, M2m)
-            # For closed positions (qty=0), use m2m if realised is 0
             if Qty == 0 and Realised == 0 and M2m != 0:
-                Logger.info("  Angel %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Contribution = M2m
+                Total += M2m
             else:
-                Contribution = Realised
-            Total += Contribution
-            Key = _Bucket(Symbol, Exchange, "ANGEL")
-            if Key and Contribution:
-                LocalByInst[Key] += Contribution
+                Total += Realised
+            Slice = _ClosedSlice(Qty, Realised, M2m)
+            if Slice:
+                Key = _Bucket(Symbol, Exchange, "ANGEL")
+                if Key:
+                    LocalClosed[Key] += Slice
         ByAccount["AABM826021"] = round(Total, 2)
-        _MergeContributions(LocalByInst)
-        Logger.info("Angel realized today: %.2f", Total)
+        _MergeClosed(LocalClosed)
+        Logger.info("Angel realized today (cumulative): %.2f", Total)
     except _ExchangeNotOpen:
         ByAccount["AABM826021"] = 0.0
     except Exception as e:
         Logger.error("Angel realized fetch failed: %s\n%s", e, traceback.format_exc())
         ByAccount["AABM826021"] = 0.0
 
-    # Kite OFS653 — Options
+    # Kite OFS653 — Options + NFO index futures
     try:
         if not _IsExchangeOpen("NFO"):
             raise _ExchangeNotOpen("NFO")
         Kite = _EstablishKiteSession("OFS653")
         AllPositions = Kite.positions().get("net", [])
         Total = 0.0
-        LocalByInst = defaultdict(float)
+        LocalClosed = defaultdict(float)
         for P in AllPositions:
             if P.get("product") != "NRML":
                 continue
@@ -663,25 +836,25 @@ def _FetchDailyRealizedPnl(FullConfig):
             Exchange = P.get("exchange", "")
             Logger.debug("  Kite OFS653 %s: qty=%s realised=%.2f m2m=%.2f", Symbol, Qty, Realised, M2m)
             if Qty == 0 and Realised == 0 and M2m != 0:
-                Logger.info("  Kite OFS653 %s: closed position, using m2m=%.2f instead of realised=0", Symbol, M2m)
-                Contribution = M2m
+                Total += M2m
             else:
-                Contribution = Realised
-            Total += Contribution
-            Key = _Bucket(Symbol, Exchange, "ZERODHA")
-            if Key and Contribution:
-                LocalByInst[Key] += Contribution
+                Total += Realised
+            Slice = _ClosedSlice(Qty, Realised, M2m)
+            if Slice:
+                Key = _Bucket(Symbol, Exchange, "ZERODHA")
+                if Key:
+                    LocalClosed[Key] += Slice
         ByAccount["OFS653"] = round(Total, 2)
-        _MergeContributions(LocalByInst)
-        Logger.info("Kite OFS653 realized today: %.2f", Total)
+        _MergeClosed(LocalClosed)
+        Logger.info("Kite OFS653 realized today (cumulative): %.2f", Total)
     except _ExchangeNotOpen:
         ByAccount["OFS653"] = 0.0
     except Exception as e:
         Logger.error("Kite OFS653 realized fetch failed: %s\n%s", e, traceback.format_exc())
         ByAccount["OFS653"] = 0.0
 
-    ByInstrumentRounded = {K: round(V, 2) for K, V in ByInstrument.items()}
-    return ByAccount, ByInstrumentRounded
+    ClosedRounded = {K: round(V, 2) for K, V in ClosedByInstrument.items()}
+    return ByAccount, ClosedRounded
 
 
 def _UpdateRealizedPnlAccumulator(DailyByAccount, DateStr, EodUnrealized):
@@ -897,11 +1070,15 @@ def _BuildReportHtml(D):
     RealizedByInstrument = D.get("realized_by_instrument", {}) or {}
 
     # ── Open Futures ──
+    # Per-position "Realized today" comes from the position's own
+    # `today_realized_slice` (closed-portion daily slice computed at fetch time),
+    # NOT from cumulative-since-entry — adding cumulative would double-count
+    # prior days' MTM. RealizedByInstrument is for the Closed Today section only.
     FutPos = [P for P in D["positions"] if "_OPT_" not in P["instrument"]]
     FutHtml = _SectionHeader("Open Futures")
     if FutPos:
         for P in FutPos:
-            FutHtml += _PositionRow(P, RealizedByInstrument.get(P["instrument"], 0))
+            FutHtml += _PositionRow(P, P.get("today_realized_slice", 0))
     else:
         FutHtml += _EmptyRow("No open futures")
 
@@ -909,13 +1086,15 @@ def _BuildReportHtml(D):
     OptPos = [P for P in D["positions"] if "_OPT_" in P["instrument"]]
     OptHtml = _SectionHeader("Open Options")
     if OptPos:
-        ByUnderlying = defaultdict(lambda: {"pnl": 0, "daily_swing": 0, "legs": [], "max_qty": 0})
+        ByUnderlying = defaultdict(lambda: {"pnl": 0, "daily_swing": 0, "today_realized_slice": 0,
+                                             "legs": [], "max_qty": 0})
         for P in OptPos:
             Parts = P["instrument"].split("_OPT_")
             Underlying = Parts[0]
             Leg = Parts[1] if len(Parts) > 1 else "?"
             ByUnderlying[Underlying]["pnl"] += P["pnl"]
             ByUnderlying[Underlying]["daily_swing"] += P["daily_swing"]
+            ByUnderlying[Underlying]["today_realized_slice"] += P.get("today_realized_slice", 0)
             # Track max qty across legs to derive lot count
             ByUnderlying[Underlying]["max_qty"] = max(
                 ByUnderlying[Underlying]["max_qty"], P["qty"])
@@ -933,7 +1112,7 @@ def _BuildReportHtml(D):
             LotSize = LOT_SIZES.get(Underlying, 1)
             Lots = int(Combo["max_qty"] / LotSize) if LotSize else Combo["max_qty"]
 
-            UnderlyingRealized = RealizedByInstrument.get(Underlying, 0)
+            UnderlyingRealized = Combo["today_realized_slice"]
             OptRealizedHtml = ""
             if abs(UnderlyingRealized) >= 1:
                 OptRealizedColor = _PnlColor(UnderlyingRealized)
@@ -1094,15 +1273,21 @@ def _EmptyRow(Text):
             f'color:{MUTED};font-style:italic;">{_html.escape(Text)}</td></tr>')
 
 
-def _PositionRow(P, RealizedToday=0):
+def _PositionRow(P, RealizedToday=None):
     """Render one open futures position.
 
-    RealizedToday is the per-instrument realized P&L from today's closed
-    trades on the same symbol (e.g. a carry short that got covered while
-    the user opened a new long). Shown as separate 'Realized today' and
-    'Net today' lines so the true per-instrument P&L isn't hidden by the
-    account-level aggregate.
+    RealizedToday is today's daily SLICE of realized P&L from the closed
+    portion of this position (e.g. a carry short that got partially covered
+    today). Computed at fetch time as `(prev_close - exit_price) × closed_qty
+    × PV` (SHORT) and stored on the position dict. Shown as 'Realized today'
+    and 'Net today' lines so the true per-instrument daily P&L is visible.
+
+    If `RealizedToday` is not passed, defaults to `P["today_realized_slice"]`.
+    Do NOT pass cumulative-since-entry realised here — that double-counts
+    prior days' MTM when added to `daily_swing`.
     """
+    if RealizedToday is None:
+        RealizedToday = P.get("today_realized_slice", 0)
     DirColor = GREEN if P["direction"] == "LONG" else RED
     DirBg = "#f0fdf4" if P["direction"] == "LONG" else "#fef2f2"
     PnlColor = _PnlColor(P["pnl"])
@@ -1208,19 +1393,31 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
 
     # Total unrealized P&L = sum of (LTP - Entry) across all positions
     TotalPnl = sum(P["pnl"] for P in Positions)
-    # Daily swing on open positions = sum of (LTP - Prev Close)
+    # Daily swing on open positions = sum of (LTP - Prev Close) for the
+    # OPEN portion only (carried + new entry today). Closed-portion daily
+    # slice for partially-covered positions lives in `today_realized_slice`.
     OpenSwing = sum(P["daily_swing"] for P in Positions)
 
-    # Accumulate realized P&L into JSON for capital tracking
-    DailyRealizedByAccount, DailyRealizedByInstrument = _FetchDailyRealizedPnl(FullConfig)
+    # ── Realized today ──
+    # `_FetchDailyRealizedPnl` returns:
+    #   ByAccount: cumulative-since-cost-basis (broker's `realised`) — used
+    #     by the accumulator JSON to track total realized P&L since FY start
+    #     for tax/capital purposes. Stays cumulative.
+    #   ClosedByInstrument: today's slice for fully-closed instruments only,
+    #     used for the "Closed Today" section.
+    # Today's slice for partial closes is on each open position's
+    # `today_realized_slice` field — sum those here for the daily-MTM math.
+    DailyRealizedByAccount, ClosedByInstrument = _FetchDailyRealizedPnl(FullConfig)
     _UpdateRealizedPnlAccumulator(DailyRealizedByAccount, DateStr, TotalPnl)
 
-    # Total daily MTM = open position swing + realized from all exits today
-    TotalRealizedToday = sum(DailyRealizedByAccount.values())
+    PartialClosedSlice = sum(P.get("today_realized_slice", 0) for P in Positions)
+    FullyClosedSlice = sum(ClosedByInstrument.values())
+    TotalRealizedToday = PartialClosedSlice + FullyClosedSlice
     TotalDailyMtm = OpenSwing + TotalRealizedToday
 
-    Logger.info("Total unrealized: %.2f | Open swing: %.2f | Realized today: %.2f | Daily MTM: %.2f",
-                TotalPnl, OpenSwing, TotalRealizedToday, TotalDailyMtm)
+    Logger.info("Open swing: %.2f | Partial-close slice: %.2f | Fully-closed slice: %.2f | Daily MTM: %.2f | Cumulative realised (accumulator): %.2f",
+                OpenSwing, PartialClosedSlice, FullyClosedSlice, TotalDailyMtm,
+                sum(DailyRealizedByAccount.values()))
 
     # Log each position for verification
     for P in Positions:
@@ -1239,7 +1436,9 @@ def GenerateDailyReport(DryRun=False, DateStr=None):
         "open_swing": OpenSwing,
         "realized_today": TotalRealizedToday,
         "realized_by_account": DailyRealizedByAccount,
-        "realized_by_instrument": DailyRealizedByInstrument,
+        # Closed-only today slices keyed by canonical instrument; fed to the
+        # "Closed Today" section. Partial-close slices live on open positions.
+        "realized_by_instrument": ClosedByInstrument,
         "position_count": len(Positions),
         "trade_count": len(FuturesOrders) + len(OptionsOrders),
         "futures_orders": FuturesOrders,
