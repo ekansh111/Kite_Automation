@@ -1,4 +1,5 @@
 import datetime
+import os
 from pathlib import Path
 import datetime
 
@@ -57,3 +58,16 @@ Nifty500ConstituentFilePath=str(momentumRoot/"ind_nifty500list.csv")
 
 DEFAULT_SYMBOLS_FILE_INT50=str(workTradingRoot/"ConstituentDetails"/"ind_nifty200list.csv")
 DEFAULT_OUTPUT_DIR_INT50=str(workTradingRoot/"IntradayNifty50")
+
+# Email notification config. Password lives in local_secrets.py (gitignored)
+# so it never lands in source/git. Falls back to KITE_EMAIL_PASSWORD env var
+# if local_secrets.py is missing (e.g., fresh clone before setup).
+EMAIL_NOTIFY_ENABLED = True
+EMAIL_FROM = "ekansh.n111@gmail.com"
+try:
+    from local_secrets import EMAIL_FROM_PASSWORD
+except ImportError:
+    EMAIL_FROM_PASSWORD = os.environ.get("KITE_EMAIL_PASSWORD", "")
+EMAIL_TO = "ekansh.n@gmail.com"
+EMAIL_SMTP = "smtp.gmail.com"
+EMAIL_PORT = 465

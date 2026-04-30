@@ -26,6 +26,9 @@ backtest_results_mean_reversion/
 trading_signals/
 Option Logs/
 
+# Local secrets — never commit
+local_secrets.py
+
 # Temp / scratch
 rough*.py
 demo*.csv

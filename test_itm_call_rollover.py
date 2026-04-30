@@ -37,6 +37,12 @@ else:
         WorkDirectory = _MOCK_WORK_ROOT
         KiteEshitaLogin = _MOCK_WORK_ROOT / "Login_Credentials_OFS653.txt"
         KiteEshitaLoginAccessToken = _MOCK_WORK_ROOT / "access_token_OF.txt"
+        EMAIL_NOTIFY_ENABLED = False
+        EMAIL_FROM = ""
+        EMAIL_FROM_PASSWORD = ""
+        EMAIL_TO = ""
+        EMAIL_SMTP = ""
+        EMAIL_PORT = 0
 
     sys.modules["Directories"] = MockDirectories()
 
