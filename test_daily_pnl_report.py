@@ -109,109 +109,159 @@ class TestCalcPnl:
 # LIFO Swing Split — Kite MCX
 # ═══════════════════════════════════════════════════════════════════
 
+class TestComputeCarriedNew:
+    """Tests the carried/new classification helper directly. The new formula —
+    `CarriedQty = max(0, OvernightQty - DayBuyQty)` for SHORT (and symmetric
+    for LONG) — handles intraday flip-and-reopen correctly. The previous
+    formula (`OvernightQty - max(0, DayBuy - DaySell)`) treated ZINCMINI-style
+    flips as carry-untouched, producing wrong daily swings."""
+
+    def test_pure_carried_long(self):
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            5, 5, "LONG", 0, 0, 0, 0)
+        assert (carried, new, closed) == (5, 0, 0)
+
+    def test_pure_new_long(self):
+        carried, new, entry, closed, _ = dpr._ComputeCarriedNew(
+            0, 2, "LONG", 2, 0, 9853.50, 0)
+        assert (carried, new, closed) == (0, 2, 0)
+        assert entry == 9853.50
+
+    def test_long_partial_sell(self):
+        # Carry 10 LONG, sell 3 → 7 remain, all carried; 3 closed at sell price.
+        carried, new, _, closed, exit_price = dpr._ComputeCarriedNew(
+            10, 7, "LONG", 0, 3, 0, 105.0)
+        assert (carried, new, closed) == (7, 0, 3)
+        assert exit_price == 105.0
+
+    def test_long_add_to_position(self):
+        # Carry 2, buy 3 + sell 1 → 4 net long.
+        # New formula: DaySell=1 → carried = max(0, 2-1) = 1; new = 4-1 = 3.
+        carried, new, entry, closed, _ = dpr._ComputeCarriedNew(
+            2, 4, "LONG", 3, 1, 105.0, 0)
+        assert (carried, new, closed) == (1, 3, 1)
+        assert entry == 105.0
+
+    def test_short_pure_carried(self):
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            5, 5, "SHORT", 0, 0, 0, 0)
+        assert (carried, new, closed) == (5, 0, 0)
+
+    def test_short_new_today(self):
+        carried, new, entry, closed, _ = dpr._ComputeCarriedNew(
+            0, 10, "SHORT", 0, 10, 0, 295.0)
+        assert (carried, new, closed) == (0, 10, 0)
+        assert entry == 295.0
+
+    def test_short_partial_cover(self):
+        # The JEERA-class case: carry 9 SHORT, buy 6 to cover → 3 remain.
+        # Carry 9 - DayBuy 6 = 3 carried. ClosedQty = 6 covered at buy price.
+        carried, new, _, closed, exit_price = dpr._ComputeCarriedNew(
+            9, 3, "SHORT", 6, 0, 20700.0, 0)
+        assert (carried, new, closed) == (3, 0, 6)
+        assert exit_price == 20700.0
+
+    def test_short_intraday_flip_zincmini_case(self):
+        # ZINCMINI: overnight SHORT 4, today buy 4 (cover) + sell 4 (new) → SHORT 4.
+        # Bug pre-fix: ExcessBuys = 0, CarriedQty = 4, NewQty = 0 (WRONG).
+        # Post-fix: CarriedQty = max(0, 4-4) = 0; NewQty = 4; ClosedQty = 4.
+        carried, new, entry, closed, exit_price = dpr._ComputeCarriedNew(
+            4, 4, "SHORT", 4, 4, 343.06, 340.09)
+        assert (carried, new, closed) == (0, 4, 4)
+        assert entry == 340.09  # new short entered at sell price
+        assert exit_price == 343.06  # carry closed at buy price
+
+    def test_overnight_flipped_short_to_long(self):
+        # Overnight SHORT 4 (RawOvernightQty=-4); today bought 6 → LONG 2.
+        # OvernightFlipped early-return: all 2 are new at buy price.
+        carried, new, entry, closed, _ = dpr._ComputeCarriedNew(
+            4, 2, "LONG", 6, 0, 100.0, 0,
+            OvernightFlipped=True)
+        assert (carried, new) == (0, 2)
+        assert closed == 4  # entire overnight short was reversed
+        assert entry == 100.0
+
+
+class TestRealizedSliceForClose:
+    """Today's daily slice for the closed portion of a position."""
+
+    def test_short_cover_below_prev_close_is_gain(self):
+        # SHORT 4 covered at 343.06 from prev_close 341.90 → cover ABOVE base = loss.
+        slice_ = dpr._RealizedSliceForClose(
+            SwingBase=341.90, ExitPrice=343.06, ClosedQty=4, ClosedDirection="SHORT", PV=1000)
+        assert slice_ == pytest.approx(-4640.0)
+
+    def test_short_cover_above_prev_close_is_loss(self):
+        # JEERA: SHORT 2 lots covered at 20700 from prev_close 20320 = -22,800.
+        slice_ = dpr._RealizedSliceForClose(
+            SwingBase=20320, ExitPrice=20700, ClosedQty=2, ClosedDirection="SHORT", PV=30)
+        assert slice_ == pytest.approx(-22800.0)
+
+    def test_long_sell_above_prev_close_is_gain(self):
+        slice_ = dpr._RealizedSliceForClose(
+            SwingBase=100, ExitPrice=110, ClosedQty=5, ClosedDirection="LONG", PV=50)
+        assert slice_ == pytest.approx(2500.0)
+
+    def test_zero_when_nothing_closed(self):
+        assert dpr._RealizedSliceForClose(100, 105, 0, "SHORT", 1) == 0.0
+
+    def test_zero_when_swingbase_missing(self):
+        # No prev_close → can't compute today's slice; return 0 to avoid bogus number.
+        assert dpr._RealizedSliceForClose(0, 105, 5, "SHORT", 1) == 0.0
+
+
 class TestLIFOSwingKite:
-    """Test the LIFO logic for Kite (MCX + Options) positions."""
+    """Smoke tests for swing computations under the new formula."""
 
     def _compute_kite_swing(self, overnight, day_buy, day_sell, direction, abs_qty,
                             prev_close, ltp, day_buy_price, day_sell_price, pv=1.0):
-        """Replicate the Kite swing split logic from the source."""
-        if direction == "LONG":
-            excess_sells = max(0, day_sell - day_buy)
-            carried = max(0, overnight - excess_sells)
-            new = max(0, abs_qty - carried)
-            new_entry = day_buy_price
-        else:
-            excess_buys = max(0, day_buy - day_sell)
-            carried = max(0, overnight - excess_buys)
-            new = max(0, abs_qty - carried)
-            new_entry = day_sell_price
-
+        carried, new, new_entry, _, _ = dpr._ComputeCarriedNew(
+            overnight, abs_qty, direction, day_buy, day_sell,
+            day_buy_price, day_sell_price)
         swing_base = prev_close if prev_close > 0 else 0
         carried_swing = dpr._CalcPnl(direction, swing_base, ltp, carried, pv)
         new_swing = dpr._CalcPnl(direction, new_entry, ltp, new, pv) if new > 0 else 0
         is_new_today = (carried == 0)
         return carried, new, carried_swing + new_swing, is_new_today
 
-    # ── Pure carried, no intraday trades ──
     def test_pure_carried_long(self):
         carried, new, swing, is_new = self._compute_kite_swing(
             overnight=5, day_buy=0, day_sell=0, direction="LONG", abs_qty=5,
             prev_close=100, ltp=110, day_buy_price=0, day_sell_price=0, pv=50)
-        assert carried == 5
-        assert new == 0
+        assert (carried, new, is_new) == (5, 0, False)
         assert swing == 2500.0  # (110-100)*5*50
-        assert is_new is False
 
-    # ── Pure new position, no overnight ──
     def test_pure_new_long(self):
         carried, new, swing, is_new = self._compute_kite_swing(
             overnight=0, day_buy=2, day_sell=0, direction="LONG", abs_qty=2,
             prev_close=9253, ltp=9853, day_buy_price=9853.50, day_sell_price=0, pv=100)
-        assert carried == 0
-        assert new == 2
-        assert is_new is True
-        # Swing from entry, not stale prev_close
+        assert (carried, new, is_new) == (0, 2, True)
         assert swing == pytest.approx((9853 - 9853.50) * 2 * 100)
 
-    # ── LIFO: CF lot + buy today + sell today → CF preserved ──
-    def test_lifo_cf_plus_buy_sell(self):
-        # Had 3 overnight, bought 2 today, sold 2 today → 3 remain, all carried
-        carried, new, swing, is_new = self._compute_kite_swing(
-            overnight=3, day_buy=2, day_sell=2, direction="LONG", abs_qty=3,
-            prev_close=500, ltp=520, day_buy_price=510, day_sell_price=515, pv=10)
-        assert carried == 3
-        assert new == 0
-        assert is_new is False
-        assert swing == (520 - 500) * 3 * 10
-
-    # ── LIFO: sell more than bought today → eats into overnight ──
-    def test_lifo_excess_sell_eats_overnight(self):
-        # Had 10 overnight, bought 0 today, sold 5 → 5 remain, all carried
-        carried, new, swing, is_new = self._compute_kite_swing(
-            overnight=10, day_buy=0, day_sell=5, direction="LONG", abs_qty=5,
-            prev_close=200, ltp=210, day_buy_price=0, day_sell_price=0, pv=100)
-        assert carried == 5
-        assert new == 0
-        assert is_new is False
-
-    # ── LIFO: bought today more than sold → new lots exist ──
-    def test_lifo_net_new_lots(self):
-        # Had 2 overnight, bought 3 today, sold 1 → 4 remain: 2 carried + 2 new
-        carried, new, swing, is_new = self._compute_kite_swing(
-            overnight=2, day_buy=3, day_sell=1, direction="LONG", abs_qty=4,
-            prev_close=100, ltp=110, day_buy_price=105, day_sell_price=0, pv=1)
-        assert carried == 2
-        assert new == 2
-        assert is_new is False
-        expected = (110 - 100) * 2 * 1 + (110 - 105) * 2 * 1  # carried + new
-        assert swing == expected
-
-    # ── SHORT direction LIFO ──
-    def test_lifo_short_pure_carried(self):
-        carried, new, swing, is_new = self._compute_kite_swing(
+    def test_short_pure_carried(self):
+        carried, new, swing, _ = self._compute_kite_swing(
             overnight=5, day_buy=0, day_sell=0, direction="SHORT", abs_qty=5,
             prev_close=200, ltp=190, day_buy_price=0, day_sell_price=0, pv=100)
-        assert carried == 5
-        assert new == 0
+        assert (carried, new) == (5, 0)
         assert swing == (200 - 190) * 5 * 100
 
-    def test_lifo_short_new_today(self):
+    def test_short_new_today(self):
         carried, new, swing, is_new = self._compute_kite_swing(
             overnight=0, day_buy=0, day_sell=10, direction="SHORT", abs_qty=10,
             prev_close=300, ltp=290, day_buy_price=0, day_sell_price=295, pv=1)
-        assert carried == 0
-        assert new == 10
-        assert is_new is True
+        assert (carried, new, is_new) == (0, 10, True)
         assert swing == (295 - 290) * 10 * 1
 
-    def test_lifo_short_buy_to_close_eats_new_first(self):
-        # Short: had 5 overnight, sold 3 more today, bought 3 to close → 5 remain
+    def test_zincmini_intraday_flip(self):
+        """User scenario 29 Apr: overnight SHORT 4 @ 344.20, today buy 4 @ 343.06
+        (cover) + sell 4 @ 340.09 (new SHORT). Current SHORT 4. Open swing on
+        the 4 NEW shorts is from 340.09 → 339.40 = ₹+2,760 (not ₹+10,000)."""
         carried, new, swing, is_new = self._compute_kite_swing(
-            overnight=5, day_buy=3, day_sell=3, direction="SHORT", abs_qty=5,
-            prev_close=200, ltp=190, day_buy_price=195, day_sell_price=198, pv=1)
-        assert carried == 5
-        assert new == 0
-        assert is_new is False
+            overnight=4, day_buy=4, day_sell=4, direction="SHORT", abs_qty=4,
+            prev_close=341.90, ltp=339.40, day_buy_price=343.06, day_sell_price=340.09,
+            pv=1000)
+        assert (carried, new, is_new) == (0, 4, True)
+        assert swing == pytest.approx(2760.0)  # not 10,000
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -219,110 +269,67 @@ class TestLIFOSwingKite:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestLIFOSwingAngel:
-    """Test the LIFO logic for Angel positions using cf/buy/sell qty fields."""
+    """Smoke tests for Angel swing logic against the new carried/new helper."""
 
     def _compute_angel_swing(self, cf_buy_qty, buy_qty, sell_qty, direction, abs_qty,
                              prev_close, ltp, today_buy_price, today_sell_price,
-                             qty_mult=5, pv=50):
-        if direction == "LONG":
-            excess_sells = max(0, sell_qty - buy_qty)
-            carried_units = max(0, cf_buy_qty - excess_sells)
-            new_units = max(0, abs_qty - carried_units)
-            new_entry = today_buy_price
-        else:
-            # cf_sell_qty would be used for short, but NCDEX is usually LONG
-            excess_buys = max(0, buy_qty - sell_qty)
-            carried_units = max(0, cf_buy_qty - excess_buys)  # using cf_buy_qty as placeholder
-            new_units = max(0, abs_qty - carried_units)
-            new_entry = today_sell_price
-
+                             qty_mult=5, pv=50, cf_sell_qty=0):
+        overnight_units = cf_buy_qty if direction == "LONG" else cf_sell_qty
+        carried_units, new_units, new_entry, _, _ = dpr._ComputeCarriedNew(
+            overnight_units, abs_qty, direction,
+            buy_qty, sell_qty, today_buy_price, today_sell_price)
         carried_lots = carried_units / qty_mult
         new_lots = new_units / qty_mult
         is_new_today = (carried_units == 0)
-
         swing_base = prev_close if prev_close > 0 else 0
         carried_swing = dpr._CalcPnl(direction, swing_base, ltp, carried_lots, pv)
         new_swing = dpr._CalcPnl(direction, new_entry, ltp, new_lots, pv) if new_lots > 0 else 0
         return carried_units, new_units, carried_swing + new_swing, is_new_today
 
-    # ── DHANIYA scenario (the original bug): cf=5, buy=5, sell=5 ──
-    def test_dhaniya_cf_buy_sell_equal(self):
-        """CF=5 (1 lot), bought 1 lot today, sold 1 lot today.
-        LIFO: sell offsets today's buy → CF preserved."""
-        carried, new, swing, is_new = self._compute_angel_swing(
-            cf_buy_qty=5, buy_qty=5, sell_qty=5, direction="LONG", abs_qty=5,
-            prev_close=12328, ltp=12852, today_buy_price=12621, today_sell_price=0,
-            qty_mult=5, pv=50)
-        assert carried == 5
-        assert new == 0
-        assert is_new is False
-        # Swing all from prev_close: (12852-12328) * 1.0 * 50 = 26,200
-        assert swing == pytest.approx(26200.0)
-
-    # ── DHANIYA with old FIFO logic would have been wrong ──
-    def test_dhaniya_fifo_would_be_wrong(self):
-        """Verify the OLD FIFO logic would mark this as NEW_TODAY."""
-        # FIFO: CarriedUnits = max(0, cfbuyqty - sellqty) = max(0, 5-5) = 0
-        fifo_carried = max(0, 5 - 5)
-        assert fifo_carried == 0  # FIFO says 0 carried — wrong!
-
-    # ── Pure CF, no intraday trades ──
     def test_pure_cf_ncdex(self):
-        carried, new, swing, is_new = self._compute_angel_swing(
+        carried, new, swing, _ = self._compute_angel_swing(
             cf_buy_qty=10, buy_qty=0, sell_qty=0, direction="LONG", abs_qty=10,
             prev_close=5723, ltp=5760, today_buy_price=0, today_sell_price=0,
             qty_mult=5, pv=50)
-        assert carried == 10
-        assert new == 0
-        assert is_new is False
-        # (5760-5723) * 2.0 lots * 50 = 3700
-        assert swing == pytest.approx(3700.0)
+        assert (carried, new) == (10, 0)
+        assert swing == pytest.approx(3700.0)  # (5760-5723) * 2 lots * 50
 
-    # ── Partial exit of CF only (no buys today) ──
     def test_partial_cf_exit(self):
-        # CF=10 (2 lots), sell=5 (1 lot), no buys → 5 remain (1 lot), all carried
+        # CF=10, sell=5 → 5 carried remain, 0 new.
         carried, new, swing, is_new = self._compute_angel_swing(
             cf_buy_qty=10, buy_qty=0, sell_qty=5, direction="LONG", abs_qty=5,
             prev_close=3582, ltp=3611, today_buy_price=0, today_sell_price=0,
             qty_mult=10, pv=100)
-        assert carried == 5
-        assert new == 0
-        assert is_new is False
+        assert (carried, new, is_new) == (5, 0, False)
 
-    # ── Add to existing position (no sells) ──
     def test_add_to_cf_no_sells(self):
-        # CF=5, buy=5, no sells → 10 total: 5 carried + 5 new
-        carried, new, swing, is_new = self._compute_angel_swing(
+        # CF=5, buy=5 → 10 total: 5 carried + 5 new.
+        carried, new, swing, _ = self._compute_angel_swing(
             cf_buy_qty=5, buy_qty=5, sell_qty=0, direction="LONG", abs_qty=10,
             prev_close=10000, ltp=10100, today_buy_price=10050, today_sell_price=0,
             qty_mult=5, pv=50)
-        assert carried == 5
-        assert new == 5
-        assert is_new is False
-        # carried: (10100-10000) * 1.0 * 50 = 5000
-        # new:     (10100-10050) * 1.0 * 50 = 2500
+        assert (carried, new) == (5, 5)
+        # carried: (10100-10000) * 1 * 50 = 5000; new: (10100-10050) * 1 * 50 = 2500
         assert swing == pytest.approx(7500.0)
 
-    # ── Brand new position, no CF ──
     def test_brand_new_position(self):
-        carried, new, swing, is_new = self._compute_angel_swing(
+        carried, new, _, is_new = self._compute_angel_swing(
             cf_buy_qty=0, buy_qty=5, sell_qty=0, direction="LONG", abs_qty=5,
             prev_close=0, ltp=15000, today_buy_price=14950, today_sell_price=0,
             qty_mult=5, pv=50)
-        assert carried == 0
-        assert new == 5
-        assert is_new is True
+        assert (carried, new, is_new) == (0, 5, True)
 
-    # ── Heavy sell exceeds both today's buys and some CF ──
-    def test_heavy_sell(self):
-        # CF=10, buy=5, sell=10 → excess_sell=5, carried=10-5=5, new=0
+    def test_jeera_partial_cover(self):
+        """User scenario 29 Apr: SHORT 9 units (3 lots) carry @ 21611.89,
+        today bought 6 to cover @ 20700 → SHORT 3 units (1 lot) remain.
+        Open swing from prev_close 20320 → ltp 20670 on remaining 1 lot = -10,500."""
         carried, new, swing, is_new = self._compute_angel_swing(
-            cf_buy_qty=10, buy_qty=5, sell_qty=10, direction="LONG", abs_qty=5,
-            prev_close=100, ltp=110, today_buy_price=105, today_sell_price=0,
-            qty_mult=5, pv=50)
-        assert carried == 5
-        assert new == 0
-        assert is_new is False
+            cf_buy_qty=0, cf_sell_qty=9, buy_qty=6, sell_qty=0,
+            direction="SHORT", abs_qty=3,
+            prev_close=20320, ltp=20670, today_buy_price=20700, today_sell_price=0,
+            qty_mult=3, pv=30)
+        assert (carried, new, is_new) == (3, 0, False)
+        assert swing == pytest.approx(-10500.0)  # carry-only swing on open portion
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -767,16 +774,21 @@ class TestDailyMtm:
     @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
     @patch("daily_pnl_report._BuildReportHtml", return_value="<html></html>")
     def test_mtm_includes_realized(self, mock_html, mock_accum, mock_fetch, mock_realized, mock_orders, mock_td):
+        """Daily MTM = OpenSwing + sum(open positions' today_realized_slice) +
+        sum(ClosedByInstrument). No double-count with cumulative-since-entry realised."""
         mock_fetch.return_value = ([
             {"pnl": 10000, "daily_swing": 5000, "instrument": "GOLDM", "direction": "LONG",
              "qty": 1, "avg_entry": 100, "prev_close": 95, "ltp": 105, "point_value": 10,
+             "today_realized_slice": 0,  # no partial close on this open position
              "broker": "ZERODHA", "is_new_today": False},
         ], [])
-        mock_realized.return_value = ({"YD6016": 20000.0, "AABM826021": 5000.0, "OFS653": 0.0}, {})
+        mock_realized.return_value = (
+            {"YD6016": 20000.0, "AABM826021": 5000.0, "OFS653": 0.0},  # cumulative — for accumulator
+            {"CRUDEOIL_CLOSED": 25000.0},  # fully-closed slices for display/MTM
+        )
 
         dpr.GenerateDailyReport(DryRun=True, DateStr="2026-04-02")
 
-        # Check that _BuildReportHtml was called with correct MTM
         call_args = mock_html.call_args[0][0]
         assert call_args["open_swing"] == 5000
         assert call_args["realized_today"] == 25000.0
@@ -1225,8 +1237,12 @@ class TestRealizedByInstrument:
     @patch("daily_pnl_report._MatchToInstrument")
     def test_dhaniya_carry_short_cover_attributed(self, mock_match, mock_open,
                                                    mock_angel_factory, mock_kite_factory):
-        """Angel DHANIYA with realised=-25667 attributed to 'DHANIYA' bucket."""
-        # Angel returns DHANIYA position with the short-cover realized loss
+        """Angel DHANIYA carry-cover: cumulative realised contributes to ByAccount;
+        ClosedByInstrument is empty because the position is still open (qty=5).
+
+        Per-instrument today's slice for partial closes lives on the open
+        position dict (`today_realized_slice`), not in `_FetchDailyRealizedPnl`'s
+        return value — which is intentionally limited to fully-closed instruments."""
         mock_smart = MagicMock()
         mock_smart.position.return_value = {"data": [
             {"tradingsymbol": "DHANIYA20MAY2026", "exchange": "NCX",
@@ -1234,22 +1250,25 @@ class TestRealizedByInstrument:
              "realised": "-25667", "m2m": "-17601"},
         ]}
         mock_angel_factory.return_value = mock_smart
-        # Kite both sides return empty
         mock_kite = MagicMock()
         mock_kite.positions.return_value = {"net": []}
         mock_kite_factory.return_value = mock_kite
         mock_match.return_value = ("DHANIYA", {"exchange": "NCX"})
 
         by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        # ByAccount: cumulative realised flows to accumulator (unchanged)
         assert by_acct["AABM826021"] == -25667.0
-        assert by_inst["DHANIYA"] == -25667.0
+        # ClosedByInstrument: empty because position is still open (qty != 0)
+        assert "DHANIYA" not in by_inst
 
     @patch("daily_pnl_report._EstablishKiteSession")
     @patch("daily_pnl_report.EstablishConnectionAngelAPI")
     @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
     def test_options_bucketed_by_underlying(self, mock_open,
                                              mock_angel_factory, mock_kite_factory):
-        """NIFTY/SENSEX/BANKNIFTY options keyed by underlying, not full symbol."""
+        """Closed-only options keyed by underlying. Fully-closed legs surface
+        in ClosedByInstrument; still-open legs do not (their slice is on the
+        open position dict)."""
         def _kite_side_effect(user):
             k = MagicMock()
             if user == "OFS653":
@@ -1270,8 +1289,8 @@ class TestRealizedByInstrument:
         mock_angel_factory.return_value = mock_angel
 
         _, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
-        # Both NIFTY legs aggregated under "NIFTY"
-        assert by_inst["NIFTY"] == pytest.approx(5000 + -1200)
+        # Closed CE leg's slice (m2m=5000) — open PE leg is excluded
+        assert by_inst["NIFTY"] == pytest.approx(5000.0)
         assert by_inst["SENSEX"] == 10000.0
 
     @patch("daily_pnl_report._EstablishKiteSession")
@@ -1401,17 +1420,19 @@ class TestBuildReportHtmlRealized:
         return base
 
     def test_open_position_gets_its_realized_attribution(self):
-        """The DHANIYA Apr 17 scenario rendered end-to-end."""
+        """DHANIYA Apr 17 carry-cover: today's slice on the position dict
+        renders the 'Realized today' / 'Net today' lines."""
         dhaniya = {
             "instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
             "direction": "LONG", "qty": 5, "lots": 1,
             "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
             "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+            "today_realized_slice": -25667.0,
             "broker": "ANGEL", "is_new_today": True,
         }
         html = dpr._BuildReportHtml(self._data(
             positions=[dhaniya],
-            realized_by_instrument={"DHANIYA": -25667.0},
+            realized_by_instrument={},  # closed-only — DHANIYA is open
             realized_today=-25667.0, open_swing=8066.50,
             total_daily_mtm=-17600.50, total_pnl=8066.50,
         ))
@@ -1472,16 +1493,18 @@ class TestBuildReportHtmlRealized:
         assert "Closed Today" not in html
 
     def test_options_underlying_realized_shown_on_combo_row(self):
-        """Option combo shows its underlying's realized attribution."""
+        """Option combo aggregates `today_realized_slice` across legs and
+        renders it as 'Realized today' on the combo row."""
         nifty_ce = {
             "instrument": "NIFTY_OPT_CE", "tradingsymbol": "NIFTY26APR24000CE",
             "direction": "LONG", "qty": 65, "avg_entry": 2030, "prev_close": 1385,
             "ltp": 1327, "point_value": 1.0, "pnl": -45675, "daily_swing": -3812,
+            "today_realized_slice": 8000.0,
             "broker": "ZERODHA", "is_new_today": False,
         }
         html = dpr._BuildReportHtml(self._data(
             positions=[nifty_ce],
-            realized_by_instrument={"NIFTY": 8000.0},
+            realized_by_instrument={},  # closed-only — open NIFTY leg's slice is on its dict
             realized_today=8000.0,
         ))
         assert "Realized today" in html
@@ -1664,7 +1687,10 @@ class TestSameInstrumentMultipleLegs:
     def test_carryforward_plus_intraday_same_symbol_sum(
         self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
     ):
-        """DHANIYA CARRYFORWARD realized + DHANIYA INTRADAY realized → summed."""
+        """Two DHANIYA legs (carry still open + intraday fully closed) on same
+        canonical symbol: ByAccount cumulative sums both; ClosedByInstrument
+        sums slices for fully-closed legs only (the open carry leg's slice is
+        on the open position dict, not here)."""
         mock_kite = MagicMock()
         mock_kite.positions.return_value = {"net": []}
         mock_kite_factory.return_value = mock_kite
@@ -1685,8 +1711,10 @@ class TestSameInstrumentMultipleLegs:
         ]
 
         by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        # ByAccount: cumulative — both legs contribute to accumulator.
         assert by_acct["AABM826021"] == pytest.approx(-25667 + 3000)
-        assert by_inst["DHANIYA"] == pytest.approx(-22667.0)  # summed, not overwritten
+        # ClosedByInstrument: only the fully-closed intraday leg's slice (m2m=3000).
+        assert by_inst["DHANIYA"] == pytest.approx(3000.0)
 
     @patch("daily_pnl_report._EstablishKiteSession")
     @patch("daily_pnl_report.EstablishConnectionAngelAPI")
@@ -1694,7 +1722,8 @@ class TestSameInstrumentMultipleLegs:
     def test_nifty_ce_and_pe_sum_under_underlying(
         self, mock_open, mock_angel_factory, mock_kite_factory
     ):
-        """NIFTY CE realized + NIFTY PE realized → both under 'NIFTY'."""
+        """Fully-closed NIFTY CE + fully-closed NIFTY PE both bucket under 'NIFTY'.
+        The third (open) leg is excluded — its slice is on the open position dict."""
         def _kite_side(user):
             k = MagicMock()
             if user == "OFS653":
@@ -1715,7 +1744,7 @@ class TestSameInstrumentMultipleLegs:
         mock_angel_factory.return_value = mock_angel
 
         by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
-        # CE +8000, PE -3500 → NIFTY total +4500. The open position has realised=0 so ignored.
+        # CE +8000 (closed) + PE -3500 (closed) = +4500. Open leg excluded.
         assert by_inst["NIFTY"] == pytest.approx(8000 - 3500)
 
 
@@ -1732,22 +1761,25 @@ class TestGenerateDailyReportE2E:
     def test_realized_by_instrument_reaches_html(
         self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
     ):
-        """The DHANIYA Apr 17 scenario — end-to-end."""
+        """DHANIYA Apr 17 carry-cover end-to-end. The today's slice for the
+        partial close lives on the open position dict (`today_realized_slice`)
+        and surfaces as 'Realized today' on the row. ByAccount keeps cumulative
+        realised for the accumulator."""
         mock_fetch.return_value = ([
             {"instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
              "direction": "LONG", "qty": 5, "lots": 1,
              "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
              "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+             "today_realized_slice": -25667.0,
              "broker": "ANGEL", "is_new_today": True},
         ], [])
         mock_realized.return_value = (
             {"YD6016": 0.0, "AABM826021": -25667.0, "OFS653": 0.0},
-            {"DHANIYA": -25667.0},
+            {},  # ClosedByInstrument empty — DHANIYA is still open
         )
 
         dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-17")
 
-        # _SendEmail should have been called with HTML containing per-symbol realized
         assert mock_email.call_count == 1
         _, html = mock_email.call_args[0]
         assert "DHANIYA" in html
@@ -1756,7 +1788,7 @@ class TestGenerateDailyReportE2E:
         assert "Net today" in html
         assert "-17,600" in html or "-17,601" in html
 
-        # Accumulator got the account-level dict, not the tuple
+        # Accumulator gets cumulative-by-account dict (unchanged for tax)
         accum_args = mock_accum.call_args[0]
         assert isinstance(accum_args[0], dict)
         assert accum_args[0]["AABM826021"] == -25667.0
@@ -1795,18 +1827,19 @@ class TestGenerateDailyReportE2E:
     def test_mixed_open_and_fully_closed_attribution(
         self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
     ):
-        """DHANIYA has open + realized; COCUDAKL fully closed.
-        DHANIYA should show on position row, COCUDAKL in Closed Today."""
+        """DHANIYA has open + partial close; COCUDAKL fully closed.
+        DHANIYA's slice on the position row, COCUDAKL in Closed Today section."""
         mock_fetch.return_value = ([
             {"instrument": "DHANIYA", "tradingsymbol": "DHANIYA20MAY2026",
              "direction": "LONG", "qty": 5, "lots": 1,
              "avg_entry": 13064.67, "prev_close": 12808.0, "ltp": 13226.0,
              "point_value": 50, "pnl": 8066.50, "daily_swing": 8066.50,
+             "today_realized_slice": -25667.0,
              "broker": "ANGEL", "is_new_today": True},
         ], [])
         mock_realized.return_value = (
             {"YD6016": 0.0, "AABM826021": -11031.0, "OFS653": 0.0},
-            {"DHANIYA": -25667.0, "COCUDAKL": 14636.0},
+            {"COCUDAKL": 14636.0},  # only fully-closed instruments here
         )
 
         dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-17")
@@ -1819,7 +1852,7 @@ class TestGenerateDailyReportE2E:
         assert dhaniya_idx < closed_idx  # DHANIYA on position row first
         assert closed_idx < cocudakl_idx  # COCUDAKL in Closed Today section
         assert "Realized today" in html
-        assert "-25,667" in html  # on DHANIYA row
+        assert "-25,667" in html  # on DHANIYA row from today_realized_slice
         assert "+14,636" in html  # on COCUDAKL closed-today row
 
 
@@ -2140,3 +2173,793 @@ class TestNfoIndexFutures:
         assert "NIFTY_FUT" not in html
         # Word boundary check — "NIFTY" should appear as the instrument name
         assert ">NIFTY<" in html
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Daily Slice Integration — flip & partial-cover scenarios end-to-end
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDailySliceIntegration:
+    """Integration coverage for the two bugs reported on 29 Apr 2026:
+      1. ZINCMINI flip: same-direction close-and-reopen was misclassified as
+         'all carried' producing daily_swing ₹+10,000 instead of ~₹-1,880.
+      2. JEERA partial cover: cumulative-since-entry `realised` was added to
+         daily_swing as 'Net today', double-counting prior days' MTM and
+         showing ₹+44,213 instead of the true daily contribution ₹-33,300.
+    """
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_zincmini_flip_open_position(self, mock_match, mock_open,
+                                          mock_angel_factory, mock_kite_factory):
+        """ZINCMINI overnight SHORT 4 → today buy 4 (cover) + sell 4 (new) → SHORT 4.
+        Daily swing on the 4 NEW shorts (340.09 → 339.40) = ₹+2,760.
+        Today's realized slice on the 4 closed (prev 341.90 → exit 343.06) = ₹-4,640.
+        Net daily contribution: ₹-1,880 (NOT ₹+10,000)."""
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "YD6016":
+                k.positions.return_value = {"net": [
+                    {"tradingsymbol": "ZINCMINI26APRFUT", "exchange": "MCX",
+                     "product": "NRML", "quantity": -4,
+                     "average_price": 340.82, "last_price": 339.40,
+                     "close_price": 341.90, "overnight_quantity": -4,
+                     "day_buy_quantity": 4, "day_sell_quantity": 4,
+                     "day_buy_price": 343.06, "day_sell_price": 340.09},
+                ]}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("ZINCMINI", {"exchange": "MCX", "point_value": 1000})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        assert len(positions) == 1
+        zm = positions[0]
+        assert zm["instrument"] == "ZINCMINI"
+        assert zm["direction"] == "SHORT"
+        assert zm["is_new_today"] is True  # carry was closed → current is new
+        # Open swing on 4 new shorts (340.09 → 339.40):
+        assert zm["daily_swing"] == pytest.approx(2760.0)
+        # Close slice on 4 carry shorts (prev 341.90 → exit 343.06): SHORT cover
+        # above prev_close = loss.
+        assert zm["today_realized_slice"] == pytest.approx(-4640.0)
+        # Net daily contribution = open swing + close slice = -1,880
+        assert zm["daily_swing"] + zm["today_realized_slice"] == pytest.approx(-1880.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_jeera_partial_cover(self, mock_match, mock_open,
+                                  mock_angel_factory, mock_kite_factory):
+        """JEERA carry SHORT 9 units (3 lots) @ 21611.89; today bought 6 to
+        cover @ 20700, current SHORT 3 units (1 lot). Open swing on remaining
+        1 lot = ₹-10,500. Today's slice on the 2 closed lots = ₹-22,800.
+        Net daily contribution: ₹-33,300 (NOT the +44,213 from cumulative
+        realised since entry, which double-counts prior days' MTM)."""
+        mock_kite = MagicMock()
+        mock_kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = mock_kite
+
+        mock_smart = MagicMock()
+        mock_smart.position.return_value = {"data": [
+            {"tradingsymbol": "JEERAUNJHA20MAY2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "-3",
+             "ltp": "20670", "close": "20320",
+             "totalsellavgprice": "21611.89", "cfsellavgprice": "21611.89",
+             "cfsellqty": "9", "cfbuyqty": "0",
+             "buyqty": "6", "sellqty": "0",
+             "buyavgprice": "20700", "sellavgprice": "0",
+             "realised": "54713", "m2m": "-33300"},
+        ]}
+        mock_angel_factory.return_value = mock_smart
+        mock_match.return_value = ("JEERA", {
+            "exchange": "NCDEX", "point_value": 30,
+            "order_routing": {"QuantityMultiplier": 3},
+        })
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        assert len(positions) == 1
+        jr = positions[0]
+        assert jr["instrument"] == "JEERA"
+        assert jr["direction"] == "SHORT"
+        assert jr["lots"] == 1.0
+        assert jr["is_new_today"] is False  # 1 lot carried
+        # Open swing on 1 carry lot: (20320 - 20670) × 1 × 30 = -10,500
+        assert jr["daily_swing"] == pytest.approx(-10500.0)
+        # Close slice on 2 closed lots: (20320 - 20700) × 2 × 30 = -22,800
+        assert jr["today_realized_slice"] == pytest.approx(-22800.0)
+        # Net daily contribution: -33,300 (NOT cumulative-since-entry +54,713)
+        assert jr["daily_swing"] + jr["today_realized_slice"] == pytest.approx(-33300.0)
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_no_double_count_in_daily_mtm_hero(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
+    ):
+        """Daily MTM for JEERA-class scenario must NOT add cumulative-since-entry
+        realised. JEERA daily contribution is daily_swing + today_realized_slice."""
+        mock_fetch.return_value = ([
+            {"instrument": "JEERA", "tradingsymbol": "JEERAUNJHA20MAY2026",
+             "direction": "SHORT", "qty": 3, "lots": 1,
+             "avg_entry": 21611.89, "prev_close": 20320, "ltp": 20670,
+             "point_value": 30, "pnl": 28256.70, "daily_swing": -10500,
+             "today_realized_slice": -22800.0,
+             "broker": "ANGEL", "is_new_today": False},
+        ], [])
+        # Cumulative realised stays for accumulator; ClosedByInstrument empty
+        # because JEERA is still open.
+        mock_realized.return_value = (
+            {"YD6016": 0.0, "AABM826021": 54713.0, "OFS653": 0.0},  # cumulative
+            {},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-29")
+        _, html = mock_email.call_args[0]
+
+        # Hero should reflect daily contribution (not cumulative)
+        # OpenSwing = -10,500; PartialClose = -22,800; FullyClosed = 0;
+        # Daily MTM = -33,300 (NOT -10,500 + 54,713 = +44,213).
+        assert "-33,300" in html
+        assert "+44,213" not in html
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_accumulator_still_receives_cumulative(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_open
+    ):
+        """Regression guard: accumulator JSON must keep tracking cumulative
+        realised (broker's `realised` field), not today's slice. This preserves
+        tax/capital tracking semantics across the FY."""
+        mock_fetch.return_value = ([], [])
+        mock_realized.return_value = (
+            {"YD6016": 0.0, "AABM826021": 54713.0, "OFS653": 0.0},  # cumulative
+            {},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-29")
+
+        accum_args = mock_accum.call_args[0]
+        # First arg is the by-account dict — cumulative realised, unchanged.
+        assert accum_args[0]["AABM826021"] == 54713.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Invariants — broker m2m must equal daily_swing + today_realized_slice
+# ═══════════════════════════════════════════════════════════════════
+
+class TestM2mInvariant:
+    """For every position the broker reports, our split must equal the broker's
+    `m2m` field within tolerance. m2m IS the authoritative daily P&L change for
+    a position (covers carry-mtm + closures + new opens). If our split drifts,
+    `_ReconcileWithBrokerM2m` logs a warning at fetch time. These tests assert
+    the invariant under representative scenarios so future regressions in the
+    LIFO classification are caught immediately.
+    """
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_pure_carry_short_invariant(self, mock_match, mock_open,
+                                         mock_angel_factory, mock_kite_factory):
+        """Pure carry SHORT: daily_swing = (prev_close - ltp) × qty × PV;
+        slice = 0; broker m2m equals daily_swing."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": [
+            {"tradingsymbol": "SILVERMIC26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": -2,
+             "average_price": 249475.50, "last_price": 242672.0,
+             "close_price": 246829.0, "overnight_quantity": -2,
+             "day_buy_quantity": 0, "day_sell_quantity": 0,
+             "day_buy_price": 0, "day_sell_price": 0,
+             "m2m": 8314.0, "realised": 0},
+        ]}
+        mock_kite_factory.return_value = kite
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("SILVERMIC", {"exchange": "MCX", "point_value": 1})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(8314.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_zincmini_flip_invariant(self, mock_match, mock_open,
+                                      mock_angel_factory, mock_kite_factory):
+        """ZINCMINI flip — broker m2m for the position = -1,880 (=close swing
+        on 4 carry shorts at 343.06 from prev_close 341.90 + new short swing
+        from 340.09 to LTP 339.40)."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": [
+            {"tradingsymbol": "ZINCMINI26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": -4,
+             "average_price": 340.82, "last_price": 339.40,
+             "close_price": 341.90, "overnight_quantity": -4,
+             "day_buy_quantity": 4, "day_sell_quantity": 4,
+             "day_buy_price": 343.06, "day_sell_price": 340.09,
+             "m2m": -1880.0, "realised": 4560.0},
+        ]}
+        mock_kite_factory.return_value = kite
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("ZINCMINI", {"exchange": "MCX", "point_value": 1000})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        # daily_swing = +2,760 (new shorts: 340.09 → 339.40)
+        # today_realized_slice = -4,640 (close: 341.90 → 343.06 covers above prev = loss)
+        # sum = -1,880, matches broker m2m
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(-1880.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_pure_new_long_invariant(self, mock_match, mock_open,
+                                      mock_angel_factory, mock_kite_factory):
+        """CRUDEOIL opened today @ 9640, LTP 10110 → swing = +47,000; slice = 0."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": [
+            {"tradingsymbol": "CRUDEOIL26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": 1,
+             "average_price": 9640.0, "last_price": 10110.0,
+             "close_price": 9485.0, "overnight_quantity": 0,
+             "day_buy_quantity": 1, "day_sell_quantity": 0,
+             "day_buy_price": 9640.0, "day_sell_price": 0,
+             "m2m": 47000.0, "realised": 0},
+        ]}
+        mock_kite_factory.return_value = kite
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("CRUDEOIL", {"exchange": "MCX", "point_value": 100})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(47000.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_jeera_partial_cover_invariant(self, mock_match, mock_open,
+                                            mock_angel_factory, mock_kite_factory):
+        """JEERA SHORT 9 → covered 6 units @ 20700 → SHORT 3 remaining.
+        Broker m2m = -33,300; our split must match."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = kite
+
+        smart = MagicMock()
+        smart.position.return_value = {"data": [
+            {"tradingsymbol": "JEERAUNJHA20MAY2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "-3",
+             "ltp": "20670", "close": "20320",
+             "totalsellavgprice": "21611.89", "cfsellavgprice": "21611.89",
+             "cfsellqty": "9", "cfbuyqty": "0",
+             "buyqty": "6", "sellqty": "0",
+             "buyavgprice": "20700", "sellavgprice": "0",
+             "realised": "54713", "m2m": "-33300"},
+        ]}
+        mock_angel_factory.return_value = smart
+        mock_match.return_value = ("JEERA", {
+            "exchange": "NCDEX", "point_value": 30,
+            "order_routing": {"QuantityMultiplier": 3},
+        })
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(-33300.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_direction_flip_short_to_long_invariant(self, mock_match, mock_open,
+                                                     mock_angel_factory, mock_kite_factory):
+        """Was SHORT 4 @ 100, today bought 6 → LONG 2 @ 105. prev_close 102, LTP 108.
+        Closed 4 SHORTs at buy price 105: slice = (102-105) × 4 × PV = -3*4*PV.
+        New 2 LONGs at 105: swing = (108-105) × 2 × PV = 3*2*PV.
+        For PV=1: slice=-12, swing=+6, total=-6. Broker m2m would also = -6."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": [
+            {"tradingsymbol": "SOMEFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": 2,
+             "average_price": 105.0, "last_price": 108.0,
+             "close_price": 102.0, "overnight_quantity": -4,
+             "day_buy_quantity": 6, "day_sell_quantity": 0,
+             "day_buy_price": 105.0, "day_sell_price": 0,
+             "m2m": -6.0, "realised": -20.0},
+        ]}
+        mock_kite_factory.return_value = kite
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+        mock_match.return_value = ("SOME", {"exchange": "MCX", "point_value": 1})
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["direction"] == "LONG"
+        assert p["is_new_today"] is True
+        # Slice on SHORT close (NOT LONG): (102 - 105) * 4 * 1 = -12
+        assert p["today_realized_slice"] == pytest.approx(-12.0)
+        # Swing on new LONG: (108 - 105) * 2 * 1 = +6
+        assert p["daily_swing"] == pytest.approx(6.0)
+        # Sum = broker m2m
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(-6.0)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Edge cases — scenarios the LIFO heuristic should handle
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLIFOEdgeCases:
+    """Catalogue of corner cases that have historically broken daily-MTM math.
+    Adding a test here pins each scenario into place so regressions show up
+    instead of silently inflating the user's email totals."""
+
+    def test_intraday_roundtrip_then_add_to_carry(self):
+        """Overnight SHORT 4, today buy 2 + sell 6, current SHORT 8.
+        DayBuy 2 closes 2 carry shorts; DaySell 6 = 2 (intraday wash with the
+        2 buys conceptually) + 4 new... but our formula is simpler:
+        CarriedQty = max(0, 4 - 2) = 2; NewQty = 8 - 2 = 6; ClosedQty = 2."""
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            4, 8, "SHORT", 2, 6, 100.0, 105.0)
+        assert (carried, new, closed) == (2, 6, 2)
+
+    def test_full_close_no_new(self):
+        """Pure cover, no new shorts: overnight 4, day_buy 4, current 0.
+        Note: qty=0 positions are filtered upstream — but the helper still
+        handles the math correctly if called."""
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            4, 0, "SHORT", 4, 0, 100.0, 0)
+        assert (carried, new, closed) == (0, 0, 4)
+
+    def test_long_partial_sell_with_intraday_buy(self):
+        """Carry LONG 10, today buy 3 + sell 5, current LONG 8.
+        DaySell 5 closes 5 carry longs; DayBuy 3 opens 3 new longs.
+        CarriedQty = max(0, 10 - 5) = 5; NewQty = 8 - 5 = 3."""
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            10, 8, "LONG", 3, 5, 105.0, 95.0)
+        assert (carried, new, closed) == (5, 3, 5)
+
+    def test_options_long_carry_partial_close(self):
+        """NIFTY 21700CE LONG carry 65, today sold 65 to close + bought 65 of
+        23000CE (different strike — different position). For THIS position
+        (21700CE): carried 65, sold 65 → qty 0. Same logic."""
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            65, 0, "LONG", 0, 65, 0, 207.20)
+        assert (carried, new, closed) == (0, 0, 65)
+
+    def test_zero_overnight_zero_today_means_zero_qty(self):
+        """Defensive: no overnight, no day flow, AbsQty=0. Helper returns zeros."""
+        carried, new, _, closed, _ = dpr._ComputeCarriedNew(
+            0, 0, "LONG", 0, 0, 0, 0)
+        assert (carried, new, closed) == (0, 0, 0)
+
+    def test_slice_zero_when_no_close(self):
+        """Open position with no closures today: slice must be 0."""
+        slice_ = dpr._RealizedSliceForClose(100.0, 0.0, 0, "SHORT", 1.0)
+        assert slice_ == 0.0
+
+    def test_slice_short_carry_covered_at_loss(self):
+        """SHORT 4 covered at 343.06 from prev_close 341.90: -₹4,640 on the day."""
+        slice_ = dpr._RealizedSliceForClose(341.90, 343.06, 4, "SHORT", 1000.0)
+        assert slice_ == pytest.approx(-4640.0)
+
+    def test_slice_flipped_short_to_long_uses_short_direction(self):
+        """SHORT→LONG flip: closed lots were SHORT. Slice formula must use
+        SHORT direction — passing LONG would invert the sign."""
+        slice_short = dpr._RealizedSliceForClose(102.0, 105.0, 4, "SHORT", 1.0)
+        slice_long = dpr._RealizedSliceForClose(102.0, 105.0, 4, "LONG", 1.0)
+        # SHORT close above prev_close = loss, LONG close above prev_close = gain.
+        # These have OPPOSITE signs — caller must pick the right one.
+        assert slice_short == pytest.approx(-12.0)
+        assert slice_long == pytest.approx(12.0)
+        assert slice_short + slice_long == 0  # sanity
+
+    def test_closed_direction_helper_short_carry(self):
+        assert dpr._ClosedDirectionFromOvernight(-4, "SHORT") == "SHORT"
+
+    def test_closed_direction_helper_long_carry(self):
+        assert dpr._ClosedDirectionFromOvernight(5, "LONG") == "LONG"
+
+    def test_closed_direction_helper_flip_short_to_long(self):
+        # Was SHORT (RawOvernightQty<0), now LONG. Closed direction = SHORT.
+        assert dpr._ClosedDirectionFromOvernight(-4, "LONG") == "SHORT"
+
+    def test_closed_direction_helper_flip_long_to_short(self):
+        assert dpr._ClosedDirectionFromOvernight(5, "SHORT") == "LONG"
+
+    def test_closed_direction_helper_no_overnight(self):
+        # No carry → closed direction doesn't matter; default to current.
+        assert dpr._ClosedDirectionFromOvernight(0, "SHORT") == "SHORT"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# m2m reconciliation logging
+# ═══════════════════════════════════════════════════════════════════
+
+class TestM2mReconciliation:
+    """When our split drifts from broker m2m by > tolerance, we log a warning
+    so the bug becomes visible at fetch time instead of silently inflating
+    the user's email."""
+
+    def test_no_warning_when_within_tolerance(self, caplog):
+        import logging
+        caplog.set_level(logging.WARNING, logger="daily_pnl_report")
+        dpr._ReconcileWithBrokerM2m("FOOFUT", "Test", -1880.0, 50.0, -1830.0)
+        # |computed - m2m| = |-1830 - (-1830)| = 0 < tolerance
+        assert not any("diverges from broker m2m" in r.message for r in caplog.records)
+
+    def test_warning_when_diverges(self, caplog):
+        import logging
+        caplog.set_level(logging.WARNING, logger="daily_pnl_report")
+        # computed = +10,000; broker m2m = -1,880 → diff = +11,880 (way over tolerance)
+        dpr._ReconcileWithBrokerM2m("ZINCMINI26APRFUT", "Kite YD6016",
+                                     10000.0, 0.0, -1880.0)
+        assert any("diverges from broker m2m" in r.message for r in caplog.records)
+        assert any("ZINCMINI26APRFUT" in r.message for r in caplog.records)
+
+    def test_no_warning_when_broker_m2m_zero(self, caplog):
+        """Some brokers don't populate m2m for fully-open carry positions.
+        Skip reconciliation to avoid false warnings."""
+        import logging
+        caplog.set_level(logging.WARNING, logger="daily_pnl_report")
+        dpr._ReconcileWithBrokerM2m("FOOFUT", "Test", 5000.0, 0.0, 0.0)
+        assert not any("diverges" in r.message for r in caplog.records)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 29 Apr 2026 comprehensive regression — every reported position
+# ═══════════════════════════════════════════════════════════════════
+
+class TestApril29Regression:
+    """Replays the 29 Apr 2026 user-reported scenario through `_FetchOpenPositions`
+    with realistic broker mock responses for every position. Asserts the
+    daily contribution per position matches the user's actual trading P&L.
+
+    Pre-fix MCX subtotal: ₹78,564 (overstated — ZINCMINI flip mis-classified).
+    Post-fix MCX subtotal: ₹66,684 (matches user's reported ~₹67k).
+
+    Pre-fix JEERA "Net today": ₹+44,213 (cumulative-since-entry double-count).
+    Post-fix JEERA "Net today": ₹-33,300 (true daily contribution)."""
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_mcx_subtotal_matches_user_expectation(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """User reported actual MCX P&L ≈ ₹67,000 on 29 Apr 2026.
+        Email displayed ~₹78,564 (overstated by ZINCMINI flip + cumulative)."""
+
+        # Match config lookup based on tradingsymbol prefix
+        def _match_side_effect(symbol, exchange, broker, instruments):
+            for prefix, name, pv in [
+                ("CRUDEOIL", "CRUDEOIL", 100),
+                ("NATURALGAS", "NATURALGAS", 1250),
+                ("SILVERMIC", "SILVERMIC", 1),
+                ("ZINCMINI", "ZINCMINI", 1000),
+            ]:
+                if symbol.startswith(prefix):
+                    return (name, {"exchange": "MCX", "point_value": pv})
+            return (None, None)
+        mock_match.side_effect = _match_side_effect
+
+        # Per-user side_effect: YD6016 has MCX positions; OFS653 empty.
+        mcx_positions = [
+            # CRUDEOIL: opened today, qty 1 LONG @ 9640, LTP 10110 → +47,000
+            {"tradingsymbol": "CRUDEOIL26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": 1,
+             "average_price": 9640.0, "last_price": 10110.0,
+             "close_price": 9485.0, "overnight_quantity": 0,
+             "day_buy_quantity": 1, "day_sell_quantity": 0,
+             "day_buy_price": 9640.0, "day_sell_price": 0,
+             "m2m": 47000.0, "realised": 0},
+            # NATURALGAS: pure carry SHORT 2 @ 255.40, prev 257.50, LTP 252.20 → +13,250
+            {"tradingsymbol": "NATURALGAS26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": -2,
+             "average_price": 255.40, "last_price": 252.20,
+             "close_price": 257.50, "overnight_quantity": -2,
+             "day_buy_quantity": 0, "day_sell_quantity": 0,
+             "day_buy_price": 0, "day_sell_price": 0,
+             "m2m": 13250.0, "realised": 0},
+            # SILVERMIC: pure carry SHORT 2, prev 246829, LTP 242672 → +8,314
+            {"tradingsymbol": "SILVERMIC26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": -2,
+             "average_price": 249475.50, "last_price": 242672.0,
+             "close_price": 246829.0, "overnight_quantity": -2,
+             "day_buy_quantity": 0, "day_sell_quantity": 0,
+             "day_buy_price": 0, "day_sell_price": 0,
+             "m2m": 8314.0, "realised": 0},
+            # ZINCMINI: flip — overnight SHORT 4, today buy 4 + sell 4 → SHORT 4.
+            # Pre-fix swing was +10,000 (treated as carried); post-fix -1,880.
+            {"tradingsymbol": "ZINCMINI26APRFUT", "exchange": "MCX",
+             "product": "NRML", "quantity": -4,
+             "average_price": 340.82, "last_price": 339.40,
+             "close_price": 341.90, "overnight_quantity": -4,
+             "day_buy_quantity": 4, "day_sell_quantity": 4,
+             "day_buy_price": 343.06, "day_sell_price": 340.09,
+             "m2m": -1880.0, "realised": 4560.0},
+        ]
+
+        def _kite_side_effect(user):
+            k = MagicMock()
+            if user == "YD6016":
+                k.positions.return_value = {"net": mcx_positions}
+            else:
+                k.positions.return_value = {"net": []}
+            return k
+        mock_kite_factory.side_effect = _kite_side_effect
+
+        mock_angel = MagicMock()
+        mock_angel.position.return_value = {"data": []}
+        mock_angel_factory.return_value = mock_angel
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        by_inst = {p["instrument"]: p for p in positions}
+
+        # Per-position checks
+        assert by_inst["CRUDEOIL"]["daily_swing"] == pytest.approx(47000.0)
+        assert by_inst["CRUDEOIL"]["today_realized_slice"] == 0
+
+        assert by_inst["NATURALGAS"]["daily_swing"] == pytest.approx(13250.0)
+        assert by_inst["NATURALGAS"]["today_realized_slice"] == 0
+
+        assert by_inst["SILVERMIC"]["daily_swing"] == pytest.approx(8314.0)
+        assert by_inst["SILVERMIC"]["today_realized_slice"] == 0
+
+        # ZINCMINI flip — the 29 Apr bug case
+        zm = by_inst["ZINCMINI"]
+        assert zm["is_new_today"] is True  # carry was closed → all current is new
+        assert zm["daily_swing"] == pytest.approx(2760.0)  # NOT 10,000
+        assert zm["today_realized_slice"] == pytest.approx(-4640.0)
+        assert zm["daily_swing"] + zm["today_realized_slice"] == pytest.approx(-1880.0)
+
+        # MCX subtotal: 47,000 + 13,250 + 8,314 + (-1,880) = ₹66,684
+        # (Matches user's reported actual ~₹67,000.)
+        mcx_total = sum(p["daily_swing"] + p["today_realized_slice"] for p in positions)
+        assert mcx_total == pytest.approx(66684.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_jeera_partial_cover_not_double_counted(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """JEERA on 29 Apr: SHORT 9 units carry, today bought 6 to cover @ 20700.
+        Email pre-fix showed 'Net today: ₹+44,213' (cumulative realised since
+        entry +54,713 ADDED to open swing -10,500). Truth: ₹-33,300."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = kite
+
+        smart = MagicMock()
+        smart.position.return_value = {"data": [
+            {"tradingsymbol": "JEERAUNJHA20MAY2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "-3",
+             "ltp": "20670", "close": "20320",
+             "totalsellavgprice": "21611.89", "cfsellavgprice": "21611.89",
+             "cfsellqty": "9", "cfbuyqty": "0",
+             "buyqty": "6", "sellqty": "0",
+             "buyavgprice": "20700", "sellavgprice": "0",
+             "realised": "54713", "m2m": "-33300"},
+        ]}
+        mock_angel_factory.return_value = smart
+        mock_match.return_value = ("JEERA", {
+            "exchange": "NCDEX", "point_value": 30,
+            "order_routing": {"QuantityMultiplier": 3},
+        })
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["daily_swing"] == pytest.approx(-10500.0)
+        assert p["today_realized_slice"] == pytest.approx(-22800.0)
+        # Net daily (NOT cumulative-since-entry +54,713):
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(-33300.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_castor_angel_direction_flip(self, mock_match, mock_open,
+                                          mock_angel_factory, mock_kite_factory):
+        """CASTOR on 29 Apr: yesterday SHORT 2 lots (10 units) @ 6463.84.
+        Today bought 35 units (15 @ 6515 + 20 @ 6525, avg 6520.71) → flat the
+        carry SHORT (10 units) + open LONG 25 units (5 lots). Direction flip.
+
+        Pre-fix the Angel branch used cumulative-since-entry `realised` for
+        the 'Realized today' line: -5,687 (= (6463.84 - 6520.71) × 2 × 50,
+        i.e. entry-to-exit on the covered short). Net today shown was -3,864.
+
+        Post-fix the slice is today's daily contribution from the close:
+        (prev_close 6507 - exit 6520.71) × 2 × 50 = -1,371. The cumulative
+        -5,687 stays in the accumulator JSON for tax tracking only."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = kite
+
+        smart = MagicMock()
+        smart.position.return_value = {"data": [
+            {"tradingsymbol": "CASTOR20MAY2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "25",
+             "ltp": "6528.00", "close": "6507.00",
+             "totalbuyavgprice": "6520.71", "cfbuyavgprice": "0",
+             "cfsellavgprice": "6463.84",
+             "cfbuyqty": "0", "cfsellqty": "10",
+             "buyqty": "35", "sellqty": "0",
+             "buyavgprice": "6520.71", "sellavgprice": "0",
+             "realised": "-5687", "m2m": "451"},
+        ]}
+        mock_angel_factory.return_value = smart
+        mock_match.return_value = ("CASTOR", {
+            "exchange": "NCDEX", "point_value": 50,
+            "order_routing": {"QuantityMultiplier": 5},
+        })
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["direction"] == "LONG"
+        assert p["is_new_today"] is True  # direction flip → all current is new
+        # Open swing on 5 new LONG lots: (6528 - 6520.71) × 5 × 50 = +1,822.50
+        assert p["daily_swing"] == pytest.approx(1822.50)
+        # Slice on closed 2 SHORT lots: (6507 - 6520.71) × 2 × 50 = -1,371
+        # Critically: ClosedDirection must be SHORT here (not LONG) — the
+        # closed lots were carry shorts even though current position is LONG.
+        assert p["today_realized_slice"] == pytest.approx(-1371.0)
+        # Net daily ≈ broker m2m (~+451), NOT the old -3,864 from cumulative.
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(451.50)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_dhaniya_angel_add_to_short(self, mock_match, mock_open,
+                                         mock_angel_factory, mock_kite_factory):
+        """DHANIYA on 29 Apr: yesterday SHORT 1 lot (5 units) @ 12954.49.
+        Today sold 5 more units → SHORT 2 lots. Pure add-to-short, no closure.
+        Open swing splits across carry (1 lot from prev_close) and new (1 lot
+        from today's sell price). today_realized_slice = 0."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = kite
+
+        smart = MagicMock()
+        smart.position.return_value = {"data": [
+            {"tradingsymbol": "DHANIYA20MAY2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "-10",
+             "ltp": "12830.00", "close": "13056.00",
+             "totalsellavgprice": "12953.25", "cfsellavgprice": "12954.49",
+             "cfbuyqty": "0", "cfsellqty": "5",
+             "buyqty": "0", "sellqty": "5",
+             "buyavgprice": "0", "sellavgprice": "12952.00",
+             "realised": "0", "m2m": "17400"},
+        ]}
+        mock_angel_factory.return_value = smart
+        mock_match.return_value = ("DHANIYA", {
+            "exchange": "NCDEX", "point_value": 50,
+            "order_routing": {"QuantityMultiplier": 5},
+        })
+
+        positions, _ = dpr._FetchOpenPositions({"instruments": {}})
+        p = positions[0]
+        assert p["direction"] == "SHORT"
+        assert p["is_new_today"] is False  # 1 lot carried
+        # Carry swing: (13056 - 12830) × 1 lot × 50 = 11,300
+        # New swing:   (12952 - 12830) × 1 lot × 50 = 6,100
+        # Total: 17,400
+        assert p["daily_swing"] == pytest.approx(17400.0)
+        # No closure → slice = 0
+        assert p["today_realized_slice"] == 0
+        # Matches broker m2m (no flip, no close)
+        assert p["daily_swing"] + p["today_realized_slice"] == pytest.approx(17400.0)
+
+    @patch("daily_pnl_report._EstablishKiteSession")
+    @patch("daily_pnl_report.EstablishConnectionAngelAPI")
+    @patch("daily_pnl_report._IsExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._MatchToInstrument")
+    def test_cocudakl_fully_closed_today_uses_slice_not_cumulative(
+        self, mock_match, mock_open, mock_angel_factory, mock_kite_factory
+    ):
+        """COCUDAKL on 29 Apr was fully covered. Closed Today section must
+        show today's slice (m2m), not cumulative-since-entry realised."""
+        kite = MagicMock()
+        kite.positions.return_value = {"net": []}
+        mock_kite_factory.return_value = kite
+
+        smart = MagicMock()
+        smart.position.return_value = {"data": [
+            {"tradingsymbol": "COCUDAKL20APR2026", "exchange": "NCDEX",
+             "producttype": "CARRYFORWARD", "netqty": "0",
+             "ltp": "0", "close": "3380",
+             "realised": "41340", "m2m": "12000"},  # m2m = today's slice
+        ]}
+        mock_angel_factory.return_value = smart
+        mock_match.return_value = ("COCUDAKL", {"exchange": "NCDEX", "point_value": 30})
+
+        by_acct, by_inst = dpr._FetchDailyRealizedPnl({"instruments": {}})
+        # ByAccount uses cumulative for accumulator (unchanged tax tracking)
+        assert by_acct["AABM826021"] == pytest.approx(41340.0)
+        # ClosedByInstrument uses today's slice for display (no double-count)
+        assert by_inst["COCUDAKL"] == pytest.approx(12000.0)
+
+    @patch("daily_pnl_report.IsAnyExchangeOpen", return_value=True)
+    @patch("daily_pnl_report._FetchTodayOrders", return_value=([], []))
+    @patch("daily_pnl_report._FetchDailyRealizedPnl")
+    @patch("daily_pnl_report._FetchOpenPositions")
+    @patch("daily_pnl_report._UpdateRealizedPnlAccumulator")
+    @patch("daily_pnl_report._SendEmail")
+    def test_full_29apr_email_no_overstatement(
+        self, mock_email, mock_accum, mock_fetch, mock_realized, mock_orders, mock_any
+    ):
+        """End-to-end render of 29 Apr scenario. Hero number must reflect:
+            OpenSwing + sum(today_realized_slice on open) + sum(closed-only slices)
+        with NO contribution from cumulative-since-entry realised."""
+        mock_fetch.return_value = ([
+            # MCX positions (computed values)
+            {"instrument": "CRUDEOIL", "tradingsymbol": "CRUDEOIL26APRFUT",
+             "direction": "LONG", "qty": 1, "avg_entry": 9640, "prev_close": 9485,
+             "ltp": 10110, "point_value": 100, "pnl": 47000, "daily_swing": 47000,
+             "today_realized_slice": 0,
+             "broker": "ZERODHA", "is_new_today": True},
+            {"instrument": "ZINCMINI", "tradingsymbol": "ZINCMINI26APRFUT",
+             "direction": "SHORT", "qty": 4, "avg_entry": 340.82, "prev_close": 341.90,
+             "ltp": 339.40, "point_value": 1000, "pnl": 5680, "daily_swing": 2760,
+             "today_realized_slice": -4640,
+             "broker": "ZERODHA", "is_new_today": True},
+            # NCDEX (JEERA partial cover)
+            {"instrument": "JEERA", "tradingsymbol": "JEERAUNJHA20MAY2026",
+             "direction": "SHORT", "qty": 3, "lots": 1,
+             "avg_entry": 21611.89, "prev_close": 20320, "ltp": 20670,
+             "point_value": 30, "pnl": 28256.70, "daily_swing": -10500,
+             "today_realized_slice": -22800,
+             "broker": "ANGEL", "is_new_today": False},
+        ], [])
+        # Cumulative realised for accumulator (tax); ClosedByInstrument empty
+        # because no fully-closed positions in this slim mock
+        mock_realized.return_value = (
+            {"YD6016": 4560.0, "AABM826021": 54713.0, "OFS653": 0.0},  # cumulative
+            {},
+        )
+
+        dpr.GenerateDailyReport(DryRun=False, DateStr="2026-04-29")
+        _, html = mock_email.call_args[0]
+
+        # ZINCMINI must NOT show pre-fix +10,000 swing
+        # Old broken header: "₹+10,000" inside ZINCMINI card. Post-fix +2,760.
+        # JEERA must NOT show pre-fix Net today +44,213.
+        assert "+44,213" not in html
+        # JEERA correct: -10,500 swing + -22,800 slice = -33,300 net
+        assert "-33,300" in html
+        # ZINCMINI correct: +2,760 swing + -4,640 slice = -1,880 net
+        assert "-1,880" in html
+
+        # Daily MTM hero = OpenSwing(47,000+2,760-10,500) + slices(0-4,640-22,800) = +11,820
+        # (NOT the old wrong +84,973 = open swing 39,260 + cumulative realised 54,713 + 4,560)
+        accum_args = mock_accum.call_args[0]
+        # Accumulator still gets cumulative for tax tracking — unchanged
+        assert accum_args[0]["AABM826021"] == 54713.0
+        assert accum_args[0]["YD6016"] == 4560.0
