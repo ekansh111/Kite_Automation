@@ -47,7 +47,10 @@ from FetchOptionContractName import (
 )
 from smart_chase import SmartChaseExecute
 from vol_target import compute_daily_vol_target
-from PlaceOptionsSystemsV2 import lookupK, K_TABLE_SINGLE, bsPrice, bsImpliedVol, RISK_FREE_RATE
+from PlaceOptionsSystemsV2 import (
+    lookupK, K_TABLE_SINGLE, bsPrice, bsImpliedVol, RISK_FREE_RATE,
+    resolveKLongSingle, getRegimeAddon, lookupIvShock, getVixAddon,
+)
 import forecast_db as db
 
 Logger = logging.getLogger("itm_call_rollover")
@@ -528,14 +531,22 @@ def LoadVolBudgets():
     return Budgets, EffectiveCapital
 
 
-def ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget):
-    """Compute number of lots for a single ITM call.
+def ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget,
+                            MaxPremiumOutlay=None):
+    """Compute number of lots for a single ITM call (per-index).
 
     dailyVolPerLot = k × premium × lotSize
-    lots = floor(budget / dailyVolPerLot)
+    lots_vol = floor(budget / dailyVolPerLot)
+    lots_cap = floor(MaxPremiumOutlay / (premium × lotSize))   [if cap provided]
+    finalLots = max(1, min(lots_vol, lots_cap))
 
     Uses floor (not round) because positions are held to expiry with no
     stoploss — overshooting the vol budget compounds over ~22 trading days.
+
+    Args:
+        MaxPremiumOutlay: optional INR cap on total premium spend per index.
+            If None, no cap applied. If set (e.g. 3% of capital), final lots
+            cannot exceed floor(MaxPremiumOutlay / cost_per_lot).
     """
     if Premium <= 0 or LotSize <= 0 or KValue <= 0:
         return {"finalLots": 0, "skipped": True, "skipReason": "invalid inputs"}
@@ -544,18 +555,146 @@ def ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget):
     if DailyVolPerLot <= 0:
         return {"finalLots": 0, "skipped": True, "skipReason": "dailyVolPerLot zero"}
 
-    AllowedLots = int(DailyVolBudget / DailyVolPerLot)  # floor — never exceed budget
+    LotsVol = int(DailyVolBudget / DailyVolPerLot)  # floor — never exceed budget
+    CostPerLot = Premium * LotSize
+
+    LotsCap = None
+    if MaxPremiumOutlay is not None and MaxPremiumOutlay > 0:
+        LotsCap = int(MaxPremiumOutlay / CostPerLot)
+
+    if LotsCap is not None:
+        AllowedLots = min(LotsVol, LotsCap)
+        BindingConstraint = "vol-target" if LotsVol <= LotsCap else "premium-cap"
+    else:
+        AllowedLots = LotsVol
+        BindingConstraint = "vol-target"
+
     FinalLots = max(1, AllowedLots)  # always at least 1 lot
 
     return {
         "finalLots": FinalLots,
         "allowedLots": AllowedLots,
+        "lotsVol": LotsVol,
+        "lotsCap": LotsCap,
+        "bindingConstraint": BindingConstraint,
         "dailyVolPerLot": DailyVolPerLot,
+        "costPerLot": CostPerLot,
         "premium": Premium,
         "kValue": KValue,
         "dailyVolBudget": DailyVolBudget,
+        "maxPremiumOutlay": MaxPremiumOutlay,
         "skipped": False,
         "skipReason": None,
+    }
+
+
+# ─── Pooled Allocation (Balance-preserving, NIFTY tiebreaker) ──────────
+
+POOL_ROUNDUP_THRESHOLD = 0.80  # accept up to 20% over-budget per lot
+PRIMARY_INDEX = "NIFTY"        # tiebreaker preference
+
+
+def AllocateLotsBalanced(SizingInputs, PoolRoundupThreshold=POOL_ROUNDUP_THRESHOLD,
+                          PrimaryIndex=PRIMARY_INDEX):
+    """Pool the per-index daily vol budgets and allocate lots across indices.
+
+    Algorithm:
+      1. Floor each index independently using its own per-index budget (min 1 each).
+      2. Pool the leftover budget from both indices.
+      3. Iteratively add lots:
+         a) Identify primary index = the one with FEWER current lots
+            (tie → PrimaryIndex, e.g. NIFTY).
+         b) Try to add 1 lot to primary if leftover ≥ threshold × primary.dvpl
+            AND new outlay ≤ primary.cap.
+         c) If primary doesn't fit, fall back to secondary (utilization).
+         d) Stop if neither fits.
+
+    Args:
+        SizingInputs: dict of {index_name: {dvpl, cost_per_lot, max_outlay,
+                                            daily_budget_per_idx, floor_lots}}
+                      (floor_lots already computed by ComputePositionSizeITM)
+        PoolRoundupThreshold: 0.80 means buy lot if leftover ≥ 80% of dvpl
+        PrimaryIndex: index name to favor on ties (default "NIFTY")
+
+    Returns:
+        {
+          "allocations": {index_name: final_lots},
+          "iterations": [list of dicts describing each round],
+          "pooled_budget": total pool,
+          "vol_used_total": sum of dvpl × lots,
+          "leftover_pool": remaining unused vol budget,
+          "over_budget": amount over (positive if pool exceeded),
+        }
+    """
+    if not SizingInputs:
+        return {"allocations": {}, "iterations": [], "pooled_budget": 0,
+                "vol_used_total": 0, "leftover_pool": 0, "over_budget": 0}
+
+    # Initialize from floor lots
+    Allocations = {name: meta["floor_lots"] for name, meta in SizingInputs.items()}
+    PooledBudget = sum(meta["daily_budget_per_idx"] for meta in SizingInputs.values())
+    UsedTotal = sum(Allocations[name] * meta["dvpl"] for name, meta in SizingInputs.items())
+    Leftover = PooledBudget - UsedTotal
+    Iterations = []
+
+    Names = list(SizingInputs.keys())
+
+    while True:
+        # Identify primary (fewer current lots), tie → PrimaryIndex
+        sorted_by_lots = sorted(Names, key=lambda n: (Allocations[n],
+                                                       0 if n == PrimaryIndex else 1))
+        primary = sorted_by_lots[0]
+        secondary = sorted_by_lots[1] if len(sorted_by_lots) > 1 else None
+
+        Added = False
+        for which in [primary] + ([secondary] if secondary else []):
+            meta = SizingInputs[which]
+            need = meta["dvpl"]
+            new_outlay = (Allocations[which] + 1) * meta["cost_per_lot"]
+            cap_ok = (meta["max_outlay"] is None) or (new_outlay <= meta["max_outlay"])
+            threshold_ok = Leftover >= PoolRoundupThreshold * need
+
+            if threshold_ok and cap_ok:
+                Allocations[which] += 1
+                Leftover -= need
+                Iterations.append({
+                    "round": len(Iterations) + 1,
+                    "tried": which,
+                    "preference": "primary" if which == primary else "fallback",
+                    "need": need,
+                    "had": Leftover + need,
+                    "pct_of_need": (Leftover + need) / need,
+                    "added": True,
+                    "new_lots": dict(Allocations),
+                })
+                Added = True
+                break
+            else:
+                # Log the rejection (kept terse)
+                Iterations.append({
+                    "round": len(Iterations) + 1,
+                    "tried": which,
+                    "preference": "primary" if which == primary else "fallback",
+                    "need": need,
+                    "had": Leftover,
+                    "pct_of_need": Leftover / need if need > 0 else 0,
+                    "added": False,
+                    "reason": "below threshold" if not threshold_ok else "premium cap",
+                })
+        if not Added:
+            break
+
+    UsedTotal = sum(Allocations[name] * meta["dvpl"] for name, meta in SizingInputs.items())
+    OverBudget = max(0, UsedTotal - PooledBudget)
+
+    return {
+        "allocations": Allocations,
+        "iterations": Iterations,
+        "pooled_budget": PooledBudget,
+        "vol_used_total": UsedTotal,
+        "leftover_pool": max(0, Leftover),
+        "over_budget": OverBudget,
+        "utilization_pct": (UsedTotal / PooledBudget * 100) if PooledBudget > 0 else 0,
     }
 
 
@@ -937,8 +1076,154 @@ def BuildRolloverEmailHtml(IndexName, Result):
           </div>
         </div>
 
-        <!-- K Value -->
+        <!-- K Value section (dynamic or static) -->
         <div style="padding:24px 28px 0;">
+    """
+
+    # Branch: Dynamic K (full breakdown) vs Static K (existing format)
+    KMetadata = Result.get("k_metadata")
+    if KMetadata and KMetadata.get("source") == "dynamic":
+        Greeks = KMetadata.get("optGreeks", {})
+        IvShockBase = (KMetadata.get("ivShockBase") or 0) * 100
+        IvShockVix = (KMetadata.get("ivShockVixAddon") or 0) * 100
+        IvShockRegime = (KMetadata.get("ivShockRegimeAddon") or 0) * 100
+        IvShockTotal = (KMetadata.get("ivShockTotal") or 0) * 100
+        VixLevel = KMetadata.get("vixLevel", "?")
+        RegimeRatio = KMetadata.get("regimeRatio", "?")
+        OptIV = (KMetadata.get("optIV") or 0) * 100
+        ExpMove = KMetadata.get("expectedMove", 0) or 0
+        BindingScen = KMetadata.get("kBindingScenario", "?")
+        KBase = KMetadata.get("kBase", 0) or 0
+        KStress = KMetadata.get("kStressMove", 0) or 0
+        KCrush = KMetadata.get("kVegaCrush", 0) or 0
+        PnlBreak = KMetadata.get("pnlBreakdown", {})
+        BasePnl = PnlBreak.get("basePnl", 0) or 0
+        StressPnl = PnlBreak.get("stressMovePnl", 0) or 0
+        VegaCrushPnl = PnlBreak.get("vegaCrushPnl", 0) or 0
+        BindStyleBase = f"background:{accent};color:#FFF;font-weight:600;" if BindingScen == "kBase" else ""
+        BindStyleStress = f"background:{accent};color:#FFF;font-weight:600;" if BindingScen == "kStressMove" else f"background:{grey_bg};"
+        BindStyleCrush = f"background:{accent};color:#FFF;font-weight:600;" if BindingScen == "kVegaCrush" else ""
+        ColorBase = "#FFF" if BindingScen == "kBase" else red
+        ColorStress = "#FFF" if BindingScen == "kStressMove" else red
+        ColorCrush = "#FFF" if BindingScen == "kVegaCrush" else red
+        ArrowBase = " \u25C0 binds" if BindingScen == "kBase" else ""
+        ArrowStress = " \u25C0 binds" if BindingScen == "kStressMove" else ""
+        ArrowCrush = " \u25C0 binds" if BindingScen == "kVegaCrush" else ""
+        RegimeColor = red if IvShockRegime < 0 else "#333"
+        RegimeSign = "+" if IvShockRegime >= 0 else ""
+        SpotMovePct = ExpMove / Spot * 100 if Spot > 0 else 0
+        Util = (DailyVolPerLot * FinalLots / DailyVolBudget * 100
+                if DailyVolBudget > 0 and isinstance(FinalLots, int) else 0)
+
+        Html += f"""
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Dynamic K Computation
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Solved IV</td>
+              <td style="padding:8px 12px;font-weight:700;color:{navy};">{_fmtEmail(OptIV, 2)}%</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Delta (\u0394)</td>
+              <td style="padding:8px 12px;">{_fmtEmail(Greeks.get('delta'), 4)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Gamma (\u0393)</td>
+              <td style="padding:8px 12px;">{_fmtEmail(Greeks.get('gamma'), 6)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Vega</td>
+              <td style="padding:8px 12px;">{_fmtEmail(Greeks.get('vega'), 1)}</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Theta (per day)</td>
+              <td style="padding:8px 12px;">{_fmtEmail(Greeks.get('theta'), 2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">1\u03c3 daily move</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(ExpMove, 0)}/share ({_fmtEmail(SpotMovePct, 2)}%)</td>
+            </tr>
+          </table>
+
+          <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:14px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:4px 10px;font-weight:600;">Scenario</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:center;">Spot move</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:center;">IV chg</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:right;">P&amp;L/share</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:right;">K</td>
+            </tr>
+            <tr style="{BindStyleBase}">
+              <td style="padding:6px 10px;">kBase{ArrowBase}</td>
+              <td style="padding:6px 10px;text-align:center;">-1\u03c3 (-\u20B9{_fmtEmail(ExpMove, 0)})</td>
+              <td style="padding:6px 10px;text-align:center;">0</td>
+              <td style="padding:6px 10px;text-align:right;color:{ColorBase};">{_fmtEmail(BasePnl)}</td>
+              <td style="padding:6px 10px;text-align:right;">{_fmtEmail(KBase, 4)}</td>
+            </tr>
+            <tr style="{BindStyleStress}">
+              <td style="padding:6px 10px;">kStressMove{ArrowStress}</td>
+              <td style="padding:6px 10px;text-align:center;">-1.5\u03c3 (-\u20B9{_fmtEmail(ExpMove*1.5, 0)})</td>
+              <td style="padding:6px 10px;text-align:center;">0</td>
+              <td style="padding:6px 10px;text-align:right;color:{ColorStress};">{_fmtEmail(StressPnl)}</td>
+              <td style="padding:6px 10px;text-align:right;">{_fmtEmail(KStress, 4)}</td>
+            </tr>
+            <tr style="{BindStyleCrush}">
+              <td style="padding:6px 10px;">kVegaCrush{ArrowCrush}</td>
+              <td style="padding:6px 10px;text-align:center;">-1\u03c3 (-\u20B9{_fmtEmail(ExpMove, 0)})</td>
+              <td style="padding:6px 10px;text-align:center;">-{_fmtEmail(IvShockTotal, 0)} vp</td>
+              <td style="padding:6px 10px;text-align:right;color:{ColorCrush};">{_fmtEmail(VegaCrushPnl)}</td>
+              <td style="padding:6px 10px;text-align:right;">{_fmtEmail(KCrush, 4)}</td>
+            </tr>
+          </table>
+
+          <div style="background:#E8F5E9;border:2px solid {green};border-radius:6px;padding:16px 18px;margin-top:14px;">
+            <p style="margin:0 0 6px;font-weight:700;font-size:13px;color:{navy};">
+              K_use = max(kBase, kStressMove, kVegaCrush)
+            </p>
+            <table style="border-collapse:collapse;font-size:13px;margin-top:8px;">
+              <tr>
+                <td style="padding:4px 0;font-family:monospace;">max({_fmtEmail(KBase, 4)}, {_fmtEmail(KStress, 4)}, {_fmtEmail(KCrush, 4)})</td>
+                <td style="padding:4px 8px;color:#666;">=</td>
+                <td style="padding:4px 0;font-weight:700;font-size:18px;color:{green};">{_fmtEmail(KValue, 4)}</td>
+              </tr>
+            </table>
+            <p style="margin:8px 0 0;font-size:11px;color:#666;">
+              Daily vol budget: \u20B9{_fmtEmail(DailyVolBudget, 0)} &bull; Daily vol per lot: \u20B9{_fmtEmail(DailyVolPerLot)}
+              &bull; Utilization: {_fmtEmail(Util, 1)}%
+            </p>
+          </div>
+        </div>
+
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            IV Shock Construction
+          </h2>
+          <div style="background:{grey_bg};border:1px solid {border_col};border-radius:6px;padding:16px 18px;">
+            <table style="border-collapse:collapse;font-size:13px;width:100%;">
+              <tr>
+                <td style="padding:6px 0;width:65%;">Base shock (DTE bucket {DTE} trading days)</td>
+                <td style="padding:6px 0;text-align:right;font-family:monospace;">+{_fmtEmail(IvShockBase, 0)} vp</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;">+ VIX addon (VIX = {VixLevel})</td>
+                <td style="padding:6px 0;text-align:right;font-family:monospace;">+{_fmtEmail(IvShockVix, 0)} vp</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;">+ Regime addon (vol_recent / vol_baseline = {RegimeRatio}\u00d7)</td>
+                <td style="padding:6px 0;text-align:right;font-family:monospace;color:{RegimeColor};">{RegimeSign}{_fmtEmail(IvShockRegime, 0)} vp</td>
+              </tr>
+              <tr><td colspan="2" style="border-top:1px solid {border_col};padding-top:8px;"></td></tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:700;color:{navy};">Total IV shock applied</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;font-size:15px;color:{navy};font-family:monospace;">{_fmtEmail(IvShockTotal, 0)} vp = {_fmtEmail(IvShockTotal/100, 2)} decimal</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+    """
+    else:
+        Html += f"""
           <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
             K Value &mdash; STATIC
           </h2>
@@ -965,21 +1250,90 @@ def BuildRolloverEmailHtml(IndexName, Result):
             </tr>
           </table>
     """
+        KTableRows = ""
+        for MinDte, MaxDte, KVal in K_TABLE_SINGLE:
+            Label = f"{MinDte} DTE" if MinDte == MaxDte else f"{MinDte}\u2013{MaxDte} DTE"
+            IsActive = isinstance(DTE, int) and MinDte <= DTE <= MaxDte
+            Style = f"background:{accent};color:#FFF;font-weight:600;" if IsActive else ""
+            Arrow = " \u25C0" if IsActive else ""
+            KTableRows += f'<tr><td style="padding:4px 10px;{Style}">{Label}</td><td style="padding:4px 10px;text-align:center;{Style}">{KVal}{Arrow}</td></tr>'
 
-    # K table with active row highlighted
-    KTableRows = ""
-    for MinDte, MaxDte, KVal in K_TABLE_SINGLE:
-        Label = f"{MinDte} DTE" if MinDte == MaxDte else f"{MinDte}–{MaxDte} DTE"
-        IsActive = isinstance(DTE, int) and MinDte <= DTE <= MaxDte
-        Style = f"background:{accent};color:#FFF;font-weight:600;" if IsActive else ""
-        Arrow = " \u25C0" if IsActive else ""
-        KTableRows += f'<tr><td style="padding:4px 10px;{Style}">{Label}</td><td style="padding:4px 10px;text-align:center;{Style}">{KVal}{Arrow}</td></tr>'
-
-    Html += f"""
+        Html += f"""
           <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:12px;">
             <tr style="background:{navy};color:#FFF;"><td style="padding:4px 10px;font-weight:600;" colspan="2">K_TABLE_SINGLE</td></tr>
             {KTableRows}
           </table>
+        </div>
+    """
+
+    AllocMeta = Result.get("allocation_meta")
+    if AllocMeta and AllocMeta.get("pool"):
+        Pool = AllocMeta["pool"]
+        IterRows = ""
+        for It in Pool.get("iterations", []):
+            BgStyle = "background:#E8F5E9;" if It.get("added") else f"background:{grey_bg};"
+            ActionColor = green if It.get("added") else red
+            ActionLabel = f"+1 {It['tried']} \u2705" if It.get("added") else f"\u2716 {It.get('reason', 'rejected')}"
+            PrefStr = It.get("preference", "?")
+            IterRows += f"""
+              <tr style="{BgStyle}">
+                <td style="padding:6px 10px;">{It['round']}</td>
+                <td style="padding:6px 10px;">{It['tried']}</td>
+                <td style="padding:6px 10px;">{PrefStr}</td>
+                <td style="padding:6px 10px;text-align:right;font-family:monospace;">\u20B9{_fmtEmail(It['need'], 0)}</td>
+                <td style="padding:6px 10px;text-align:right;font-family:monospace;">\u20B9{_fmtEmail(It['had'], 0)} ({_fmtEmail(It['pct_of_need']*100, 0)}%)</td>
+                <td style="padding:6px 10px;text-align:center;color:{ActionColor};font-weight:600;">{ActionLabel}</td>
+              </tr>
+            """
+
+        Allocations = Pool.get("allocations", {})
+        AllocStr = " + ".join(f"{v} {k}" for k, v in Allocations.items())
+
+        Html += f"""
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Pooled Allocation (Balance-preserving, NIFTY tiebreaker)
+          </h2>
+
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;width:40%;">Pooled Daily Budget</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Pool.get('pooled_budget', 0), 0)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Vol Used (this allocation)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Pool.get('vol_used_total', 0), 0)} ({_fmtEmail(Pool.get('utilization_pct', 0), 1)}%)</td>
+            </tr>
+            <tr style="background:{grey_bg};">
+              <td style="padding:8px 12px;font-weight:600;">Pool Leftover (unused)</td>
+              <td style="padding:8px 12px;">\u20B9{_fmtEmail(Pool.get('leftover_pool', 0), 0)}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:600;">Round-up Threshold</td>
+              <td style="padding:8px 12px;">{int(POOL_ROUNDUP_THRESHOLD*100)}% of dvpl (allows up to {int((1-POOL_ROUNDUP_THRESHOLD)*100)}% over-budget per lot)</td>
+            </tr>
+          </table>
+
+          <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:14px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:4px 10px;font-weight:600;">Iter</td>
+              <td style="padding:4px 10px;font-weight:600;">Tried</td>
+              <td style="padding:4px 10px;font-weight:600;">Pref</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:right;">Need</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:right;">Available (% of need)</td>
+              <td style="padding:4px 10px;font-weight:600;text-align:center;">Action</td>
+            </tr>
+            {IterRows}
+          </table>
+
+          <div style="background:#E8F5E9;border:2px solid {green};border-radius:6px;padding:16px 18px;margin-top:12px;">
+            <p style="margin:0;font-weight:700;font-size:14px;color:{navy};">
+              Final Pooled Allocation: {AllocStr}
+            </p>
+            <p style="margin:6px 0 0;font-size:11px;color:#666;">
+              This index ({IndexName}): {Allocations.get(IndexName, '?')} lots
+            </p>
+          </div>
         </div>
     """
 
@@ -1229,6 +1583,129 @@ def BuildRolloverEmailHtml(IndexName, Result):
     return Html
 
 
+def BuildCombinedPortfolioEmail(Results, Allocation, FullCfg):
+    """Build a portfolio-summary email sent ONCE per cycle after all indices done.
+
+    Shows aggregated outlay, vol exposure, worst-day MTM, and capital usage
+    across all indices that participated in the pooled allocation.
+    """
+    Now = datetime.now()
+    navy = "#003366"
+    accent = "#2E75B6"
+    green = "#27AE60"
+    red = "#E74C3C"
+    grey_bg = "#F8F9FA"
+    border_col = "#DEE2E6"
+
+    Capital = FullCfg.get("account", {}).get("base_capital", 0)
+
+    rows_html = ""
+    total_outlay = 0
+    total_qty = 0
+    total_lots = 0
+    total_worst_mtm = 0
+    row_idx = 0
+
+    for IndexName, Result in Results.items():
+        if not Result.get("success"):
+            continue
+        Lots = Result.get("size_result", {}).get("finalLots", 0)
+        Leg2 = Result.get("leg2") or {}
+        Qty = Leg2.get("quantity", 0)
+        if not Qty and Lots and Result.get("lot_size"):
+            Qty = Lots * Result["lot_size"]
+        Premium = Result.get("premium", 0)
+        Outlay = Qty * Premium
+        KUse = Result.get("k_value", 0)
+        WorstMtm = KUse * Premium * Qty
+        total_outlay += Outlay
+        total_qty += Qty
+        total_lots += Lots
+        total_worst_mtm += WorstMtm
+        bg = grey_bg if row_idx % 2 == 0 else ""
+        row_idx += 1
+        rows_html += f'<tr style="background:{bg};"><td style="padding:8px 12px;font-weight:600;">{IndexName}</td><td style="padding:8px 12px;text-align:right;">{Lots}</td><td style="padding:8px 12px;text-align:right;">{Qty}</td><td style="padding:8px 12px;text-align:right;font-family:monospace;">₹{_fmtEmail(Premium, 2)}</td><td style="padding:8px 12px;text-align:right;font-family:monospace;">₹{_fmtEmail(Outlay, 0)}</td><td style="padding:8px 12px;text-align:right;color:{red};font-family:monospace;">-₹{_fmtEmail(WorstMtm, 0)}</td></tr>'
+
+    pool_util = Allocation.get("utilization_pct", 0)
+    pool_used = Allocation.get("vol_used_total", 0)
+    pool_total = Allocation.get("pooled_budget", 0)
+    pool_left = Allocation.get("leftover_pool", 0)
+
+    Html = f"""
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#EAECEE;">
+      <div style="max-width:680px;margin:20px auto;background:#FFFFFF;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+        <div style="background:{navy};padding:20px 28px;">
+          <h1 style="margin:0;color:#FFFFFF;font-size:20px;letter-spacing:0.5px;">
+            ITM Call Combined Portfolio
+          </h1>
+          <p style="margin:6px 0 0;color:#AAC4E0;font-size:13px;">
+            Cycle Summary &bull; {Now.strftime('%d %b %Y, %I:%M %p')}
+          </p>
+        </div>
+        <div style="padding:24px 28px 0;">
+          <h2 style="margin:0 0 14px;color:{navy};font-size:16px;border-bottom:2px solid {accent};padding-bottom:6px;">
+            Per-Index Breakdown
+          </h2>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:8px 12px;font-weight:600;">Index</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;">Lots</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;">Qty</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;">Premium</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;">Outlay</td>
+              <td style="padding:8px 12px;text-align:right;font-weight:600;">Worst MTM</td>
+            </tr>
+            {rows_html}
+            <tr style="background:{navy};color:#FFF;">
+              <td style="padding:10px 12px;font-weight:700;">COMBINED</td>
+              <td style="padding:10px 12px;text-align:right;font-weight:700;">{total_lots}</td>
+              <td style="padding:10px 12px;text-align:right;font-weight:700;">{total_qty}</td>
+              <td style="padding:10px 12px;"></td>
+              <td style="padding:10px 12px;text-align:right;font-weight:700;font-family:monospace;">₹{_fmtEmail(total_outlay, 0)}</td>
+              <td style="padding:10px 12px;text-align:right;font-weight:700;font-family:monospace;">-₹{_fmtEmail(total_worst_mtm, 0)}</td>
+            </tr>
+          </table>
+        </div>
+        <div style="padding:20px 28px 0;">
+          <div style="background:#E8F5E9;border:2px solid {green};border-radius:6px;padding:16px 18px;">
+            <table style="border-collapse:collapse;font-size:13px;width:100%;">
+              <tr>
+                <td style="padding:6px 0;font-weight:600;color:{navy};">Combined outlay</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;font-family:monospace;">₹{_fmtEmail(total_outlay, 0)} ({_fmtEmail(total_outlay/Capital*100 if Capital else 0, 2)}% capital)</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:600;color:{navy};">Vol budget utilization</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;">₹{_fmtEmail(pool_used, 0)} / ₹{_fmtEmail(pool_total, 0)} ({_fmtEmail(pool_util, 1)}%)</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:600;color:{navy};">Pool leftover (unused)</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;font-family:monospace;">₹{_fmtEmail(pool_left, 0)}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:600;color:{navy};">Worst-day MTM (sum of binding K)</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;color:{red};font-family:monospace;">-₹{_fmtEmail(total_worst_mtm, 0)} ({_fmtEmail(-total_worst_mtm/Capital*100 if Capital else 0, 2)}%)</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:600;color:{navy};">Max loss at expiry</td>
+                <td style="padding:6px 0;text-align:right;font-weight:700;color:{red};font-family:monospace;">-₹{_fmtEmail(total_outlay, 0)} ({_fmtEmail(-total_outlay/Capital*100 if Capital else 0, 2)}%)</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+        <div style="padding:24px 28px;background:{grey_bg};border-top:1px solid {border_col};margin-top:24px;">
+          <p style="margin:0;font-size:11px;color:#888;">
+            Generated by ITM Call Rollover &mdash; Pooled allocation framework
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    return Html
+
+
 def SendEmail(Subject, HtmlBody):
     """Send email notification. Failures do NOT block trading."""
     if not EMAIL_NOTIFY_ENABLED:
@@ -1266,10 +1743,18 @@ def LoadExecConfig(ConfigKey):
 
 # ─── Core Execution ─────────────────────────────────────────────────
 
-def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
+def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False,
+                     OverrideFinalLots=None, OverrideKMetadata=None,
+                     OverrideAllocationMeta=None):
     """Execute two-leg ITM call rollover for one index.
 
     Returns a result dict with success status and fill details.
+
+    Args:
+        OverrideFinalLots: if provided (from pooled allocation), skip per-index
+            sizing and use this lot count.
+        OverrideKMetadata: dynamic K metadata (from resolveKLongSingle) for the email.
+        OverrideAllocationMeta: pooled allocation metadata for the email.
     """
     IdxCfg = ITM_CONFIG[IndexName]
     IdxState = State[IndexName]
@@ -1343,21 +1828,71 @@ def ExecuteRollover(Kite, IndexName, State, DryRun=False, FirstRun=False):
 
     # ── Step 5: Position sizing ──────────────────────────────────
     DTE = CountTradingDaysUntilExpiry(TargetExpiry)
-    KValue = lookupK(DTE, K_TABLE_SINGLE)
     Result["dte"] = DTE
-    Result["k_value"] = KValue
 
-    SizeResult = ComputePositionSizeITM(Premium, LotSize, KValue, DailyVolBudget)
+    # Load full config to check useDynamicK and premium-cap settings
+    with open(CONFIG_PATH) as F:
+        FullCfg = json.load(F)
+    AllocCfg = FullCfg.get("options_allocation", {}).get(IdxCfg["alloc_key"], {})
+    UseDynamicK = AllocCfg.get("useDynamicK", False)
+    MaxPremiumPct = AllocCfg.get("max_premium_pct_of_capital", None)
+    MaxPremiumOutlay = (FullCfg["account"]["base_capital"] * MaxPremiumPct) if MaxPremiumPct else None
+    Result["use_dynamic_k"] = UseDynamicK
+    Result["max_premium_outlay"] = MaxPremiumOutlay
+
+    # Resolve K (dynamic or static)
+    KMetadata = None
+    if OverrideKMetadata is not None:
+        # Pooled allocator has already resolved K; use those values
+        KMetadata = OverrideKMetadata
+        KValue = KMetadata.get("kForSizing", lookupK(DTE, K_TABLE_SINGLE))
+        Logger.info("%s Using pre-computed K from pooled pre-pass: K=%.4f (binding=%s)",
+                    Tag, KValue, KMetadata.get("kBindingScenario", "?"))
+    elif UseDynamicK:
+        # Per-index dynamic K (no pooling)
+        StaticK = lookupK(DTE, K_TABLE_SINGLE)
+        RegimeRecentDays = AllocCfg.get("regimeSignal", {}).get("recent_window", 20)
+        RegimeBaselineDays = AllocCfg.get("regimeSignal", {}).get("baseline_window", 100)
+        KValue, KMetadata = resolveKLongSingle(
+            kite=Kite, optSymbol=Symbol, exchange=IdxCfg["exchange"],
+            underlying=IndexName, sizingDte=DTE,
+            premium=Premium, lotSize=LotSize, expiryDate=TargetExpiry,
+            optionType="CE", staticKFallback=StaticK,
+            regimeRecentDays=RegimeRecentDays, regimeBaselineDays=RegimeBaselineDays,
+        )
+        if KValue is None:
+            Logger.error("%s Dynamic K resolution failed and no fallback", Tag)
+            return Result
+    else:
+        KValue = lookupK(DTE, K_TABLE_SINGLE)
+
+    Result["k_value"] = KValue
+    Result["k_metadata"] = KMetadata
+
+    SizeResult = ComputePositionSizeITM(
+        Premium, LotSize, KValue, DailyVolBudget,
+        MaxPremiumOutlay=MaxPremiumOutlay,
+    )
     Result["size_result"] = SizeResult
     if SizeResult["skipped"]:
         Logger.error("%s Position sizing skipped: %s", Tag, SizeResult["skipReason"])
         return Result
 
-    FinalLots = SizeResult["finalLots"]
+    # Use override lots if provided (pooled allocation), else per-index final lots
+    if OverrideFinalLots is not None:
+        FinalLots = OverrideFinalLots
+        Logger.info("%s Override lots from pooled allocator: %d (per-index would have been %d)",
+                    Tag, OverrideFinalLots, SizeResult["finalLots"])
+    else:
+        FinalLots = SizeResult["finalLots"]
+
+    Result["allocation_meta"] = OverrideAllocationMeta  # may be None
+
     Quantity = FinalLots * LotSize
-    Logger.info("%s Sizing: lots=%d qty=%d premium=%.2f K=%.3f dailyVol/lot=%.0f budget=%.0f",
+    Logger.info("%s Sizing: lots=%d qty=%d premium=%.2f K=%.3f dailyVol/lot=%.0f budget=%.0f%s",
                 Tag, FinalLots, Quantity, Premium, KValue,
-                SizeResult["dailyVolPerLot"], DailyVolBudget)
+                SizeResult["dailyVolPerLot"], DailyVolBudget,
+                f" cap=Rs{MaxPremiumOutlay:.0f}" if MaxPremiumOutlay else "")
 
     ExecConfig = LoadExecConfig(IdxCfg["exec_config_key"])
 
@@ -1552,6 +2087,183 @@ def PrintStatus():
         pass
 
 
+# ─── Coordinated (Pooled) Entry Orchestration ──────────────────────
+
+def PrepareSizingForIndex(Kite, IndexName, FirstRun=False):
+    """Phase-1 of pooled entry: gather sizing inputs without executing orders.
+
+    Returns dict with: spot, target_expiry, dte, strike, symbol, lot_size, premium,
+                       k_value, k_metadata, dvpl, cost_per_lot, max_outlay,
+                       daily_budget, floor_lots, size_result, eff_capital, selection
+    Or returns None on failure (logs error).
+    """
+    IdxCfg = ITM_CONFIG[IndexName]
+    Tag = f"[{IndexName}]"
+
+    # Load vol budget
+    Budgets, EffCapital = LoadVolBudgets()
+    DailyVolBudget = Budgets.get(IndexName)
+    if DailyVolBudget is None:
+        Logger.error("%s [PREPARE] No vol budget", Tag)
+        return None
+
+    # Fetch spot
+    try:
+        SpotData = Kite.ltp([IdxCfg["underlying_ltp_key"]])
+        Spot = float(SpotData[IdxCfg["underlying_ltp_key"]]["last_price"])
+    except Exception as E:
+        Logger.error("%s [PREPARE] Spot fetch failed: %s", Tag, E)
+        return None
+
+    # Get instruments and expiries
+    Instruments = GetInstrumentsCached(Kite, IdxCfg["exchange"])
+    OptSegment = GetOptSegmentForExchange(IdxCfg["exchange"])
+    MonthlyExpiries = GetMonthlyExpiries(Instruments, IndexName, OptSegment)
+    CurrentExpiry = GetCurrentMonthExpiry(MonthlyExpiries)
+    if CurrentExpiry is None:
+        Logger.error("%s [PREPARE] Cannot determine current month expiry", Tag)
+        return None
+    NextExpiry = GetNextMonthExpiry(MonthlyExpiries, CurrentExpiry)
+    if NextExpiry is None:
+        Logger.error("%s [PREPARE] Cannot determine next month expiry", Tag)
+        return None
+    TargetExpiry = CurrentExpiry if FirstRun else NextExpiry
+
+    # Select strike
+    Candidates = ComputeITMCallCandidates(Spot, IdxCfg["strike_step"],
+                                           IdxCfg["itm_pct_min"], IdxCfg["itm_pct_max"])
+    try:
+        Strike, Symbol, LotSize, Premium, SelectionMeta = SelectBestITMStrike(
+            Kite, Instruments, IndexName, IdxCfg["exchange"], OptSegment,
+            TargetExpiry, Candidates, Spot=Spot
+        )
+    except Exception as E:
+        Logger.error("%s [PREPARE] Strike selection failed: %s", Tag, E)
+        return None
+
+    # Resolve K — dynamic if configured
+    DTE = CountTradingDaysUntilExpiry(TargetExpiry)
+    with open(CONFIG_PATH) as F:
+        FullCfg = json.load(F)
+    AllocCfg = FullCfg.get("options_allocation", {}).get(IdxCfg["alloc_key"], {})
+    UseDynamicK = AllocCfg.get("useDynamicK", False)
+    MaxPremiumPct = AllocCfg.get("max_premium_pct_of_capital", None)
+    MaxPremiumOutlay = (FullCfg["account"]["base_capital"] * MaxPremiumPct) if MaxPremiumPct else None
+
+    KMetadata = None
+    if UseDynamicK:
+        StaticK = lookupK(DTE, K_TABLE_SINGLE)
+        RegimeRecentDays = AllocCfg.get("regimeSignal", {}).get("recent_window", 20)
+        RegimeBaselineDays = AllocCfg.get("regimeSignal", {}).get("baseline_window", 100)
+        KValue, KMetadata = resolveKLongSingle(
+            kite=Kite, optSymbol=Symbol, exchange=IdxCfg["exchange"],
+            underlying=IndexName, sizingDte=DTE,
+            premium=Premium, lotSize=LotSize, expiryDate=TargetExpiry,
+            optionType="CE", staticKFallback=StaticK,
+            regimeRecentDays=RegimeRecentDays, regimeBaselineDays=RegimeBaselineDays,
+        )
+        if KValue is None:
+            Logger.error("%s [PREPARE] K resolution failed", Tag)
+            return None
+    else:
+        KValue = lookupK(DTE, K_TABLE_SINGLE)
+
+    # Compute initial sizing (per-index floor)
+    SizeResult = ComputePositionSizeITM(
+        Premium, LotSize, KValue, DailyVolBudget,
+        MaxPremiumOutlay=MaxPremiumOutlay,
+    )
+    if SizeResult["skipped"]:
+        Logger.error("%s [PREPARE] Sizing skipped: %s", Tag, SizeResult["skipReason"])
+        return None
+
+    return {
+        "index": IndexName,
+        "spot": Spot,
+        "current_expiry": CurrentExpiry,
+        "next_expiry": NextExpiry,
+        "target_expiry": TargetExpiry,
+        "dte": DTE,
+        "strike": Strike,
+        "symbol": Symbol,
+        "lot_size": LotSize,
+        "premium": Premium,
+        "selection": SelectionMeta,
+        "k_value": KValue,
+        "k_metadata": KMetadata,
+        "use_dynamic_k": UseDynamicK,
+        "dvpl": SizeResult["dailyVolPerLot"],
+        "cost_per_lot": SizeResult["costPerLot"],
+        "max_outlay": MaxPremiumOutlay,
+        "daily_budget_per_idx": DailyVolBudget,
+        "floor_lots": SizeResult["finalLots"],
+        "size_result": SizeResult,
+        "eff_capital": EffCapital,
+    }
+
+
+def RunCoordinatedRollover(Kite, State, Indices, DryRun=False, FirstRun=False):
+    """Pooled-allocation entry orchestration:
+      1. Phase 1: Prepare sizing for each index (computes K, dvpl, floor lots).
+      2. Phase 2: Run AllocateLotsBalanced across all indices.
+      3. Phase 3: Execute trades using the joint allocation.
+
+    Returns (results_dict, allocation_dict).
+    """
+    Logger.info("=" * 60)
+    Logger.info("RUNNING POOLED-ALLOCATION ENTRY (useDynamicK=true)")
+
+    # ── Phase 1: Prepare ──
+    Prepared = {}
+    for IndexName in Indices:
+        Logger.info("[%s] Preparing sizing inputs...", IndexName)
+        prep = PrepareSizingForIndex(Kite, IndexName, FirstRun=FirstRun)
+        if prep is None:
+            Logger.error("[%s] Preparation failed, will skip", IndexName)
+            continue
+        Prepared[IndexName] = prep
+
+    if not Prepared:
+        Logger.error("All indices failed preparation; aborting coordinated rollover")
+        return {}, {}
+
+    # Build SizingInputs for AllocateLotsBalanced
+    SizingInputs = {
+        name: {
+            "dvpl": p["dvpl"],
+            "cost_per_lot": p["cost_per_lot"],
+            "max_outlay": p["max_outlay"],
+            "daily_budget_per_idx": p["daily_budget_per_idx"],
+            "floor_lots": p["floor_lots"],
+        }
+        for name, p in Prepared.items()
+    }
+
+    # ── Phase 2: Allocate ──
+    Allocation = AllocateLotsBalanced(SizingInputs)
+    Logger.info("[POOL] Pooled allocation result: %s", Allocation["allocations"])
+    Logger.info("[POOL] Vol used: Rs %.0f / %.0f (%.1f%%), leftover Rs %.0f",
+                Allocation["vol_used_total"], Allocation["pooled_budget"],
+                Allocation["utilization_pct"], Allocation["leftover_pool"])
+
+    # ── Phase 3: Execute ──
+    Results = {}
+    for IndexName, FinalLots in Allocation["allocations"].items():
+        prep = Prepared[IndexName]
+        Result = ExecuteRollover(
+            Kite, IndexName, State, DryRun=DryRun, FirstRun=FirstRun,
+            OverrideFinalLots=FinalLots,
+            OverrideKMetadata=prep["k_metadata"],
+            OverrideAllocationMeta={
+                "pool": Allocation,
+                "this_index_inputs": SizingInputs[IndexName],
+            },
+        )
+        Results[IndexName] = Result
+
+    return Results, Allocation
+
+
 # ─── Main ───────────────────────────────────────────────────────────
 
 def main():
@@ -1610,27 +2322,22 @@ def main():
 
     AllResults = {}
 
+    # Pre-filter indices: skip those that aren't on monthly expiry day (unless --force)
+    EligibleIndices = []
     for IndexName in Indices:
-        Logger.info("-" * 40)
-        Logger.info("Processing %s", IndexName)
-
         try:
-            # Check if today is monthly expiry
             IsExpiry, ExpiryDate = IsMonthlyExpiryDay(Instruments, IndexName, OptSegment)
-
             if not IsExpiry and not Args.force:
                 Logger.info("[%s] Not monthly expiry day, skipping", IndexName)
                 continue
-
             if Args.force and not IsExpiry:
                 Logger.info("[%s] --force flag: proceeding despite not expiry day", IndexName)
 
-            # Check crash recovery
+            # Crash recovery check
             IncompleteRollovers = db.GetIncompleteITMCallRollovers(IndexName)
             if IncompleteRollovers:
-                Logger.warning("[%s] Found %d incomplete rollovers (LEG1_DONE), "
-                               "will skip leg 1 and retry leg 2", IndexName, len(IncompleteRollovers))
-                # Treat as first-run (skip leg 1) since position is flat after leg 1
+                Logger.warning("[%s] %d incomplete rollovers found, treating as first-run",
+                               IndexName, len(IncompleteRollovers))
                 Args.first_run = True
 
             # State recovery if needed
@@ -1644,27 +2351,65 @@ def main():
                         SaveState(State)
                         Logger.info("[%s] State recovered from positions", IndexName)
 
-            # Execute rollover
-            Result = ExecuteRollover(Kite, IndexName, State, DryRun=Args.dry_run,
-                                     FirstRun=Args.first_run)
-            AllResults[IndexName] = Result
+            EligibleIndices.append(IndexName)
+        except Exception as E:
+            Logger.exception("[%s] Eligibility check failed: %s", IndexName, E)
+            AllResults[IndexName] = {"success": False, "error": str(E)}
 
-            # Send email for this index
-            StatusStr = "SUCCESS" if Result["success"] else "FAILED"
+    # Decide flow: pooled-allocation if ANY eligible index has useDynamicK enabled
+    UseCoordinated = False
+    if EligibleIndices:
+        try:
+            with open(CONFIG_PATH) as F:
+                FullCfg = json.load(F)
+            for IndexName in EligibleIndices:
+                AllocKey = ITM_CONFIG[IndexName]["alloc_key"]
+                if FullCfg.get("options_allocation", {}).get(AllocKey, {}).get("useDynamicK"):
+                    UseCoordinated = True
+                    break
+        except Exception:
+            UseCoordinated = False
+
+    if UseCoordinated and len(EligibleIndices) >= 1:
+        Logger.info("=" * 60)
+        Logger.info("Using POOLED ALLOCATION flow (useDynamicK enabled)")
+        Results, Allocation = RunCoordinatedRollover(
+            Kite, State, EligibleIndices, DryRun=Args.dry_run, FirstRun=Args.first_run
+        )
+        for IndexName, Result in Results.items():
+            AllResults[IndexName] = Result
+            StatusStr = "SUCCESS" if Result.get("success") else "FAILED"
             SendEmail(
                 f"ITM Call {IndexName}: {StatusStr}",
                 BuildRolloverEmailHtml(IndexName, Result)
             )
 
+        # Send combined portfolio email
+        try:
+            CombinedHtml = BuildCombinedPortfolioEmail(Results, Allocation, FullCfg)
+            SendEmail("ITM Call Combined Portfolio Summary", CombinedHtml)
         except Exception as E:
-            Logger.exception("[%s] Unhandled error: %s", IndexName, E)
-            AllResults[IndexName] = {"success": False, "error": str(E)}
-            SendEmail(
-                f"ITM Call {IndexName}: ERROR",
-                f"<p style='color:red;font-weight:bold'>Unhandled error: {E}</p>"
-            )
-            # Continue to next index (independent execution)
-            continue
+            Logger.warning("Failed to send combined portfolio email: %s", E)
+    else:
+        # Static-K per-index path (unchanged)
+        Logger.info("Using STATIC K per-index flow (useDynamicK not enabled)")
+        for IndexName in EligibleIndices:
+            try:
+                Result = ExecuteRollover(Kite, IndexName, State, DryRun=Args.dry_run,
+                                         FirstRun=Args.first_run)
+                AllResults[IndexName] = Result
+                StatusStr = "SUCCESS" if Result["success"] else "FAILED"
+                SendEmail(
+                    f"ITM Call {IndexName}: {StatusStr}",
+                    BuildRolloverEmailHtml(IndexName, Result)
+                )
+            except Exception as E:
+                Logger.exception("[%s] Unhandled error: %s", IndexName, E)
+                AllResults[IndexName] = {"success": False, "error": str(E)}
+                SendEmail(
+                    f"ITM Call {IndexName}: ERROR",
+                    f"<p style='color:red;font-weight:bold'>Unhandled error: {E}</p>"
+                )
 
     # Summary
     Logger.info("=" * 60)
