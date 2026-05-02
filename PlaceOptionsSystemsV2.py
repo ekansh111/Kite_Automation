@@ -62,6 +62,7 @@ EXPIRY_DAY_MAP = {
 
 UNDERLYING_LTP_KEY = {
     "NIFTY": "NSE:NIFTY 50",
+    "BANKNIFTY": "NSE:NIFTY BANK",
     "SENSEX": "BSE:SENSEX",
 }
 
@@ -148,6 +149,20 @@ INTRADAY_MOVE_ADDON_TABLE = [
     (0.5,  1.0,  2),    # mild move → +2 vol points
     (1.0,  1.5,  4),    # significant → +4 vol points
     (1.5, 9999,  6),    # extreme → +6 vol points
+]
+
+# Regime addon table for LONG premium strategies (e.g., ITM call buy).
+# Compares recent realized vol (e.g., 20-day for monthly hold) to long-baseline (100-day).
+# Self-calibrating per instrument — captures regime expansion/contraction.
+# Returns vol points added to IV shock (signed: contraction reduces shock, expansion adds).
+REGIME_ADDON_TABLE = [
+    (0.00, 0.70, -2),    # well below baseline → calmer regime → reduce shock
+    (0.70, 0.90, -1),    # mildly contracting
+    (0.90, 1.10,  0),    # near baseline → no change
+    (1.10, 1.30,  2),    # mildly expanding
+    (1.30, 1.60,  4),    # significantly expanding
+    (1.60, 2.00,  6),    # strongly expanding
+    (2.00, 9999, 8),     # extreme regime shift
 ]
 
 # Cap on total IV shock to prevent runaway (vol points)
@@ -1203,6 +1218,118 @@ def getIntradayMoveAddon(kite, underlying):
 
 
 # ---------------------------------------------------------------------------
+# Regime addon (LONG premium strategies): self-calibrating per instrument
+# Compares recent realized vol vs long-term baseline.
+# Asymmetric lookback by strategy: 20d for monthly call buy, 10d for weekly straddle.
+# ---------------------------------------------------------------------------
+
+# Cache for historical OHLC pulls. Key: instrument_token. Value: (timestamp, bars_list).
+# 4-hour TTL means at most 2 fetches per market day per instrument.
+_HISTORICAL_CACHE = {}
+_HISTORICAL_CACHE_TTL_SECONDS = 4 * 3600
+
+
+def _getInstrumentToken(kite, underlying):
+    """Resolve instrument_token for an underlying spot via kite.ltp().
+
+    Caches the token in the LTP response. Returns None on failure.
+    """
+    spotKey = UNDERLYING_LTP_KEY.get(underlying)
+    if not spotKey:
+        return None
+    try:
+        ltpData = kite.ltp([spotKey])
+        return int(ltpData[spotKey]["instrument_token"])
+    except Exception:
+        return None
+
+
+def _getCachedHistorical(kite, token, lookback_days=120):
+    """Fetch (and cache) daily historical bars for the given instrument token.
+
+    Returns list of bar dicts with 'date', 'open', 'high', 'low', 'close', 'volume'.
+    Uses _HISTORICAL_CACHE with 4hr TTL.
+    """
+    import time
+    now = time.time()
+    cached = _HISTORICAL_CACHE.get(token)
+    if cached and (now - cached[0]) < _HISTORICAL_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    fromDate = date.today() - timedelta(days=lookback_days * 2)  # padding for non-trading days
+    toDate = date.today()
+    try:
+        bars = kite.historical_data(token, from_date=fromDate, to_date=toDate, interval="day")
+    except Exception:
+        return None
+    if not bars:
+        return None
+
+    _HISTORICAL_CACHE[token] = (now, bars)
+    return bars
+
+
+def lookupRegimeAddon(ratio):
+    """Map recent/baseline vol ratio to vol point addon (returns decimal e.g. 0.02 for +2vp)."""
+    for lo, hi, vp in REGIME_ADDON_TABLE:
+        if lo <= ratio < hi:
+            return vp / 100.0
+    return REGIME_ADDON_TABLE[-1][2] / 100.0
+
+
+def getRegimeAddon(kite, underlying, recent_days=20, baseline_days=100):
+    """Compute IV shock addon based on recent-vs-baseline realized vol regime.
+
+    Strategy-specific lookback:
+      - Long monthly calls: recent_days=20  (matches ~22-day hold)
+      - Short weekly straddles: recent_days=10 (matches ~7-10d hold)
+
+    Realized vol = stdev(log returns) × √252 (annualized).
+    Returns:
+      (addonDecimal, ratio, recent_vol_pct, baseline_vol_pct)
+      where addonDecimal is decimal (e.g. 0.02 for +2vp).
+      Returns (0.0, None, None, None) on failure (fail-safe: no addon).
+    """
+    token = _getInstrumentToken(kite, underlying)
+    if token is None:
+        return (0.0, None, None, None)
+
+    bars = _getCachedHistorical(kite, token, lookback_days=baseline_days + 20)
+    if not bars or len(bars) < baseline_days + 1:
+        return (0.0, None, None, None)
+
+    # Use last (baseline_days + 1) bars to compute returns
+    bars = bars[-(baseline_days + 1):]
+    closes = [b["close"] for b in bars if b.get("close") and b["close"] > 0]
+    if len(closes) < baseline_days + 1:
+        return (0.0, None, None, None)
+
+    log_returns = []
+    for i in range(1, len(closes)):
+        log_returns.append(math.log(closes[i] / closes[i - 1]))
+
+    if len(log_returns) < baseline_days:
+        return (0.0, None, None, None)
+
+    def _annualizedVol(returns):
+        if len(returns) < 2:
+            return 0.0
+        m = sum(returns) / len(returns)
+        var = sum((r - m) ** 2 for r in returns) / len(returns)
+        return math.sqrt(var) * math.sqrt(252) * 100.0  # in %
+
+    recent_vol = _annualizedVol(log_returns[-recent_days:])
+    baseline_vol = _annualizedVol(log_returns[-baseline_days:])
+
+    if baseline_vol <= 0:
+        return (0.0, None, None, None)
+
+    ratio = recent_vol / baseline_vol
+    addon = lookupRegimeAddon(ratio)
+    return (addon, round(ratio, 4), round(recent_vol, 2), round(baseline_vol, 2))
+
+
+# ---------------------------------------------------------------------------
 # SECTION 1b: Black-Scholes Pricing and Greeks (European options, no dividends)
 # ---------------------------------------------------------------------------
 
@@ -1466,8 +1593,17 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         posGamma = -(ceGreeks["gamma"] + peGreeks["gamma"])
         posTheta = -(ceGreeks["theta"] + peGreeks["theta"])
         posVega = -(ceGreeks["vega"] + peGreeks["vega"])
+    elif strategyType == "long_single":
+        # LONG single leg (e.g., ITM call buy): keep Greeks as-is (positive delta/vega)
+        # Adverse direction will be applied via NEGATIVE spot moves and NEGATIVE vol shocks
+        # in the long_single scenarios below.
+        greeks = ceGreeks  # caller passes the relevant leg
+        posDelta = greeks["delta"]
+        posGamma = greeks["gamma"]
+        posTheta = greeks["theta"]
+        posVega = greeks["vega"]
     else:
-        # Single leg (short): negate one leg
+        # Single leg (short): negate one leg (e.g., naked short call/put)
         greeks = ceGreeks  # caller passes the relevant leg
         posDelta = -greeks["delta"]
         posGamma = -greeks["gamma"]
@@ -1492,28 +1628,60 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         """Convert absolute P&L to k ratio (unclamped). Clamping happens once at the end."""
         return abs(pnl) / combinedPremium
 
-    # ── Four independent scenarios (all computed as raw, unclamped values) ──
-    # Scenario 1: kBase — normal 1σ move, no IV shock
-    basePnl = _pnl(expectedMove, 0.0)
-    rawKBase = _rawK(basePnl)
+    # ─────────────────────────────────────────────────────────────────
+    # SCENARIO COMPUTATION — branches by strategyType
+    # ─────────────────────────────────────────────────────────────────
+    if strategyType == "long_single":
+        # LONG premium: scenarios use ADVERSE direction (-spot) so P&L shows loss.
+        # Three scenarios (kStressVol/kCrash from short framework don't apply
+        # because IV-up is a TAILWIND for long vega, not a stress).
+        #
+        #   kBase       : -1σ adverse spot, 0 IV change       (true daily vol target)
+        #   kStressMove : -1.5σ adverse spot, 0 IV change     (fat-tail spot move)
+        #   kVegaCrush  : -1σ adverse spot, NEGATIVE IV shock (vol regime crush)
+        basePnl = _pnl(-expectedMove, 0.0)
+        rawKBase = _rawK(basePnl)
 
-    # Scenario 2: kStressMove — larger move (1.5×), no IV shock
-    stressMovePnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, 0.0)
-    rawKStressMove = _rawK(stressMovePnl)
+        stressMovePnl = _pnl(-expectedMove * STRESS_MOVE_MULTIPLIER, 0.0)
+        rawKStressMove = _rawK(stressMovePnl)
 
-    # Scenario 3: kStressVol — normal move, with policy-driven vol stress
-    stressVolPnl = _pnl(expectedMove, deltaSigma)
-    rawKStressVol = _rawK(stressVolPnl)
+        # kVegaCrush: -1σ adverse spot + IV crush (negative shock for long premium)
+        vegaCrushPnl = _pnl(-expectedMove, -deltaSigma)
+        rawKVegaCrush = _rawK(vegaCrushPnl)
 
-    # Scenario 4: kCrash — large move (1.5×) + IV shock combined (true "bad day")
-    crashPnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, deltaSigma)
-    rawKCrash = _rawK(crashPnl)
+        rawScenarios = {
+            "kBase": rawKBase,
+            "kStressMove": rawKStressMove,
+            "kVegaCrush": rawKVegaCrush,
+        }
+        # Set short-framework scenarios to None for return shape consistency
+        rawKStressVol = None
+        rawKCrash = None
+        stressVolPnl = None
+        crashPnl = None
+    else:
+        # SHORT premium (straddle, single short call/put): existing 4 scenarios
+        # All scenarios use POSITIVE spot move + POSITIVE IV shock with abs() for magnitude
+        basePnl = _pnl(expectedMove, 0.0)
+        rawKBase = _rawK(basePnl)
+
+        stressMovePnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, 0.0)
+        rawKStressMove = _rawK(stressMovePnl)
+
+        stressVolPnl = _pnl(expectedMove, deltaSigma)
+        rawKStressVol = _rawK(stressVolPnl)
+
+        crashPnl = _pnl(expectedMove * STRESS_MOVE_MULTIPLIER, deltaSigma)
+        rawKCrash = _rawK(crashPnl)
+
+        rawScenarios = {
+            "kBase": rawKBase, "kStressMove": rawKStressMove,
+            "kStressVol": rawKStressVol, "kCrash": rawKCrash,
+        }
+        rawKVegaCrush = None
+        vegaCrushPnl = None
 
     # Determine binding scenario from RAW values (before clamping)
-    rawScenarios = {
-        "kBase": rawKBase, "kStressMove": rawKStressMove,
-        "kStressVol": rawKStressVol, "kCrash": rawKCrash,
-    }
     rawKForSizing = max(rawScenarios.values())
     kBindingScenario = max(rawScenarios, key=rawScenarios.get)
 
@@ -1527,8 +1695,9 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         "kRaw": round(rawKForSizing, 6),         # unclamped worst scenario
         "kBase": round(rawKBase, 6),              # all scenario values are raw (unclamped)
         "kStressMove": round(rawKStressMove, 6),
-        "kStressVol": round(rawKStressVol, 6),
-        "kCrash": round(rawKCrash, 6),
+        "kStressVol": round(rawKStressVol, 6) if rawKStressVol is not None else None,
+        "kCrash": round(rawKCrash, 6) if rawKCrash is not None else None,
+        "kVegaCrush": round(rawKVegaCrush, 6) if rawKVegaCrush is not None else None,
         "kClamped": kForSizing != rawKForSizing,  # True if floor or ceiling was applied
         "kBindingScenario": kBindingScenario,
         "kSpotSensitivity": round(kSpotSensitivity, 6),
@@ -1537,6 +1706,7 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
         "posGamma": round(posGamma, 8),
         "posTheta": round(posTheta, 4),
         "posVega": round(posVega, 4),
+        "strategyType": strategyType,
         "pnlBreakdown": {
             "pnlDelta": round(posDelta * expectedMove, 4),
             "pnlGamma": round(0.5 * posGamma * expectedMove * expectedMove, 4),
@@ -1544,13 +1714,14 @@ def computeDynamicK(ceGreeks, peGreeks, ceIV, peIV, spot, combinedPremium,
             "pnlTheta": round(posTheta * 1.0, 4),
             "basePnl": round(basePnl, 4),
             "stressMovePnl": round(stressMovePnl, 4),
-            "stressVolPnl": round(stressVolPnl, 4),
-            "crashPnl": round(crashPnl, 4),
-            # Crash-specific component P&Ls (1.5× move + IV shock)
-            "crashDeltaPnl": round(posDelta * expectedMove * STRESS_MOVE_MULTIPLIER, 4),
-            "crashGammaPnl": round(0.5 * posGamma * (expectedMove * STRESS_MOVE_MULTIPLIER) ** 2, 4),
-            "crashVegaPnl": round(posVega * deltaSigma, 4),
-            "crashThetaPnl": round(posTheta * 1.0, 4),
+            "stressVolPnl": round(stressVolPnl, 4) if stressVolPnl is not None else None,
+            "crashPnl": round(crashPnl, 4) if crashPnl is not None else None,
+            "vegaCrushPnl": round(vegaCrushPnl, 4) if vegaCrushPnl is not None else None,
+            # Crash-specific component P&Ls (1.5× move + IV shock) — only for short
+            "crashDeltaPnl": round(posDelta * expectedMove * STRESS_MOVE_MULTIPLIER, 4) if rawKCrash is not None else None,
+            "crashGammaPnl": round(0.5 * posGamma * (expectedMove * STRESS_MOVE_MULTIPLIER) ** 2, 4) if rawKCrash is not None else None,
+            "crashVegaPnl": round(posVega * deltaSigma, 4) if rawKCrash is not None else None,
+            "crashThetaPnl": round(posTheta * 1.0, 4) if rawKCrash is not None else None,
         },
     }
 
@@ -1774,6 +1945,189 @@ def resolveK(config, kite, ceSymbol, peSymbol, exchange, underlying,
           f"kBase={result['kBase']:.4f} kStressMove={result['kStressMove']:.4f} "
           f"kStressVol={result['kStressVol']:.4f} kCrash={result['kCrash']:.4f} "
           f"staticK={staticK:.2f} avgIV={result['avgIV']:.4f} expMove={result['expectedMove']:.2f} "
+          f"ivShock={ivShockAbsolute*100:.1f}vp")
+
+    return (kValue, metadata)
+
+
+def resolveKLongSingle(kite, optSymbol, exchange, underlying, sizingDte,
+                       premium, lotSize, expiryDate, optionType="CE",
+                       staticKFallback=None, regimeRecentDays=20,
+                       regimeBaselineDays=100, kFloorOverride=None):
+    """Resolve K for a LONG single-leg position (e.g., long ITM call buy).
+
+    Mirrors resolveK but for one leg only:
+      - Skips CE/PE consistency gate (only one leg exists)
+      - Uses computeDynamicK with strategyType='long_single'
+      - IV shock is built with regime addon (instead of intraday) for monthly hold
+      - On any quote-quality failure, returns staticKFallback if provided
+
+    Args:
+        kite: Kite client
+        optSymbol: contract trading symbol (e.g. "NIFTY26JUN23050CE")
+        exchange: "NFO" or "BFO"
+        underlying: "NIFTY" or "BANKNIFTY"
+        sizingDte: DTE for static K table fallback (and base IV shock)
+        premium: premium passed for interface compat (re-fetched from quote)
+        lotSize: contract lot size
+        expiryDate: date of expiry
+        optionType: "CE" or "PE" (LONG calls = "CE")
+        staticKFallback: K value to use if dynamic resolution fails (None = no fallback)
+        regimeRecentDays: lookback for recent vol (20 for monthly, 10 for weekly)
+        regimeBaselineDays: lookback for baseline vol (100 typical)
+        kFloorOverride: override K_FLOOR for this call (e.g., None to use module default)
+
+    Returns:
+        (kValue, metadata) where metadata includes scenario breakdown,
+        IV shock construction, Greeks, and source info.
+    """
+    tag = f"[{underlying}-LONG]"
+
+    # IV shock: build adaptively
+    baseIvShock = lookupIvShock(sizingDte)
+    vixAddon, vixLevel = getVixAddon(kite)
+    regimeAddonDecimal, regimeRatio, recentVol, baselineVol = getRegimeAddon(
+        kite, underlying, recent_days=regimeRecentDays, baseline_days=regimeBaselineDays
+    )
+    ivShockRaw = baseIvShock + vixAddon + regimeAddonDecimal
+    ivShockCap = IV_SHOCK_CAP_VP / 100.0
+    # Floor at 0 (don't allow negative shock from regime addon to below zero)
+    ivShockAbsolute = max(0.0, min(ivShockRaw, ivShockCap))
+
+    print(f"{tag}[DYNAMIC-K] IV shock: base={baseIvShock*100:.0f}vp "
+          f"+ VIX={vixAddon*100:.0f}vp (VIX={vixLevel}) "
+          f"+ regime={regimeAddonDecimal*100:+.0f}vp (ratio={regimeRatio}) "
+          f"= {ivShockRaw*100:.1f}vp"
+          f"{f' (CAPPED to {ivShockCap*100:.0f}vp)' if ivShockRaw > ivShockCap else ''}")
+
+    def _fallback(reason):
+        print(f"{tag}[DYNAMIC-K] Falling back to static K={staticKFallback}: {reason}")
+        return (staticKFallback, {"source": "static_fallback", "staticK": staticKFallback,
+                                   "fallbackReason": reason})
+
+    if staticKFallback is None:
+        # No fallback configured — caller wants strict failure on bad data
+        def _fail(reason):
+            print(f"{tag}[DYNAMIC-K] FAILED (no fallback): {reason}")
+            return (None, {"source": "failed", "fallbackReason": reason})
+        _fallback = _fail
+
+    # Step 1: Fetch spot
+    try:
+        spotKey = UNDERLYING_LTP_KEY[underlying]
+        spotData = kite.ltp([spotKey])
+        spot = float(spotData[spotKey]["last_price"])
+    except Exception as e:
+        return _fallback(f"spot fetch failed: {e}")
+    if spot <= 0:
+        return _fallback("spot price is zero or negative")
+
+    # Step 2: Fetch quote for the single leg
+    try:
+        optKey = f"{exchange}:{optSymbol}"
+        quotes = kite.quote([optKey])
+        optQuote = quotes.get(optKey)
+        if not optQuote:
+            return _fallback("quote missing for option")
+    except Exception as e:
+        return _fallback(f"quote fetch failed: {e}")
+
+    # Step 3: Extract premium with quality preference
+    optPremium, premSource, optBid, optAsk, optSpreadPct = getBestPremium(optQuote)
+
+    if optPremium <= 0:
+        return _fallback("premium zero or negative")
+    if optPremium < MIN_PREMIUM_INR:
+        return _fallback(f"near-zero dust premium: {optPremium}")
+    if optBid is not None and optAsk is not None and optBid > optAsk:
+        return _fallback(f"bid > ask: {optBid} > {optAsk}")
+    if optSpreadPct is not None and optSpreadPct > BID_ASK_SPREAD_GATE * 100:
+        return _fallback(f"spread too wide: {optSpreadPct:.1f}%")
+
+    # Staleness check during market hours
+    optQuoteTimestamp = optQuote.get("last_trade_time", None)
+    if isinstance(optQuoteTimestamp, str):
+        try:
+            optQuoteTimestamp = datetime.fromisoformat(optQuoteTimestamp)
+        except (ValueError, TypeError):
+            pass
+    now = datetime.now()
+    marketOpen = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    marketClose = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if hasattr(optQuoteTimestamp, 'hour') and marketOpen <= now <= marketClose:
+        staleSec = (now - optQuoteTimestamp).total_seconds()
+        if staleSec > QUOTE_STALE_SECONDS:
+            return _fallback(f"stale quote: {staleSec:.0f}s old")
+
+    # Step 4: Look up strike from instruments cache
+    optStrike = lookupStrikeFromInstruments(optSymbol, exchange, kite)
+    if optStrike is None:
+        return _fallback(f"strike lookup failed for {optSymbol}")
+
+    # Step 5: Compute exact time to expiry (in years)
+    if isinstance(expiryDate, date) and not hasattr(expiryDate, 'hour'):
+        expiryDatetime = datetime(expiryDate.year, expiryDate.month, expiryDate.day, 15, 30, 0)
+    else:
+        expiryDatetime = expiryDate
+    T = max((expiryDatetime - now).total_seconds(), 0) / (365.0 * 24 * 3600)
+    if T < 1e-6:
+        return _fallback(f"T too small: {T:.8f} years")
+
+    # Step 6: Solve IV from market premium
+    optIV = bsImpliedVol(optPremium, spot, optStrike, T, optionType)
+    if optIV is None:
+        return _fallback("IV solver failed")
+    ivBoundMargin = 0.05
+    if optIV <= IV_SOLVER_MIN * (1 + ivBoundMargin) or optIV >= IV_SOLVER_MAX * (1 - ivBoundMargin):
+        return _fallback(f"IV near solver bounds: {optIV:.4f}")
+
+    # Step 7: Compute Greeks at solved IV
+    optGreeks = bsGreeks(spot, optStrike, T, optIV, optionType)
+
+    # Step 8: Compute dynamic K via long_single scenarios
+    # PE side is unused for long_single; pass dummy zeros for interface compat
+    dummyPe = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    result = computeDynamicK(
+        ceGreeks=optGreeks, peGreeks=dummyPe,
+        ceIV=optIV, peIV=optIV,
+        spot=spot, combinedPremium=optPremium,
+        lotSize=lotSize, strategyType="long_single",
+        ivShockAbsolute=ivShockAbsolute,
+    )
+    if result is None:
+        return _fallback("computeDynamicK returned None")
+
+    kValue = result["kForSizing"]
+    metadata = {
+        "source": "dynamic",
+        "staticK": staticKFallback,
+        **result,
+        "spot": round(spot, 2),
+        "optStrike": optStrike,
+        "sizingDte": sizingDte,
+        "premiumUsed": round(optPremium, 2),
+        "premiumSource": premSource,
+        "optIV": round(optIV, 6),
+        "optGreeks": {k: round(v, 8) for k, v in optGreeks.items()},
+        "timeToExpiryYears": round(T, 8),
+        "ivShockBase": round(baseIvShock, 6),
+        "ivShockVixAddon": round(vixAddon, 6),
+        "ivShockRegimeAddon": round(regimeAddonDecimal, 6),
+        "ivShockTotal": round(ivShockAbsolute, 6),
+        "vixLevel": vixLevel,
+        "regimeRatio": regimeRatio,
+        "regimeRecentVol": recentVol,
+        "regimeBaselineVol": baselineVol,
+        "regimeRecentDays": regimeRecentDays,
+        "regimeBaselineDays": regimeBaselineDays,
+    }
+
+    clampTag = " [CLAMPED]" if result.get("kClamped") else ""
+    print(f"{tag}[DYNAMIC-K] kForSizing={kValue:.4f}{clampTag} (raw={result['kRaw']:.4f}, "
+          f"binding={result['kBindingScenario']}) "
+          f"kBase={result['kBase']:.4f} kStressMove={result['kStressMove']:.4f} "
+          f"kVegaCrush={result['kVegaCrush']:.4f} "
+          f"IV={optIV*100:.2f}% expMove={result['expectedMove']:.2f} "
           f"ivShock={ivShockAbsolute*100:.1f}vp")
 
     return (kValue, metadata)

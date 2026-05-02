@@ -974,17 +974,29 @@
     "NIFTY_ITM_CALL": {
       "vol_weights": {
         "sector_weight": 0.3,
-        "asset_weight": 0.15,
-        "asset_DM": 3.9,
-        "neg_skew_discount": 0.5
+        "asset_weight": 0.125,
+        "asset_DM": 3.9
+      },
+      "useDynamicK": true,
+      "max_premium_pct_of_capital": 0.03,
+      "regimeSignal": {
+        "metric": "realized_vol",
+        "recent_window": 20,
+        "baseline_window": 100
       }
     },
     "BANKNIFTY_ITM_CALL": {
       "vol_weights": {
         "sector_weight": 0.3,
-        "asset_weight": 0.15,
-        "asset_DM": 3.9,
-        "neg_skew_discount": 0.5
+        "asset_weight": 0.125,
+        "asset_DM": 3.9
+      },
+      "useDynamicK": true,
+      "max_premium_pct_of_capital": 0.03,
+      "regimeSignal": {
+        "metric": "realized_vol",
+        "recent_window": 20,
+        "baseline_window": 100
       }
     },
     "NIFTY_PUT_BUY": {
